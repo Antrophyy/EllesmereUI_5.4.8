@@ -681,6 +681,20 @@ end
 ---------------------------------------------------------------------------
 -- Absorbs and heal prediction (horizontal bars)
 ---------------------------------------------------------------------------
+-- Elite/Rare Indicator Pixels Dragon art per classification (+ player targets).
+UF.ELITE_DRAGON_ART = {
+	worldboss = UF.MEDIA .. "portraits\\pixels_dragon_boss", elite = UF.MEDIA .. "portraits\\pixels_dragon_elite",
+	rareelite = UF.MEDIA .. "portraits\\pixels_dragon_rare", rare = UF.MEDIA .. "portraits\\pixels_dragon_rare",
+	player = UF.MEDIA .. "portraits\\pixels_dragon_player",
+}
+
+-- Absorb Glow Line art (retail ns.UF_GLOW_LINE_ART).
+UF.GLOW_LINE_ART = {
+	blizzard = { UF.MEDIA .. "icons\\cast_spark", "ADD", 16, 1.6 },
+	pixelsGlow = { UF.MEDIA .. "shields\\pixels-glowline", "ADD", 16, 1 },
+	pixelsOvershield = { UF.MEDIA .. "shields\\pixels-overshield-line", "BLEND", 2, 1 },
+}
+
 local function StyleTexture(tex, style, width, height)
 	tex:SetTexture(UF.AbsorbTexture(style), UF.ABSORB_TILED[style] and true or nil)
 	if UF.ABSORB_TILED[style] then
@@ -811,8 +825,12 @@ function UF.UpdateAbsorbs(frame)
 					Span(frame.OverShield, bar, X(healthW - over, over), over)
 				end
 				if s.absorbGlowLine then
+					-- Glow Line Texture (retail absorbGlowLineTexture): { file, blend, width, height factor }.
+					local art = UF.GLOW_LINE_ART[s.absorbGlowLineTexture] or UF.GLOW_LINE_ART.blizzard
+					frame.GlowLine:SetTexture(art[1])
+					frame.GlowLine:SetBlendMode(art[2])
 					frame.GlowLine:ClearAllPoints()
-					frame.GlowLine:SetSize(16, H * 1.6)
+					frame.GlowLine:SetSize(art[3], H * art[4])
 					frame.GlowLine:SetPoint("CENTER", bar, reverse and "RIGHT" or "LEFT", reverse and -(W - over) or (W - over), 0)
 					frame.GlowLine:Show()
 				end
@@ -977,10 +995,34 @@ function UF.UpdateIndicators(frame)
 	-- Elite / rare badge (target)
 	local elite = frame.Elite
 	elite:Hide()
+	local dragon = frame.eliteDragon
+	if dragon then
+		dragon:Hide()
+	end
 	if frame.unitKey == "target" and s.eliteIndicatorEnabled then
 		local class = fake and (preview and "elite") or (not fake and UnitClassification(unit))
 		local inInstance = IsInInstance()
-		if class and class ~= "normal" and class ~= "minus" and class ~= "trivial" and (not inInstance or s.eliteIndicatorShowInInstances) then
+		local portrait = frame.Portrait
+		if s.eliteIndicatorStyle == "pixelsDragon" and portrait and portrait:IsShown() then
+			-- Pixels Dragon (retail ns.UF_ELITE_DRAGON_ART): classification art
+			-- wrapped round the portrait (art circle 120 of 512 texels); players too.
+			local key = (not fake and UnitIsPlayer(unit)) and "player" or class
+			local art = UF.ELITE_DRAGON_ART[key or ""]
+			if art and (key == "player" or not inInstance or s.eliteIndicatorShowInInstances) then
+				if not dragon then
+					local holder = CreateFrame("Frame", nil, portrait)
+					holder:SetAllPoints(portrait)
+					dragon = holder:CreateTexture(nil, "OVERLAY")
+					dragon:SetPoint("CENTER", portrait, "CENTER", 0, 0)
+					frame.eliteDragon = dragon
+				end
+				dragon:GetParent():SetFrameLevel(portrait:GetFrameLevel() + 2)
+				local d = portrait:GetHeight() * 512 / 120
+				dragon:SetSize(d, d)
+				dragon:SetTexture(art)
+				dragon:Show()
+			end
+		elseif class and class ~= "normal" and class ~= "minus" and class ~= "trivial" and (not inInstance or s.eliteIndicatorShowInInstances) then
 			elite:SetDesaturated(class == "rare")
 			elite:SetVertexColor(1, 1, 1, 1)
 			elite:Show()

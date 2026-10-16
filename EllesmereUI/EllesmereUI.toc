@@ -20,6 +20,7 @@ EllesmereUI_General.lua
 EllesmereUI_Colors.lua
 # Shared glow engine (EllesmereUI.Glows) and Global Settings > Glows store
 EllesmereUI_Glows.lua
+EllesmereUI_SpellCostPrediction.lua
 # Global Settings > Fonts: global font, module fonts, Name Font, game text
 EllesmereUI_Fonts.lua
 # Global Settings > UI Scale

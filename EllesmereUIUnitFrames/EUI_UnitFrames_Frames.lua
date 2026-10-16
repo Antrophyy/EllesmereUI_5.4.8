@@ -392,6 +392,7 @@ local function LayoutPortrait(frame, s, style, barH, portraitW, top)
 	p:ClearAllPoints()
 	p.border:SetShown(false)
 	p.ring:Hide()
+	UF.PortraitExtras(p, s, false, 0)
 	if style == "none" then
 		p:Hide()
 		return
@@ -422,7 +423,9 @@ local function LayoutPortrait(frame, s, style, barH, portraitW, top)
 		p:SetPoint("TOPRIGHT", frame.Health, "TOPLEFT", -15 + x, 5 + y)
 	end
 	local shape = s.detachedPortraitShape or "portrait"
-	if shape == "circle" and (s.portraitMode or "2d") ~= "3d" then
+	local round = shape == "circle" and (s.portraitMode or "2d") ~= "3d"
+	UF.PortraitExtras(p, s, round, size)
+	if round then
 		local ringSize = size * 128 / 94
 		p.ring:ClearAllPoints()
 		p.ring:SetPoint("CENTER", p, "CENTER")
@@ -434,6 +437,44 @@ local function LayoutPortrait(frame, s, style, barH, portraitW, top)
 		p.border:SetBorderSize(max(1, floor(bsize / 2 + 0.5)) * px)
 		p.border:SetShown(true)
 		p.bg:Show()
+	end
+end
+
+-- Outer Ring and Inner Shadow on a round detached portrait (retail
+-- ns.UF_PortraitExtras). Ring art from EllesmereUI media\portraits, tinted
+-- with the frame border color; Outer Ring Size = percent of the portrait.
+UF.OUTER_RING_ART = {
+	pixels = "pixels_ring", ["pixels-textured"] = "pixels_ring_textured", ["pixels-shadow"] = "pixels_ring_shadow",
+	["pixels-textured-shadow"] = "pixels_ring_textured_shadow", ["thin-border"] = "pixels_ring_thin_border",
+}
+function UF.PortraitExtras(p, s, round, size)
+	local art = round and UF.OUTER_RING_ART[s.detachedPortraitOuterRing or "none"]
+	if art then
+		if not p.outerRing then
+			p.outerRing = p:CreateTexture(nil, "OVERLAY", nil, 1)
+		end
+		local ring = p.outerRing
+		ring:SetTexture(UF.MEDIA .. "portraits\\" .. art)
+		local ext = ((s.detachedPortraitOuterRingScale or 118) - 100) / 200
+		local o = size * ext - 4
+		ring:ClearAllPoints()
+		ring:SetPoint("TOPLEFT", p, "TOPLEFT", -o, o)
+		ring:SetPoint("BOTTOMRIGHT", p, "BOTTOMRIGHT", o, -o)
+		local bc = s.borderColor
+		ring:SetVertexColor(bc and bc.r or 0, bc and bc.g or 0, bc and bc.b or 0, s.borderAlpha or 1)
+		ring:Show()
+	elseif p.outerRing then
+		p.outerRing:Hide()
+	end
+	if round and s.detachedPortraitInnerShadow then
+		if not p.innerShadow then
+			p.innerShadow = p:CreateTexture(nil, "ARTWORK", nil, 7)
+			p.innerShadow:SetTexture(UF.MEDIA .. "portraits\\pixels_inner_shadow")
+			p.innerShadow:SetAllPoints(p)
+		end
+		p.innerShadow:Show()
+	elseif p.innerShadow then
+		p.innerShadow:Hide()
 	end
 end
 
@@ -493,9 +534,28 @@ local function LayoutPower(frame, s, barW)
 	local pos = s.powerPosition or "below"
 	if not PowerShown(s, frame) then
 		power:Hide()
+		if frame.unitKey == "player" and ns.SpellCostPrediction and not frame.headerPreview then
+			ns.SpellCostPrediction.Detach("uf")
+		end
 		return
 	end
 	power:Show()
+	-- Spell Cost Prediction (retail s.powerCostPrediction, player only).
+	if frame.unitKey == "player" and ns.SpellCostPrediction and not frame.headerPreview then
+		if s.powerCostPrediction == true then
+			UF.POWER_COST_HOST = UF.POWER_COST_HOST or {
+				PowerType = function() return (UnitPowerType("player")) end,
+				Color = function()
+					local ps = UF.db.player
+					local r, g, b = ns.SpellCostPrediction.Color(ps)
+					return r, g, b, (ps.powerBarOpacity or 100) / 100
+				end,
+			}
+			ns.SpellCostPrediction.Attach("uf", power, UF.POWER_COST_HOST)
+		else
+			ns.SpellCostPrediction.Detach("uf")
+		end
+	end
 	-- Like retail: a detached bar draws over the unified border (+10).
 	local detached = pos ~= "below" and pos ~= "above"
 	power:SetFrameLevel(frame:GetFrameLevel() + (detached and 12 or 4))
@@ -769,6 +829,30 @@ local function LayoutCastbar(frame, s, frameW)
 	holder.border:SetBorderSize(bsize * px)
 	bc = bc or {}
 	holder.border:SetBorderColor(bc.r or 0, bc.g or 0, bc.b or 0, ba)
+	-- Cast Icon cog (retail): Icon Border = the cast bar's border size and
+	-- color round the icon; Vertical Separator = a divider between an
+	-- integrated icon and the bar in the same look.
+	if showIcon and s.castIconBorder then
+		icon.border:SetBorderSize(bsize * px)
+		icon.border:SetBorderColor(bc.r or 0, bc.g or 0, bc.b or 0, ba)
+	end
+	local sep = holder.iconSep
+	if showIcon and c.iconInWidth and s.castIconSeparator and bsize > 0 then
+		if not sep then
+			sep = holder:CreateTexture(nil, "OVERLAY", nil, 7)
+			holder.iconSep = sep
+		end
+		sep:SetTexture(bc.r or 0, bc.g or 0, bc.b or 0, ba)
+		sep:ClearAllPoints()
+		sep:SetWidth(bsize * px)
+		local edge = c.iconRight and "TOPRIGHT" or "TOPLEFT"
+		local edgeB = c.iconRight and "BOTTOMRIGHT" or "BOTTOMLEFT"
+		sep:SetPoint("TOP", bar, edge, 0, 0)
+		sep:SetPoint("BOTTOM", bar, edgeB, 0, 0)
+		sep:Show()
+	elseif sep then
+		sep:Hide()
+	end
 
 	-- Texts: name left, duration right, target before the duration.
 	local nameSide = s.castSpellNameSide or "left"

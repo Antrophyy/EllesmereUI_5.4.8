@@ -3143,6 +3143,47 @@ local function BuildCogPopup(title, rows)
 			row.label:SetWidth(COG_W - 140)
 			control = CreateColorSwatch(row, { get = def.get, set = def.set }, def.alpha)
 			RegisterRefresh(function() control:Refresh() end)
+		elseif def.type == "input" then
+			-- Short text input (retail cog type="input", e.g. Separator / Prefix).
+			local w = def.inputWidth or 60
+			row.label:SetWidth(COG_W - w - 50)
+			local box = CreateFrame("EditBox", nil, row)
+			box:SetSize(w, 24)
+			box:SetPoint("RIGHT", row, "RIGHT", -16, 0)
+			box:SetAutoFocus(false)
+			box:SetJustifyH("CENTER")
+			box:SetFont(FONT, 13, "")
+			box:SetTextColor(1, 1, 1, 1)
+			if def.maxLetters then
+				box:SetMaxLetters(def.maxLetters)
+			end
+			Solid(box, "BACKGROUND", DROPDOWN_BG[1], DROPDOWN_BG[2], DROPDOWN_BG[3], 1):SetAllPoints()
+			AddBorder(box, 1, 1, 1, 0.2)
+			local function Commit(self)
+				self:ClearFocus()
+				if row.disabled then
+					return
+				end
+				def.set(self:GetText() or "")
+				ApplyAndRefresh()
+			end
+			box:SetScript("OnEnterPressed", Commit)
+			box:SetScript("OnEditFocusLost", function(self)
+				if (self:GetText() or "") ~= tostring(def.get() or "") then
+					Commit(self)
+				end
+			end)
+			box:SetScript("OnEscapePressed", function(self)
+				self:SetText(tostring(def.get() or ""))
+				self:ClearFocus()
+			end)
+			control = box
+			RegisterRefresh(function()
+				if not box:HasFocus() then
+					box:SetText(tostring(def.get() or ""))
+				end
+				box:EnableMouse(not row.disabled)
+			end)
 		end
 		if def.disabled then
 			RegisterRefresh(function()

@@ -611,6 +611,23 @@ local function TextSlot(p, unit, slot, label, list, sync)
 		disabled = function() local c = S(unit)[contentKey] return c ~= "nametotarget" and c ~= "targetname" end }
 	rows[#rows + 1] = CT("Indicator Class Colored", unit, prefix .. "TargetSepClassColor", false,
 		function() local c = S(unit)[contentKey] return c ~= "nametotarget" and c ~= "targetname" end)
+	-- Separator (Name > Target) and Prefix (Target) text (retail type="input" rows).
+	rows[#rows + 1] = { type = "input", label = "Separator", inputWidth = 60, maxLetters = 6,
+		tip = "Text between the name and the target's name.",
+		get = function() return S(unit)[prefix .. "TargetSep"] or ">" end,
+		set = function(v)
+			v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
+			S(unit)[prefix .. "TargetSep"] = (v ~= "" and v ~= ">") and v or nil
+		end,
+		disabled = function() return S(unit)[contentKey] ~= "nametotarget" end }
+	rows[#rows + 1] = { type = "input", label = "Prefix", inputWidth = 60, maxLetters = 6,
+		tip = "Text before the target's name. Empty shows no prefix.",
+		get = function() local v = S(unit)[prefix .. "TargetPrefix"] if v == nil then v = "T:" end return v end,
+		set = function(v)
+			v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
+			S(unit)[prefix .. "TargetPrefix"] = (v ~= "T:") and v or nil
+		end,
+		disabled = function() return S(unit)[contentKey] ~= "targetname" end }
 	p:Cog(label .. " Settings", rows, { disabled = none, disabledTip = "This option requires a text selection other than none." })
 end
 
@@ -779,7 +796,15 @@ local function PowerRows(p, unit, full, sync)
 	p:Slider("Border Size", "Border of a detached power bar, in pixels.", 0, 8, 1, Get(unit, "powerBorderSize", 0), Set(unit, "powerBorderSize"),
 		full and function() local v = S(unit).powerPosition return v ~= "detached_top" and v ~= "detached_bottom" end or nil)
 	Swatch(p, "Border Color", unit, "powerBorderColor", { 0, 0, 0, 1 }, { alpha = true })
-	p:Blank()
+	if unit == "player" and ns.SpellCostPrediction then
+		-- Spell Cost Prediction (retail SharedBars_Options.lua): mana bars only.
+		Toggle(p, "Spell Cost Prediction", "While you cast, shows on the bar the mana the spell will cost.", unit, "powerCostPrediction", false)
+		p:Swatch("Spell Cost Color", function() return ns.SpellCostPrediction.Color(S(unit)) end,
+			function(r, g, b) S(unit).powerCostColor = { r = r, g = g, b = b } end,
+			{ disabled = function() return S(unit).powerCostPrediction ~= true end })
+	else
+		p:Blank()
+	end
 end
 
 -- Cast bar rows. kick = target / focus / boss colors and options.
@@ -859,6 +884,9 @@ local function CastRows(p, unit)
 		CT("Make Icon Part of the Bar", unit, inWidthKey, true, nil,
 			"The width of the cast bar includes the icon, rather than placing it to the left of the cast bar's width."),
 		CT("Show Icon on Right", unit, rightKey, false, nil, "Place the cast icon on the right side of the bar instead of the left."),
+		CT("Icon Border", unit, "castIconBorder", false, nil, "Use the cast bar's border size and color around the icon."),
+		CT("Vertical Separator", unit, "castIconSeparator", false, function() return S(unit)[inWidthKey] == false end,
+			"Draw a divider between the integrated icon and the bar, in the cast bar's border color. Requires Make Icon Part of the Bar."),
 	}
 	if unit ~= "boss" then
 		iconRows[#iconRows + 1] = CT("Show Icon on Portrait", unit, portraitKey, false, nil,
@@ -1367,6 +1395,9 @@ local function BuildPortrait(p, unit)
 	p:Section("Portrait")
 	local function modeNone() return S(unit).showPortrait == false or (S(unit).portraitStyle or "attached") == "none" end
 	local function notDetached() return modeNone() or S(unit).portraitStyle ~= "detached" end
+	local function RoundPortrait()
+		return not notDetached() and S(unit).detachedPortraitShape == "circle" and (S(unit).portraitMode or "2d") ~= "3d"
+	end
 	p:Dropdown("Portrait Mode", "None, attached to the bars, or detached next to the frame.", function() return Items(PORTRAIT_MODE) end,
 		function() return S(unit).showPortrait == false and "none" or (S(unit).portraitStyle or "attached") end,
 		function() return LabelOf(PORTRAIT_MODE, S(unit).showPortrait == false and "none" or (S(unit).portraitStyle or "attached")) end,
@@ -1451,6 +1482,15 @@ local function BuildPortrait(p, unit)
 		CT("Unit Color in Dark Mode", unit, "detachedPortraitUnitColorDark", false,
 			function() return not (S(unit).detachedPortraitClassColor ~= false and UF.db.darkTheme) end,
 			"Keeps the unit's class or reaction color on the ring in Dark Mode instead of your own class color."),
+		CD("Outer Ring", { { "none", "None" }, { "pixels", "Pixels Ring" }, { "pixels-textured", "Pixels Textured Ring" },
+			{ "pixels-shadow", "Pixels Ring Shadow" }, { "pixels-textured-shadow", "Pixels Textured Ring Shadow" }, { "thin-border", "Naowh Thin Circle" } },
+			unit, "detachedPortraitOuterRing", "none", function() return not RoundPortrait() end,
+			"Adds a second ring around a round portrait, in the frame border color. Requires the Circle shape."),
+		CS("Outer Ring Size", 100, 140, 1, unit, "detachedPortraitOuterRingScale", 118,
+			function() return not RoundPortrait() or (S(unit).detachedPortraitOuterRing or "none") == "none" end,
+			"Size of the outer ring relative to the portrait."),
+		CT("Inner Shadow", unit, "detachedPortraitInnerShadow", false, function() return not RoundPortrait() end,
+			"Adds a soft shadow inside a round portrait (Circle shape, 2D or class art)."),
 	}, { disabled = notDetached })
 	Swatch(p, "Custom Color", unit, "detachedPortraitBorderColor", { 0, 0, 0 }, {
 		active = function() return S(unit).detachedPortraitClassColor == false end,
@@ -1639,7 +1679,7 @@ local function BuildAbsorbs(p, unit)
 			s.showPlayerAbsorb = v
 			s.absorbOpacity = v == "clean" and 30 or 90
 		end, { texturePreview = true, previewPath = function(v) return UF.AbsorbTexture(v) end })
-	Sync(p, "Apply Absorb Style, color and rendering to all Frames", unit, { "showPlayerAbsorb", "absorbColor", "absorbEdgeMode", "showOvershield", "overshieldMode", "absorbGlowLine" })
+	Sync(p, "Apply Absorb Style, color and rendering to all Frames", unit, { "showPlayerAbsorb", "absorbColor", "absorbEdgeMode", "showOvershield", "overshieldMode", "absorbGlowLine", "absorbGlowLineTexture" })
 	p:Cog("Absorb Rendering", {
 		CD("Placement", ABSORB_PLACEMENT, unit, "absorbEdgeMode", "overlay"),
 		{ type = "dropdown", label = "Show Overshield", tip = "Overshield is the part of an absorb exceeding your empty health. Always backfills it over current health from the shield's edge; From Left grows it from the opposite end of the bar; Never hides it.",
@@ -1647,6 +1687,8 @@ local function BuildAbsorbs(p, unit)
 			get = function() local s = S(unit) return s.overshieldMode or (s.showOvershield == false and "never" or "always") end,
 			set = function(v) S(unit).overshieldMode = v S(unit).showOvershield = v ~= "never" end },
 		CT("Blizzard Glow Line", unit, "absorbGlowLine", false, nil, "Adds a glow line where the overshield meets current health."),
+		CD("Glow Line Texture", { { "blizzard", "Blizzard" }, { "pixelsGlow", "Pixels Glow Line" }, { "pixelsOvershield", "Pixels Overshield Line" } },
+			unit, "absorbGlowLineTexture", "blizzard", function() return not S(unit).absorbGlowLine end, "Art used for the glow line and the overshield edge."),
 		{ type = "toggle", label = "Show on Boss Frames", tip = "Render absorbs on Boss Frames using the Target frame's absorb styling.",
 			get = function() return UF.db.boss.showAbsorbs ~= false end, set = function(v) UF.db.boss.showAbsorbs = v end },
 	})
@@ -1757,16 +1799,19 @@ local function BuildExtras(p, unit)
 		}, { disabled = leaderOff })
 	end
 	if unit == "target" then
-		Toggle(p, "Elite/Rare Indicator", "Marks elite, rare elite and rare targets.", unit, "eliteIndicatorEnabled", false)
+		Toggle(p, "Elite/Rare Indicator", "Marks elite, rare elite and rare targets; the Pixels Dragon style also marks players.", unit, "eliteIndicatorEnabled", false)
 		local function eliteOff() return not S(unit).eliteIndicatorEnabled end
+		local function eliteDragon() return eliteOff() or S(unit).eliteIndicatorStyle == "pixelsDragon" end
 		p:Cog("Elite/Rare Indicator", {
 			CT("Show in Instances", unit, "eliteIndicatorShowInInstances", false, nil, "Also show the badge in dungeons and raids, where most enemies are elite."),
 		}, { disabled = eliteOff })
-		Slider(p, "Elite Icon Size", "Size of the badge.", 8, 48, 1, unit, "eliteIndicatorSize", 16, eliteOff)
+		Slider(p, "Elite Icon Size", "Size of the badge.", 8, 48, 1, unit, "eliteIndicatorSize", 16, eliteDragon)
 		p:Cog("Elite/Rare Indicator Settings", {
-			CD("Position", INDICATOR_POS, unit, "eliteIndicatorPosition", "topleft"),
-			CS("X Offset", -200, 200, 1, unit, "eliteIndicatorX", 0),
-			CS("Y Offset", -200, 200, 1, unit, "eliteIndicatorY", 0),
+			CD("Style", { { "badge", "Badge" }, { "pixelsDragon", "Pixels Dragon" } }, unit, "eliteIndicatorStyle", "badge", nil,
+				"Badge shows a small icon; Pixels Dragon wraps the portrait in classification art (needs a shown portrait)."),
+			CD("Position", INDICATOR_POS, unit, "eliteIndicatorPosition", "topleft", eliteDragon, "This option only applies to the Badge style."),
+			CS("X Offset", -200, 200, 1, unit, "eliteIndicatorX", 0, eliteDragon),
+			CS("Y Offset", -200, 200, 1, unit, "eliteIndicatorY", 0, eliteDragon),
 		}, { disabled = eliteOff })
 	end
 	if unit == "player" or unit == "target" then
@@ -1961,6 +2006,11 @@ local function BuildBoss(p)
 		CS("Spacing", -1, 10, 1, unit, "simpleBuffSpacing", 1),
 		CT("Show Duration", unit, "simpleBuffShowCooldownText", false),
 		CS("Duration Size", 6, 100, 1, unit, "simpleBuffCooldownTextSize", 14),
+		CS("Duration X", -100, 100, 1, unit, "simpleBuffCooldownTextOffsetX", 0),
+		CS("Duration Y", -100, 100, 1, unit, "simpleBuffCooldownTextOffsetY", 0),
+		CS("Stack X", -100, 100, 1, unit, "buffStackTextOffsetX", 0),
+		CS("Stack Y", -100, 100, 1, unit, "buffStackTextOffsetY", 0),
+		CS("Zoom", 0, 0.2, 0.01, unit, "buffIconZoom", 0.07),
 	}, { icon = "directions", disabled = function() return simpleBuff() == "none" end })
 	p:Dropdown("Simple Debuff Display", "Force boss debuffs into a single large row matched to the frame height.",
 		function() return Items(SIMPLE_DISPLAY) end, simpleDebuff, function() return LabelOf(SIMPLE_DISPLAY, simpleDebuff()) end,
@@ -1981,6 +2031,11 @@ local function BuildBoss(p)
 		CS("Spacing", -1, 10, 1, unit, "simpleDebuffSpacing", 1),
 		CT("Show Duration", unit, "simpleDebuffShowCooldownText", false),
 		CS("Duration Size", 6, 100, 1, unit, "simpleDebuffCooldownTextSize", 14),
+		CS("Duration X", -100, 100, 1, unit, "simpleDebuffCooldownTextOffsetX", 0),
+		CS("Duration Y", -100, 100, 1, unit, "simpleDebuffCooldownTextOffsetY", 0),
+		CS("Stack X", -100, 100, 1, unit, "debuffStackTextOffsetX", 0),
+		CS("Stack Y", -100, 100, 1, unit, "debuffStackTextOffsetY", 0),
+		CS("Zoom", 0, 0.2, 0.01, unit, "debuffIconZoom", 0.07),
 	}, { icon = "directions", disabled = function() return simpleDebuff() == "none" end })
 
 	local function buffOff() return simpleBuff() ~= "none" or S(unit).showBuffs == false end
@@ -2008,6 +2063,9 @@ local function BuildBoss(p)
 		CS("Spacing", -1, 10, 1, unit, "buffSpacing", 1),
 		CT("Show Duration", unit, "buffShowCooldownText", false),
 		CS("Duration Size", 6, 100, 1, unit, "buffCooldownTextSize", 10),
+		CS("Stack X", -100, 100, 1, unit, "buffStackTextOffsetX", 0),
+		CS("Stack Y", -100, 100, 1, unit, "buffStackTextOffsetY", 0),
+		CS("Zoom", 0, 0.2, 0.01, unit, "buffIconZoom", 0.07),
 	}, { disabled = buffOff })
 	p:Dropdown("Debuffs Location", "Where the debuffs are (when Simple Debuff Display is None).", function() return Items(AURA_ANCHOR) end,
 		function() return S(unit).debuffAnchor or "bottomleft" end,
@@ -2025,6 +2083,9 @@ local function BuildBoss(p)
 		CS("Spacing", -1, 10, 1, unit, "debuffSpacing", 1),
 		CT("Show Duration", unit, "debuffShowCooldownText", false),
 		CS("Duration Size", 6, 100, 1, unit, "debuffCooldownTextSize", 10),
+		CS("Stack X", -100, 100, 1, unit, "debuffStackTextOffsetX", 0),
+		CS("Stack Y", -100, 100, 1, unit, "debuffStackTextOffsetY", 0),
+		CS("Zoom", 0, 0.2, 0.01, unit, "debuffIconZoom", 0.07),
 	}, { disabled = debuffOff })
 	p:Slider("Stack Size", "Size of the stack number on buffs and debuffs.", 6, 100, 1,
 		function() return S(unit).debuffStackTextSize or 14 end,
