@@ -1809,13 +1809,72 @@ local function SeatMapHost()
 	end
 end
 
-local function ShadePanel(sf)
+-- Retail quest log panel: list and details sit on the shell with no plate,
+-- the rewards box gets a solid #050505 base (retail's card art is an atlas).
+local function ShadePanel(sf, solid)
 	if not sf then return end
 	local d = GetFFD(sf)
-	if d.bg then return end
+	if d.bg ~= nil then return end
 	WSkin.FadeRegions(sf)
-	d.bg = SolidTex(sf, "BACKGROUND", 0, 0, 0, 0.3, -6)
-	d.bg:SetAllPoints(sf)
+	WSkin.Register(sf, true)
+	d.bg = false
+	if solid then
+		d.bg = SolidTex(sf, "BACKGROUND", 0.0196, 0.0196, 0.0196, 1, -7)
+		d.bg:SetAllPoints(sf)
+	end
+end
+
+-- Retail max/min buttons: Blizzard art gone, a desaturated white glyph
+-- (75% alpha, full on hover). 5.4.8 has no quest tracker atlas: -/+ drawn.
+local function SizeButton(btn, plus)
+	if not btn or Forbidden(btn) then return end
+	local d = GetFFD(btn)
+	if d.glyph then return end
+	if btn.SetNormalTexture then btn:SetNormalTexture("") end
+	if btn.SetPushedTexture then btn:SetPushedTexture("") end
+	if btn.SetHighlightTexture then btn:SetHighlightTexture("") end
+	WSkin.FadeRegions(btn)
+	local h = SolidTex(btn, "OVERLAY", 1, 1, 1, 1)
+	h:SetSize(10, 2)
+	h:SetPoint("CENTER", btn, "CENTER", -2, 0)
+	local parts = { h }
+	if plus then
+		local v = SolidTex(btn, "OVERLAY", 1, 1, 1, 1)
+		v:SetSize(2, 10)
+		v:SetPoint("CENTER", btn, "CENTER", -2, 0)
+		parts[2] = v
+	end
+	d.glyph = parts
+	local function Tint(a)
+		for i = 1, #parts do parts[i]:SetVertexColor(1, 1, 1, a) end
+	end
+	Tint(0.75)
+	btn:HookScript("OnEnter", function() Tint(1) end)
+	btn:HookScript("OnLeave", function() Tint(0.75) end)
+end
+
+-- Retail nav bar: one 20% black band behind the breadcrumbs. The 5.4.8 map
+-- has the continent / zone dropdown row there instead (big map only).
+local function SeatNavBand()
+	local host = _mapHost
+	local zone = _G.WorldMapZoneDropDown
+	if not (host and zone) then return end
+	local d = GetFFD(host)
+	if not d.navBand then
+		d.navBand = SolidTex(host, "BORDER", 0, 0, 0, 0.2, -6)
+	end
+	local band = d.navBand
+	local s = _G.WORLDMAP_SETTINGS and _G.WORLDMAP_SETTINGS.size
+	if (s ~= nil and s == _G.WORLDMAP_WINDOWED_SIZE) or not zone:IsShown() then
+		band:Hide()
+		return
+	end
+	band:ClearAllPoints()
+	band:SetPoint("LEFT", host, "LEFT", 1, 0)
+	band:SetPoint("RIGHT", host, "RIGHT", -1, 0)
+	band:SetPoint("TOP", zone, "TOP", 0, 2)
+	band:SetPoint("BOTTOM", zone, "BOTTOM", 0, 4)
+	band:Show()
 end
 
 local function Skin_WorldMap()
@@ -1829,8 +1888,14 @@ local function Skin_WorldMap()
 		WSkin.Shell("worldmap", _mapHost)
 	end
 	SeatMapHost()
-	if _G.WorldMapFrameTitle then WSkin.White(_G.WorldMapFrameTitle) end
+	SeatNavBand()
+	if _G.WorldMapFrameTitle then
+		WSkin.Font(_G.WorldMapFrameTitle)
+		WSkin.White(_G.WorldMapFrameTitle)
+	end
 	if _G.WorldMapFrameCloseButton then WSkin.CloseButton(_G.WorldMapFrameCloseButton) end
+	SizeButton(_G.WorldMapFrameSizeDownButton, false)
+	SizeButton(_G.WorldMapFrameSizeUpButton, true)
 	for _, n in ipairs({ "WorldMapLevelDropDown", "WorldMapZoneMinimapDropDown", "WorldMapContinentDropDown",
 		"WorldMapZoneDropDown", "WorldMapShowDropDown" }) do
 		if _G[n] then WSkin.Dropdown(_G[n]) end
@@ -1850,7 +1915,7 @@ local function Skin_WorldMap()
 		end
 	end
 	for _, n in ipairs({ "WorldMapQuestScrollFrame", "WorldMapQuestDetailScrollFrame", "WorldMapQuestRewardScrollFrame" }) do
-		ShadePanel(_G[n])
+		ShadePanel(_G[n], n == "WorldMapQuestRewardScrollFrame")
 		local sb = _G[n .. "ScrollBar"]
 		if sb then WSkin.ScrollBar(sb) end
 	end
@@ -1867,9 +1932,11 @@ local function Skin_WorldMap()
 		for _, fn in ipairs({ "WorldMapFrame_SetQuestMapView", "WorldMapFrame_SetFullMapView", "WorldMap_ToggleSizeDown",
 			"WorldMap_ToggleSizeUp", "WorldMapFrame_ToggleWindowSize" }) do
 			HookFn(fn, SeatMapHost)
+			HookFn(fn, SeatNavBand)
 		end
 		WSkin.HookShow(f, function()
 			SeatMapHost()
+			SeatNavBand()
 			WSkin.FadeRegions(f)
 		end)
 	end
@@ -1892,6 +1959,9 @@ local QUEST_TEXT = { "QuestInfoTitleHeader", "QuestInfoDescriptionHeader", "Ques
 	"QuestInfoXPFrameReceiveText", "QuestInfoHonorFrameReceiveText", "QuestInfoTalentFrameReceiveText",
 	"QuestInfoReputationText", "QuestInfoSpellObjectiveLearnLabel", "QuestInfoRequiredMoneyText", "QuestInfoTimerText" }
 local _origColor = setmetatable({}, { __mode = "k" })
+-- Retail map quest panel: section headers quest yellow, body white.
+local QUEST_HEADERS = { QuestInfoTitleHeader = true, QuestInfoDescriptionHeader = true,
+	QuestInfoObjectivesHeader = true, QuestInfoRewardsHeader = true }
 
 local function QuestPackActive()
 	for _, e in ipairs(WSkin.windows) do
@@ -1926,7 +1996,9 @@ local function ColorQuestInfo()
 		if inLog then
 			local r, g, b = fs:GetTextColor()
 			-- Finished objectives come in grey: keep them a lighter grey.
-			if fs:GetName() and fs:GetName():find("QuestInfoObjective%d") and type(r) == "number" and r > 0.15 and r < 0.4 and math.abs(r - g) < 0.05 then
+			if fs:GetName() and QUEST_HEADERS[fs:GetName()] then
+				fs:SetTextColor(1, 0.82, 0)
+			elseif fs:GetName() and fs:GetName():find("QuestInfoObjective%d") and type(r) == "number" and r > 0.15 and r < 0.4 and math.abs(r - g) < 0.05 then
 				fs:SetTextColor(0.6, 0.6, 0.6)
 			else
 				fs:SetTextColor(1, 1, 1)
@@ -1935,6 +2007,28 @@ local function ColorQuestInfo()
 		else
 			local c = _origColor[fs]
 			if c then fs:SetTextColor(c[1], c[2], c[3]) end
+		end
+	end
+end
+
+-- Retail quest log section headers: white 5% plate behind the row, white text.
+-- Rows are recycled (HybridScrollFrame), so every update re-asserts.
+local function SkinQuestLogHeaders()
+	local sf = _G.QuestLogScrollFrame
+	local buttons = sf and sf.buttons
+	if not buttons then return end
+	for i = 1, #buttons do
+		local btn = buttons[i]
+		local d = GetFFD(btn)
+		if not d.plate then
+			d.plate = SolidTex(btn, "BACKGROUND", 1, 1, 1, 0.05, -2)
+			d.plate:SetAllPoints(btn)
+		end
+		local isHeader = btn.isHeader and btn:IsShown()
+		d.plate:SetShown(isHeader and true or false)
+		if isHeader then
+			local fs = btn.normalText or (btn.GetFontString and btn:GetFontString())
+			if fs and fs.SetTextColor then WSkin.White(fs) end
 		end
 	end
 end
@@ -1966,10 +2060,12 @@ local function Skin_QuestLog()
 		if _G.QuestLogDetailFrameInset then WSkin.Inset(_G.QuestLogDetailFrameInset) end
 	end
 	ColorQuestInfo()
+	SkinQuestLogHeaders()
 	local fd = GetFFD(f)
 	if not fd.qlHooked then
 		fd.qlHooked = true
 		HookFn("QuestInfo_Display", ColorQuestInfo)
+		HookFn("QuestLog_Update", WSkin.WindowCallback("worldmap", SkinQuestLogHeaders))
 		WSkin.OnLooksChanged(ColorQuestInfo)
 		WSkin.HookShow(f, WSkin.Debounce(function()
 			if f:IsVisible() then WSkin.Restrip("worldmap"); ColorQuestInfo() end
