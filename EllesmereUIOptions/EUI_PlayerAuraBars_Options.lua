@@ -1155,9 +1155,38 @@ local function HeaderBars(page, host, width)
 	local addDebuff = FlatButton(host, 150, 28, "+ Add Debuff Bar", function() PromptAdd(false) end, "Create a custom debuff bar in the selected spec view.")
 	addBuff:SetPoint("TOPRIGHT", host, "TOP", -6, -y)
 	addDebuff:SetPoint("TOPLEFT", host, "TOP", 6, -y)
+	-- Add To (retail right-click on a bar tile): copy the selected custom bar
+	-- into another editing-spec bucket (full clone, new id; the source stays).
+	local addTo = page:HeaderDropdown(host, 150, 28,
+		function()
+			local items = {}
+			for _, it in ipairs(SpecItems()) do
+				if it.value ~= specSel then
+					items[#items + 1] = it
+				end
+			end
+			return items
+		end,
+		function() return nil end,
+		function() return "Add To..." end,
+		function(v)
+			local cur = Selected()
+			if not cur or cur.id == "default" then return end
+			local nb = ns.PAB_CopyCustomBar(cur.kind == "buff", cur.cfg, v)
+			if nb then
+				specSel = v
+				sel = { kind = cur.kind, id = nb.id }
+				ns.PAB_ApplyLiveConfig()
+				Rebuild()
+			end
+		end)
+	addTo:SetPoint("LEFT", addDebuff, "RIGHT", 12, 0)
+	addTo:SetAlpha(custom and 1 or 0.3)
+	addTo:EnableMouse(custom and true or false)
 	if not ns.PAB_Enabled() then
 		addBuff:Hide()
 		addDebuff:Hide()
+		addTo:Hide()
 	end
 	y = y + 28 + 14
 	return y
