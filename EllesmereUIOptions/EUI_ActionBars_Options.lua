@@ -757,6 +757,35 @@ local function BuildBarDisplay(p)
 			SB().iconOrder = v
 		end)
 
+	-- End Caps (retail BarVisibilityLayout_Options.lua EndCapsCtl): gryphons
+	-- at the ends of a horizontal bar.
+	local function CapsVertical() return not EAB:GetOrientationForBar(sel.bar) end
+	p:MultiSelect("End Caps", "Gryphon art at the left and right end of the bar. Horizontal bars only.",
+		function() return { { value = "L", name = "Left Endcap" }, { value = "R", name = "Right Endcap" } } end,
+		function(v) return SB()[v == "L" and "endCapLeft" or "endCapRight"] == true end,
+		function(v)
+			local k = v == "L" and "endCapLeft" or "endCapRight"
+			SB()[k] = not (SB()[k] == true)
+		end,
+		function()
+			local l, r = SB().endCapLeft == true, SB().endCapRight == true
+			if l and r then return "Left, Right" end
+			return (l and "Left") or (r and "Right") or "None"
+		end, CapsVertical)
+	p:Cog("End Cap Settings", {
+		{ type = "dropdown", label = "Art", tip = "Gryphon end caps of the 5.4.8 main bar.",
+		  items = function() return Items({ { "blizzard", "Gryphon" }, { "classic", "Classic Gryphon" } }) end,
+		  get = Get("endCapArt", "blizzard"), set = Set("endCapArt") },
+		{ type = "slider", label = "Size", min = 50, max = 200, step = 5, tip = "Percent of the end caps' normal size.",
+		  get = Get("endCapScale", 100), set = Set("endCapScale") },
+		{ type = "slider", label = "X Offset", min = -100, max = 100, step = 1, tip = "Positive values move both end caps away from the bar.",
+		  get = Get("endCapOffsetX", 0), set = Set("endCapOffsetX") },
+		{ type = "slider", label = "Y Offset", min = -100, max = 100, step = 1,
+		  get = Get("endCapOffsetY", 5), set = Set("endCapOffsetY") },
+	}, { disabled = function() return CapsVertical() or not (SB().endCapLeft or SB().endCapRight) end })
+	Sync(p, "Apply End Caps to all Bars", { "endCapLeft", "endCapRight", "endCapArt", "endCapScale", "endCapOffsetX", "endCapOffsetY" })
+	p:Blank()
+
 	---------------------------------------------------------------------
 	-- ICONS
 	---------------------------------------------------------------------
@@ -998,6 +1027,8 @@ local function BuildBarDisplay(p)
 			p:Cog("Paging Arrow Settings", {
 				{ type = "toggle", label = "Show Arrows on Right", get = Get("pagingArrowsRight", false), set = Set("pagingArrowsRight") },
 			}, { disabled = function() return not SB().showPagingArrows end, disabledTip = "Paging Arrows" })
+			p:Toggle("Skip Visible Bars When Paging", "Next and previous page, from the paging arrows, skip the pages your other enabled bars use.",
+				Get("skipVisiblePagingBars", false), Set("skipVisiblePagingBars"))
 		end
 		p:Toggle("Modifier/Target Paging", "Page this bar while Shift, Ctrl or Alt is held or while you target a friend or an enemy.",
 			ModTargetOn,

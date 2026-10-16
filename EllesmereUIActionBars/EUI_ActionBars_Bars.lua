@@ -840,9 +840,59 @@ function P.LayoutBar(key)
 	frame:EnableMouse(clickable and s.mouseoverEnabled and true or false)
 
 	P.ApplyBackground(key)
+	P.LayoutEndCaps(key, frame, frameW, frameH, numIcons > 0 and (layout[1].w) or 36, isVertical,
+		(s.overrideNumRows or s.numRows or 1) > 1)
 	if key == "MainBar" and P.LayoutPagingArrows then
 		P.LayoutPagingArrows()
 	end
+end
+
+-- End Caps (retail EUI_ActionBars_Chrome.lua ns.AB_PaintCaps): gryphons at
+-- the ends of a horizontal bar. Per bar: endCapLeft / endCapRight (sides),
+-- endCapArt ("blizzard" = Human gryphon, "classic" = Dwarf gryphon; 5.4.8
+-- art files), endCapScale (%), endCapOffsetX (away from the bar), endCapOffsetY.
+-- Geometry from retail's classic look: 128x128 art per 36px button.
+P.END_CAP_ART = {
+	blizzard = "Interface\\MainMenuBar\\UI-MainMenuBar-EndCap-Human",
+	classic = "Interface\\MainMenuBar\\UI-MainMenuBar-EndCap-Dwarf",
+}
+function P.LayoutEndCaps(key, frame, w, h, btnW, vertical, multi)
+	local s = P.BarSettings(key)
+	local host = frame.eabCaps
+	local l, r = s.endCapLeft == true, s.endCapRight == true
+	if vertical or not (l or r) then
+		if host then host:Hide() end
+		return
+	end
+	if not host then
+		host = CreateFrame("Frame", nil, frame)
+		host.left = host:CreateTexture(nil, "OVERLAY", nil, 5)
+		host.right = host:CreateTexture(nil, "OVERLAY", nil, 5)
+		frame.eabCaps = host
+	end
+	local art = P.END_CAP_ART[s.endCapArt or "blizzard"] or P.END_CAP_ART.blizzard
+	host.left:SetTexture(art)
+	host.left:SetTexCoord(0, 1, 0, 1)
+	host.right:SetTexture(art)
+	host.right:SetTexCoord(1, 0, 0, 1)
+	local kc = min(btnW / 36, 1) * (s.endCapScale or 100) / 100
+	if kc <= 0 then kc = 1 end
+	local dx, dy = (s.endCapOffsetX or 0) / kc, (s.endCapOffsetY or 5) / kc
+	local nx = multi and 0 or 28
+	host.left:SetSize(128, 128)
+	host.right:SetSize(128, 128)
+	host.left:ClearAllPoints()
+	host.right:ClearAllPoints()
+	host.left:SetPoint("BOTTOMRIGHT", host, "BOTTOMLEFT", nx - dx, -3 + dy)
+	host.right:SetPoint("BOTTOMLEFT", host, "BOTTOMRIGHT", -(nx + 1) + dx, -3 + dy)
+	host.left:SetShown(l)
+	host.right:SetShown(r)
+	host:SetFrameLevel(frame:GetFrameLevel() + 17)
+	host:SetScale(kc)
+	host:ClearAllPoints()
+	host:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+	host:SetSize(w / kc, h / kc)
+	host:Show()
 end
 
 -- Bar Background (retail ApplyBackgroundForBar).
@@ -919,10 +969,36 @@ end
 --  macros, the page number between them)
 -------------------------------------------------------------------------------
 local pagingFrame
+-- Skip Visible Bars When Paging (retail ns.GetPagingSkipMask): the pages of
+-- the other enabled bars are skipped by the arrows.
+local function PagingSkipMask()
+	local skip = {}
+	local main = P.BarSettings("MainBar")
+	if not (main and main.skipVisiblePagingBars) then
+		return skip
+	end
+	for barKey, page in pairs(EAB.BAR_KEY_TO_PAGE) do
+		if barKey ~= "MainBar" and page >= 1 and page <= EAB.NUM_PAGES then
+			local s = P.BarSettings(barKey)
+			if s and s.enabled ~= false and not s.alwaysHidden then
+				skip[page] = true
+			end
+		end
+	end
+	return skip
+end
+
 local function PageMacro(delta)
+	local skip = PagingSkipMask()
 	local parts = {}
 	for i = 1, EAB.NUM_PAGES do
-		local target = ((i - 1 + delta) % EAB.NUM_PAGES) + 1
+		local target = i
+		for _ = 1, EAB.NUM_PAGES do
+			target = ((target - 1 + delta) % EAB.NUM_PAGES) + 1
+			if not skip[target] then
+				break
+			end
+		end
 		parts[#parts + 1] = "[bar:" .. i .. "] " .. target
 	end
 	return "/changeactionbar " .. table.concat(parts, "; ")
@@ -970,6 +1046,9 @@ function P.LayoutPagingArrows()
 		return
 	end
 	SetupPagingFrame()
+	-- Rewritten out of combat only (secure attributes).
+	pagingFrame.up:SetAttribute("macrotext", PageMacro(1))
+	pagingFrame.down:SetAttribute("macrotext", PageMacro(-1))
 	local frame = barFrames.MainBar
 	local _, h = EAB:ButtonSize("MainBar")
 	pagingFrame:SetHeight(max(h, 36))
