@@ -1,2043 +1,840 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+-- Settings pages of Mythic+ Tools (retail EUI_MythicTimer_Options.lua):
+-- Mythic+ Timer, Targeted Spell Bars, Target/Focus Bars, Run Summary.
+-- Part of EllesmereUIOptions (load on demand); skipped when
+-- EllesmereUIMythicTimer is not loaded. Setters only store: the runtime's
+-- ns.applyHooks entry applies every change.
+-- 5.4.8: the timer runs on Challenge Modes (Gold / Silver / Bronze are the
+-- retail +3 / +2 / +1 thresholds); affixes, key level, M+ score, loot,
+-- current pull, border textures and important-cast flags do not exist.
+
+local ns = EllesmereUI
+if not IsAddOnLoaded("EllesmereUIMythicTimer") then
+	return
+end
+
+local floor = math.floor
+local U = ns.OptionsUtil
+local EMT = ns.MythicTimer
+local P = EMT and EMT.P
+if not P then
+	return
+end
+
+local EYE_ON = "Interface\\AddOns\\EllesmereUIMythicTimer\\media\\eui-visible"
+local EYE_OFF = "Interface\\AddOns\\EllesmereUIMythicTimer\\media\\eui-invisible"
+
+local function T()
+	return EMT.DB()
+end
+local function Cfg(key)
+	local t = T()
+	return t and t[key]
+end
+local function Set(key, value)
+	local t = T()
+	if t then t[key] = value end
+end
+local function Off()
+	return Cfg("enabled") == false
+end
+
+local function Col(key, dr, dg, db)
+	local c = Cfg(key)
+	if c then return c.r or dr, c.g or dg, c.b or db, 1 end
+	return dr, dg, db, 1
+end
+local function SetCol(key, r, g, b)
+	Set(key, { r = r, g = g, b = b })
+end
+
+local function Items(list)
+	local items = {}
+	for i = 1, #list, 2 do
+		items[#items + 1] = { value = list[i], name = list[i + 1] }
+	end
+	return items
+end
+local function LabelOf(list, value)
+	for i = 1, #list, 2 do
+		if list[i] == value then return list[i + 1] end
+	end
+	return tostring(value or "")
+end
+-- Dropdown on a flat { value, name, value, name, ... } list.
+local function ListDropdown(p, label, desc, list, get, set, isDisabled, labelFn)
+	p:Dropdown(label, desc, function() return Items(list) end, get,
+		labelFn or function() return LabelOf(list, get()) end, set, nil, isDisabled)
+end
+
+local TEX_OPTS = { texturePreview = true, previewPath = function(v) return P.TexturePath(v) or P.WHITE end }
+local function TexItems() return P.TextureItems() end
+local function TexDropdown(p, label, desc, get, set, isDisabled)
+	p:Dropdown(label, desc, TexItems, get, function() return P.TextureLabel(get()) end, set, TEX_OPTS, isDisabled)
+end
+local function TexCogRow(label, get, set)
+	return { type = "dropdown", label = label, items = TexItems, get = get, set = set,
+		labelFn = function() return P.TextureLabel(get()) end, options = TEX_OPTS }
+end
+
+-- Accent / custom swatch pair (retail _AttachInlineAccentSwatches).
+local function AccentSwatches(p, useKey, colorKey, dr, dg, db, isDisabled, followTip, followColor)
+	p:Swatch("Custom Color", function() return Col(colorKey, dr, dg, db) end,
+		function(r, g, b) SetCol(colorKey, r, g, b) end,
+		{
+			active = function() return Cfg(useKey) == false end,
+			onClick = function()
+				if Cfg(useKey) ~= false then
+					Set(useKey, false)
+					return true
+				end
+				return false
+			end,
+			disabled = isDisabled,
+		})
+	p:Swatch(followTip or "Accent Color", function()
+			if followColor then return followColor() end
+			return P.GetAccentColor()
+		end, function() end,
+		{
+			active = function() return Cfg(useKey) ~= false end,
+			onClick = function()
+				Set(useKey, true)
+				return true
+			end,
+			readonly = true,
+			disabled = isDisabled,
+		})
+end
+
 -------------------------------------------------------------------------------
---  EUI_MythicTimer_Options.lua  —  Settings pages for Mythic+ Tools
---  (Mythic+ Timer / Targeted Spell Bars / Target & Focus Bars)
+--  Page: Mythic+ Timer
 -------------------------------------------------------------------------------
-local ADDON_NAME = "EllesmereUIMythicTimer"
-local ns = EllesmereUI._ModuleNS[ADDON_NAME]  -- module namespace (published by the module at its load)
-if not ns then return end  -- module disabled: no options page
-
-local PAGE_DISPLAY = "Mythic+ Timer"
-local PAGE_TSB = "Targeted Spell Bars"
-local PAGE_TFB = "Target/Focus Bars"
-local PAGE_RS = "Run Summary"
-
-local initFrame = CreateFrame("Frame")
-initFrame:RegisterEvent("PLAYER_LOGIN")
-initFrame:SetScript("OnEvent", function(self)
-    self:UnregisterEvent("PLAYER_LOGIN")
-
-    if not EllesmereUI or not EllesmereUI.RegisterModule then return end
-
-    local db
-    C_Timer.After(0, function() db = _G._EMT_AceDB end)
-
-    local function DB()
-        if not db then db = _G._EMT_AceDB end
-        return db and db.profile
-    end
-
-    local function Cfg(key)
-        local p = DB()
-        return p and p[key]
-    end
-
-    local function Set(key, val)
-        local p = DB()
-        if p then p[key] = val end
-    end
-
-    -- Advanced-mode toggle removed: every option is always shown so the
-    -- page can be trimmed deliberately. Guard kept as a stub so existing
-    -- "if IsAdvanced() then ... end" blocks render unconditionally.
-    local function IsAdvanced() return true end
-
-    local function Refresh()
-        if _G._EMT_Apply then _G._EMT_Apply() end
-        EllesmereUI:RefreshPage()
-    end
-
-    local function RebuildPage()
-        if _G._EMT_Apply then _G._EMT_Apply() end
-        EllesmereUI:RefreshPage(true)
-    end
-
-    local function BuildBarTexDropdown()
-        if ns.AppendSharedMediaBarTextures then
-            ns.AppendSharedMediaBarTextures()
-        end
-
-        local values, order = {}, {}
-        local names = ns.barTextureNames or {}
-        local textureOrder = ns.barTextureOrder or {}
-        for _, key in ipairs(textureOrder) do
-            if key ~= "---" then
-                values[key] = names[key] or key
-                order[#order + 1] = key
-            end
-        end
-
-        local textureLookup = ns.barTextures or {}
-        values._menuOpts = {
-            itemHeight = 28,
-            background = function(key)
-                return textureLookup[key]
-            end,
-        }
-        return values, order
-    end
-
-    -- Build Page Toggle preview + sync the Quest Tracker suppression so it doesn't sit
-    -- on top of the M+ Timer preview frame.
-    local function _setPreview(v)
-        Set("showPreview", v)
-        Refresh()
-        if _G._EQT_SetSuppressed then
-            _G._EQT_SetSuppressed("MTimerPreview", v == true)
-        end
-    end
-
-    -- Auto-disable Show Preview when the EUI options window closes, so the preview
-    -- frame doesn't linger after the user is done configuring. Installed once, the
-    -- first time the M+ Timer page is built (which guarantees EllesmereUIFrame exists).
-    local function _installPreviewAutoOff()
-        local mf = _G.EllesmereUIFrame
-        if not mf or mf._eMTPreviewHook then return end
-        mf._eMTPreviewHook = true
-        mf:HookScript("OnHide", function()
-            if Cfg("showPreview") == true then
-                _setPreview(false)
-                EllesmereUI:RefreshPage()  -- update toggle visual immediately
-            end
-        end)
-    end
-
-    local function BuildPage(pageName, parent, yOffset)
-        _installPreviewAutoOff()
-
-        local W = EllesmereUI.Widgets
-        local PP = EllesmereUI.PP
-        local y = yOffset
-        local row, h
-
-        if EllesmereUI.ClearContentHeader then EllesmereUI:ClearContentHeader() end
-        parent._showRowDivider = true
-
-        local function ApplyBorder() if ns.ApplyBorder then ns.ApplyBorder() end end
-
-        local alignValues = { LEFT = "Left", CENTER = "Center", RIGHT = "Right" }
-        local alignOrder  = { "LEFT", "CENTER", "RIGHT" }
-        local titleAffixPositionValues = {
-            ABOVE_TIMER = "Above Timer",
-            BELOW_TIMER = "Below Timer",
-        }
-        local titleAffixPositionOrder = { "ABOVE_TIMER", "BELOW_TIMER" }
-        local objectiveTimePositionValues = { RIGHT = "Right", LEFT = "Left" }
-        local objectiveTimePositionOrder = { "RIGHT", "LEFT" }
-        local compareModeValues = {
-          NONE = "None",
-          DUNGEON = "Per Dungeon",
-          LEVEL = "Per Dungeon + Level",
-          LEVEL_AFFIX = "Per Dungeon + Level + Affixes",
-        }
-        local compareModeOrder = { "NONE", "DUNGEON", "LEVEL", "LEVEL_AFFIX" }
-        local forcesTextValues = {
-          PERCENT = "Percent",
-          COUNT = "Count / Total",
-          COUNT_PERCENT = "Count / Total + %",
-          COUNT_REMAINING = "Count / Total + Remaining",
-          REMAINING = "Remaining Count",
-        }
-        local forcesTextOrder = { "PERCENT", "COUNT", "COUNT_PERCENT", "COUNT_REMAINING", "REMAINING" }
-
-        -- ── DISPLAY ──────────────────────────────────────────────────────
-        _, h = W:SectionHeader(parent, "DISPLAY", y); y = y - h
-
-        local alignAllValues = { LEFT = "Left", RIGHT = "Right" }
-        local alignAllOrder  = { "LEFT", "RIGHT" }
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Preview",
-              getValue=function() return Cfg("showPreview") == true end,
-              setValue=function(v) _setPreview(v) end },
-            { type="dropdown", text="Text Align",
-              disabled=function() return Cfg("enabled") == false end,
-              disabledTooltip="the module",
-              values=alignAllValues,
-              order=alignAllOrder,
-              getValue=function() return Cfg("alignAllText") or "RIGHT" end,
-              setValue=function(v)
-                  Set("alignAllText", v)
-                  if _G._EMT_RebuildStandalone then _G._EMT_RebuildStandalone() end
-                  Refresh()
-              end })
-        y = y - h
-
-        -- Scale + Background Opacity: side-by-side dual row.
-        local scaleRow
-        scaleRow, h = W:DualRow(parent, y,
-            { type="slider", text="Scale",
-              disabled=function() return Cfg("enabled") == false end,
-              disabledTooltip="the module",
-              min=0.5, max=2.0, step=0.01, isPercent=false,
-              getValue=function() return Cfg("scale") or 1.0 end,
-              setValue=function(v) Set("scale", v); Refresh() end },
-            { type="slider", text="Background Opacity",
-              disabled=function() return Cfg("enabled") == false end,
-              disabledTooltip="the module",
-              min=0, max=100, step=5, isPercent=false,
-              -- Stored 0..1 internally; displayed 0..100 to the user.
-              getValue=function() return (Cfg("standaloneAlpha") or 0) * 100 end,
-              setValue=function(v) Set("standaloneAlpha", v / 100); Refresh() end })
-        y = y - h
-
-        -- Inline RESIZE cog on Scale: Frame Width slider
-        if not EllesmereUI._prebuilding then
-            local leftRgn = scaleRow._leftRegion
-            EllesmereUI.BuildInlineCog(leftRgn, {
-                title = "Frame Width",
-                rows = {
-                    { type="slider", label="Width", min=180, max=420, step=1,
-                      get=function() return Cfg("frameWidth") or 260 end,
-                      set=function(v) Set("frameWidth", v); Refresh() end },
-                },
-                icon = EllesmereUI.RESIZE_ICON, gap = 6, chain = false,
-                disabled = function() return Cfg("enabled") == false end, disabledTooltip = "the module",
-            })
-        end
-
-        -- Bar Width and the border apply to the timer bar and the forces bar alike,
-        -- so they stay usable while either bar is shown.
-        local function _barsOff()
-            return Cfg("enabled") == false
-                or (Cfg("showTimerBar") == false and Cfg("showEnemyBar") == false)
-        end
-        local function _barsReq()
-            if Cfg("enabled") == false then return "the module" end
-            return "This option requires Show Timer Bar or Show Enemy Forces to be enabled"
-        end
-
-        row, h = W:DualRow(parent, y,
-            { type="slider", text="Bar Width",
-              disabled=_barsOff,
-              disabledTooltip=_barsReq,
-              min=120, max=420, step=1, isPercent=false,
-              getValue=function() return Cfg("barWidth") or 210 end,
-              setValue=function(v) Set("barWidth", v); Refresh() end },
-            { type="toggle", text="Custom Border Style",
-              tooltip="Show the border style and size controls for the timer bars.",
-              disabled=_barsOff,
-              disabledTooltip=_barsReq,
-              getValue=function() return Cfg("customBorderStyle") == true end,
-              setValue=function(v) Set("customBorderStyle", v); ApplyBorder(); EllesmereUI:RefreshPage(true) end })
-        y = y - h
-
-        --Border Style (+ cog) | Border Size (+ inline swatch)
-        -- Only built when "Custom Border Style" (above) is on, so the whole
-        -- row plus its offset cog and colour swatch stay hidden by default and
-        -- reclaim their space when off.
-        if Cfg("customBorderStyle") then
-        -- The border reaches the forces bar only with Apply to Forces Bar on, so
-        -- with the timer bar hidden it has nothing to draw on without it. The
-        -- Border Options cog (which holds that toggle) stays usable regardless.
-        local function _borderOff()
-            if _barsOff() then return true end
-            return Cfg("showTimerBar") == false and Cfg("borderApplyToForces") == false
-        end
-        local function _borderReq()
-            if _barsOff() then return _barsReq() end
-            return "This option requires Show Timer Bar or Apply to Forces Bar to be enabled"
-        end
-        -- Distinct local names on purpose: this border-texture list must NOT
-        -- be confused with the bar-texture "texValues"/"texOrder" used by the
-        -- timer and forces bar Texture dropdowns. Feeding border textures into
-        -- those dropdowns once let a border key get written into barTexture.
-        local borderTexValues, borderTexOrder = EllesmereUI.GetBorderTextureDropdown()
-        borderTexValues.shadow = nil
-        for i = #borderTexOrder, 1, -1 do
-            if borderTexOrder[i] == "shadow" then table.remove(borderTexOrder, i) end
-        end
-
-        local bsRow
-        bsRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Border Style",
-                disabled=_borderOff, disabledTooltip=_borderReq,
-                values=borderTexValues, order=borderTexOrder,
-                getValue=function() return Cfg("borderTexture") or "solid" end,
-                setValue=function(v)
-                    Set("borderTexture", v)
-                    Set("borderTextureOffset", nil)
-                    Set("borderTextureOffsetY", nil)
-                    Set("borderTextureShiftX", nil)
-                    Set("borderTextureShiftY", nil)
-                    local selC = EllesmereUI.GetBorderSelectColor(v)
-                    if selC then
-                        -- The style's select colour (Pixels grey).
-                        Set("borderR", selC.r); Set("borderG", selC.g); Set("borderB", selC.b); Set("borderA", 1)
-                    elseif v ~= "solid" then
-                        Set("borderR", 1); Set("borderG", 1); Set("borderB", 1); Set("borderA", 1)
-                    else
-                        Set("borderR", 0); Set("borderG", 0); Set("borderB", 0); Set("borderA", 1)
-                    end
-                    local defSz = EllesmereUI.GetBorderDefaultSize("MythicPlus", v)
-                    if defSz then Set("borderSize", defSz) end
-                    if Cfg("borderSizePx") then Set("borderSizePx", false) end
-                    ApplyBorder(); EllesmereUI:RefreshPage(true)
-                end },
-            EllesmereUI.BorderPxSliderCfg({ text="Border Size",
-                disabled=_borderOff, disabledTooltip=_borderReq,
-                getStep=function() return Cfg("borderSize") or 0 end,
-                setStep=function(step) Set("borderSize", step) end,
-                getTex=function() return Cfg("borderTexture") or "solid" end,
-                getPx=function() return Cfg("borderSizePx") end,
-                setPx=function(v) Set("borderSizePx", v) end,
-                apply=function() ApplyBorder(); EllesmereUI:RefreshPage() end }))
-            y = y - h
-            -- Width Offset | Height Offset: only while a textured style is
-            -- selected (a solid border has no outward offsets). Built during
-            -- prebuild too so the y advance is identical whenever it is present.
-            local borderTex = Cfg("borderTexture") or "solid"
-            if borderTex ~= "" and borderTex ~= "solid" then
-                local ocfgL, ocfgR = EllesmereUI.BorderOffsetRowCfgs({
-                    addonKey = "MythicPlus",
-                    getTex = function() return Cfg("borderTexture") or "solid" end,
-                    getStep = function() return Cfg("borderSize") or 0 end,
-                    getSizeKey = function() return Cfg("borderSize") or 0 end,
-                    getPx = function() return Cfg("borderSizePx") end,
-                    getX = function() return Cfg("borderTextureOffset") end,
-                    setX = function(v) Set("borderTextureOffset", v) end,
-                    getY = function() return Cfg("borderTextureOffsetY") end,
-                    setY = function(v) Set("borderTextureOffsetY", v) end,
-                    apply = function() ApplyBorder() end,
-                })
-                ocfgL.disabled, ocfgL.disabledTooltip = _borderOff, _borderReq
-                ocfgR.disabled, ocfgR.disabledTooltip = _borderOff, _borderReq
-                row, h = W:DualRow(parent, y, ocfgL, ocfgR)
-                y = y - h
-            end
-            -- Inline cog for border options (left region)
-            if not EllesmereUI._prebuilding then
-                local rgn = bsRow._leftRegion
-                EllesmereUI.BuildInlineCog(rgn, {
-                    title = "Border Options",
-                    -- Greys with the bars; stays usable when only Apply to Forces Bar is off.
-                    disabled = _barsOff, disabledTooltip = _barsReq,
-                    rows = {
-                        { type = "toggle", label = "Apply to Forces Bar",
-                            get = function() return Cfg("borderApplyToForces") ~= false end,
-                            set = function(v) Set("borderApplyToForces", v); ApplyBorder(); EllesmereUI:RefreshPage() end },
-                        { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
-                            get = function()
-                                local v = Cfg("borderTextureShiftX")
-                                if v then return v end
-                                local tex = Cfg("borderTexture") or "solid"
-                                local sz = Cfg("borderSize") or 1
-                                local _, _, dsx = EllesmereUI.GetBorderDefaults("MythicPlus", tex, sz)
-                                return dsx
-                            end,
-                            set = function(v) Set("borderTextureShiftX", v == 0 and nil or v); ApplyBorder() end },
-                        { type = "slider", label = "Shift Y", min = -10, max = 10, step = 1,
-                            get = function()
-                                local v = Cfg("borderTextureShiftY")
-                                if v then return v end
-                                local tex = Cfg("borderTexture") or "solid"
-                                local sz = Cfg("borderSize") or 1
-                                local _, _, _, dsy = EllesmereUI.GetBorderDefaults("MythicPlus", tex, sz)
-                                return dsy
-                            end,
-                            set = function(v) Set("borderTextureShiftY", v == 0 and nil or v); ApplyBorder() end },
-                        },
-                    icon = EllesmereUI.DIRECTIONS_ICON, anchorTo = rgn._control,
-                })
-                end
-                -- Inline color swatch on Border Size (right region)
-                if not EllesmereUI._prebuilding then
-                    local rgn = bsRow._rightRegion
-                    local ctrl = rgn._control
-                    local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
-                        rgn, rgn:GetFrameLevel() + 3,
-                        function()
-                            return Cfg("borderR") or 0, Cfg("borderG") or 0, Cfg("borderB") or 0, Cfg("borderA") or 1
-                        end,
-                        function(r, g, b, a)
-                            Set("borderR", r); Set("borderG", g); Set("borderB", b); Set("borderA", a)
-                            ApplyBorder()
-                        end,
-                        true, 20)
-                    PP.Point(swatch, "RIGHT", ctrl, "LEFT", -8, 0)
-                    -- Disabled block: swallows clicks and shows the requirement tooltip.
-                    local block = CreateFrame("Frame", nil, swatch)
-                    block:SetAllPoints()
-                    block:SetFrameLevel(swatch:GetFrameLevel() + 10)
-                    block:EnableMouse(true)
-                    block:SetScript("OnEnter", function()
-                        EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip(_borderReq()))
-                    end)
-                    block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                    local function UpdateSwatch()
-                        updateSwatch()
-                        local off = _borderOff()
-                        swatch:SetAlpha(off and 0.3 or 1)
-                        block:SetShown(off)
-                    end
-                    EllesmereUI.RegisterWidgetRefresh(UpdateSwatch)
-                    UpdateSwatch()
-                end
-        end
-
-        -- Inline color swatch attached to a DualRow region (left of the control,
-        -- chaining off rgn._lastInline so it coexists with an inline cog). Blocked
-        -- + dimmed via overlay when isDisabled() is true, mirroring the cog pattern.
-        local function _AttachInlineSwatch(rgn, colorKey, defR, defG, defB, afterSet, isDisabled, disabledTip)
-            local PP = EllesmereUI.PP
-            local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
-                rgn, rgn:GetFrameLevel() + 5,
-                function()
-                    local c = Cfg(colorKey)
-                    if c then return c.r or defR, c.g or defG, c.b or defB, 1 end
-                    return defR, defG, defB, 1
-                end,
-                function(r, g, b)
-                    Set(colorKey, { r = r, g = g, b = b })
-                    if afterSet then afterSet(r, g, b) end
-                    Refresh()
-                end,
-                false, 18)
-            PP.Point(swatch, "RIGHT", rgn._lastInline or rgn._control or rgn, "LEFT", -8, 0)
-            rgn._lastInline = swatch
-            local block = CreateFrame("Frame", nil, swatch)
-            block:SetAllPoints()
-            block:SetFrameLevel(swatch:GetFrameLevel() + 10)
-            block:EnableMouse(true)
-            block:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip(disabledTip or "the module"))
-            end)
-            block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            local function UpdateState()
-                if updateSwatch then updateSwatch() end
-                if isDisabled and isDisabled() then
-                    swatch:SetAlpha(0.3); block:Show()
-                else
-                    swatch:SetAlpha(1); block:Hide()
-                end
-            end
-            EllesmereUI.RegisterWidgetRefresh(UpdateState)
-            UpdateState()
-            return swatch
-        end
-
-        -- Attach the accent + custom colour pair as two INLINE swatches on a
-        -- DualRow region, chaining off rgn._lastInline. Click the accent swatch
-        -- to follow the theme accent; click the custom swatch to switch to a
-        -- custom colour (opens the picker).
-        -- The inactive swatch dims to 0.3; both are blocked + dimmed with the
-        -- requirement tooltip while isDisabled() is true (mirrors _AttachInlineSwatch).
-        -- followTip/followColor optionally replace the accent swatch's label and
-        -- color source when the "follow" color is not the theme accent.
-        local function _AttachInlineAccentSwatches(rgn, useAccentKey, colorKey, defR, defG, defB, isDisabled, disabledTip, followTip, followColor)
-            local PP = EllesmereUI.PP
-
-            -- Accent swatch (nearest the control): live theme accent.
-            local accentSwatch, updateAccent = EllesmereUI.BuildColorSwatch(
-                rgn, rgn:GetFrameLevel() + 5,
-                function()
-                    local ar, ag, ab
-                    if followColor then
-                        ar, ag, ab = followColor()
-                    else
-                        ar, ag, ab = EllesmereUI.ResolveActiveAccent()
-                    end
-                    return ar, ag, ab, 1
-                end,
-                function() end, false, 18)
-            accentSwatch:SetScript("OnClick", function()
-                Set(useAccentKey, true); Refresh(); EllesmereUI:RefreshPage()
-            end)
-            PP.Point(accentSwatch, "RIGHT", rgn._lastInline or rgn._control or rgn, "LEFT", -8, 0)
-            rgn._lastInline = accentSwatch
-
-            -- Custom-colour swatch (to the left of accent): the stored custom colour.
-            local customSwatch, updateCustom = EllesmereUI.BuildColorSwatch(
-                rgn, rgn:GetFrameLevel() + 5,
-                function()
-                    local c = Cfg(colorKey)
-                    if c then return c.r or defR, c.g or defG, c.b or defB, 1 end
-                    return defR, defG, defB, 1
-                end,
-                function(r, g, b)
-                    Set(colorKey, { r = r, g = g, b = b }); Refresh()
-                end, false, 18)
-            -- Preserve BuildColorSwatch's picker click, but while accent mode is on a
-            -- click just switches back to custom mode (accent turns off) instead.
-            local openPicker = customSwatch:GetScript("OnClick")
-            customSwatch:SetScript("OnClick", function(self)
-                if Cfg(useAccentKey) ~= false then
-                    Set(useAccentKey, false); Refresh(); EllesmereUI:RefreshPage()
-                    return
-                end
-                if openPicker then openPicker(self) end
-            end)
-            PP.Point(customSwatch, "RIGHT", rgn._lastInline or rgn._control or rgn, "LEFT", -8, 0)
-            rgn._lastInline = customSwatch
-
-            -- Per-swatch hover tooltip (colour name when enabled) + disabled block.
-            local function AddBlock(sw, enterTip)
-                sw:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(sw, enterTip) end)
-                sw:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                local block = CreateFrame("Frame", nil, sw)
-                block:SetAllPoints(); block:SetFrameLevel(sw:GetFrameLevel() + 10); block:EnableMouse(true)
-                block:SetScript("OnEnter", function()
-                    -- disabledTip may be a function, like a DualRow cfg.disabledTooltip.
-                    local tip = disabledTip
-                    if type(tip) == "function" then tip = tip() end
-                    EllesmereUI.ShowWidgetTooltip(sw, EllesmereUI.DisabledTooltip(tip or "the module"))
-                end)
-                block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                sw._block = block
-            end
-            AddBlock(accentSwatch, followTip or "Accent Color")
-            AddBlock(customSwatch, "Custom Color")
-
-            local function UpdateState()
-                if updateAccent then updateAccent() end
-                if updateCustom then updateCustom() end
-                local disabled = isDisabled and isDisabled()
-                local useAccent = Cfg(useAccentKey) ~= false
-                if disabled then
-                    accentSwatch:SetAlpha(0.15); accentSwatch._block:Show()
-                    customSwatch:SetAlpha(0.15); customSwatch._block:Show()
-                else
-                    accentSwatch:SetAlpha(useAccent and 1 or 0.3); accentSwatch._block:Hide()
-                    customSwatch:SetAlpha(useAccent and 0.3 or 1); customSwatch._block:Hide()
-                end
-            end
-            EllesmereUI.RegisterWidgetRefresh(UpdateState)
-            UpdateState()
-        end
-
-        local timerDisplayValues = {
-            REMAINING       = "11:37",
-            REMAINING_TOTAL = "11:37 / 33:00",
-            ELAPSED         = "21:23",
-            ELAPSED_DETAIL  = "21:23 (11:37 / 33:00)",
-        }
-        local timerDisplayOrder = { "REMAINING", "REMAINING_TOTAL", "ELAPSED", "ELAPSED_DETAIL" }
-        local timerBarStyleValues = { TICKS = "Ticks", SEGMENTS = "Gaps" }
-        local timerBarStyleOrder = { "TICKS", "SEGMENTS" }
-        local texValues, texOrder = BuildBarTexDropdown()
-
-        -- Cog disabled tooltips: a cog greys out with the module OR its section
-        -- toggle, so name whichever is actually off.
-        local function ModuleOr(noun)
-            return function()
-                if Cfg("enabled") == false then return "the module" end
-                return noun
-            end
-        end
-
-        _, h = W:SectionHeader(parent, "TITLE AND AFFIXES", y); y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Title",
-              disabled=function() return Cfg("enabled") == false end,
-              disabledTooltip="the module",
-              getValue=function() return Cfg("showTitle") ~= false end,
-              setValue=function(v) Set("showTitle", v); Refresh() end },
-            { type="slider", text="Title Size", min=8, max=24, step=1, trackWidth=130,
-              disabled=function() return Cfg("enabled") == false or Cfg("showTitle") == false end,
-              disabledTooltip=ModuleOr("Show Title"),
-              getValue=function() return Cfg("titleSize") or 16 end,
-              setValue=function(v) Set("titleSize", v); Refresh() end })
-        -- Regular-cog settings popup on Show Title: Show Dungeon Name (default on;
-        -- when off the title shows only the +key level, not the dungeon name).
-        if not EllesmereUI._prebuilding then
-        EllesmereUI.BuildInlineCog(row._leftRegion, { icon = EllesmereUI.COGS_ICON, title = "Title", gap = 6, rows = {
-            { type="toggle", label="Show Dungeon Name",
-              get=function() return Cfg("showDungeonName") ~= false end,
-              set=function(v) Set("showDungeonName", v); Refresh() end },
-            -- Moves the lone "+key" title down onto the timer line as "+21  |  timer".
-            -- Only meaningful when the dungeon name is hidden, so it is gated on that.
-            { type="toggle", label="Show Key Level on Timer",
-              disabled=function() return Cfg("showDungeonName") ~= false end,
-              disabledTooltip="Show Dungeon Name", requireState="disabled",
-              get=function() return Cfg("showKeyLevelOnTimer") == true end,
-              set=function(v) Set("showKeyLevelOnTimer", v); Refresh() end },
-            { type="slider", pixel=true, label="Spacing", min=0, max=40, step=1,
-              disabled=function() return Cfg("showKeyLevelOnTimer") ~= true end,
-              disabledTooltip="Show Key Level on Timer",
-              get=function() return Cfg("keyLevelTimerSpacing") or 8 end,
-              set=function(v) Set("keyLevelTimerSpacing", v); Refresh() end },
-        }, disabled = function() return Cfg("enabled") == false or Cfg("showTitle") == false end, disabledTooltip = ModuleOr("Show Title") })
-        -- Inline accent + custom colour swatches on the Title Size slider.
-        _AttachInlineAccentSwatches(row._rightRegion, "titleUseAccent", "titleColor", 1, 1, 1,
-            function() return Cfg("enabled") == false or Cfg("showTitle") == false end, "Show Title")
-        end
-        y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Affix",
-              disabled=function() return Cfg("enabled") == false end,
-              disabledTooltip="the module",
-              getValue=function() return Cfg("showAffixes") ~= false end,
-              setValue=function(v) Set("showAffixes", v); Refresh() end },
-            { type="dropdown", text="Title/Affix Position",
-              disabled=function() return Cfg("enabled") == false end,
-              disabledTooltip="the module",
-              values=titleAffixPositionValues,
-              order=titleAffixPositionOrder,
-              getValue=function() return Cfg("titleAffixPosition") or "ABOVE_TIMER" end,
-              setValue=function(v) Set("titleAffixPosition", v); Refresh(); EllesmereUI:RefreshPage() end })
-        -- Inline Affix Color swatch on Show Affix (swatch before cog), then Affix Size cog
-        if not EllesmereUI._prebuilding then
-        _AttachInlineSwatch(row._leftRegion, "affixTextColor", 1, 1, 1, nil,
-            function() return Cfg("enabled") == false or Cfg("showAffixes") == false end, "Show Affix")
-        EllesmereUI.BuildInlineCog(row._leftRegion, { icon = EllesmereUI.RESIZE_ICON, title = "Affix Size", gap = 6, rows = {
-            { type="slider", label="Size", min=6, max=20, step=1,
-              get=function() return Cfg("affixSize") or 12 end,
-              set=function(v) Set("affixSize", v); Refresh() end },
-        }, disabled = function() return Cfg("enabled") == false or Cfg("showAffixes") == false end, disabledTooltip = ModuleOr("Show Affix") })
-        -- Title/Affix Spacing cog on Position (now the right-side widget)
-        EllesmereUI.BuildInlineCog(row._rightRegion, { icon = EllesmereUI.RESIZE_ICON, title = "Title/Affix Spacing", gap = 6, rows = {
-            { type="slider", pixel=true, label="Death Gap", min=-10, max=30, step=1,
-              disabled=function() return (Cfg("titleAffixPosition") or "ABOVE_TIMER") == "BELOW_TIMER" end,
-              disabledTooltip="Above Timer",
-              get=function() return Cfg("titleAffixDeathGap") or 11 end,
-              set=function(v) Set("titleAffixDeathGap", v); Refresh() end },
-            { type="slider", pixel=true, label="Timer Gap", min=-10, max=30, step=1,
-              disabled=function() return (Cfg("titleAffixPosition") or "ABOVE_TIMER") ~= "BELOW_TIMER" end,
-              disabledTooltip="Below Timer",
-              get=function() return Cfg("titleAffixTimerGap") or Cfg("titleAffixSandwichGap") or 6 end,
-              set=function(v) Set("titleAffixTimerGap", v); Refresh() end },
-            { type="slider", pixel=true, label="Bar Gap", min=-10, max=30, step=1,
-              disabled=function() return (Cfg("titleAffixPosition") or "ABOVE_TIMER") ~= "BELOW_TIMER" end,
-              disabledTooltip="Below Timer",
-              get=function() return Cfg("titleAffixBarGap") or Cfg("titleAffixSandwichGap") or 6 end,
-              set=function(v) Set("titleAffixBarGap", v); Refresh() end },
-        }, disabled = function() return Cfg("enabled") == false end, disabledTooltip = "the module" })
-        end
-        y = y - h
-
-        _, h = W:SectionHeader(parent, "TIMER", y); y = y - h
-
-        local timerFontValues, timerFontOrder = EllesmereUI.BuildFontDropdownData()
-        -- Timer Size only drives the standalone clock; the in-bar timer text has a fixed size.
-        row, h = W:DualRow(parent, y,
-            { type="slider", text="Timer Size",
-              disabled=function()
-                  return Cfg("enabled") == false or (Cfg("timerInBar") == true and Cfg("showTimerBar") ~= false)
-              end,
-              disabledTooltip=function()
-                  if Cfg("enabled") == false then return "the module" end
-                  return "This option requires Move Timer Inside Bar to be disabled"
-              end,
-              min=10, max=32, step=1, isPercent=false,
-              getValue=function() return Cfg("timerTextSize") or 20 end,
-              setValue=function(v) Set("timerTextSize", v); Refresh() end },
-            { type="dropdown", text="Timer Format",
-              disabled=function() return Cfg("enabled") == false end,
-              disabledTooltip="the module",
-              values=timerDisplayValues,
-              order=timerDisplayOrder,
-              getValue=function() return Cfg("timerDisplayMode") or "REMAINING_TOTAL" end,
-              setValue=function(v) Set("timerDisplayMode", v); Refresh() end })
-        y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="dropdown", text="Timer Font",
-              disabled=function() return Cfg("enabled") == false end,
-              disabledTooltip="the module",
-              values=timerFontValues,
-              order=timerFontOrder,
-              getValue=function() return Cfg("timerFont") or "__global" end,
-              setValue=function(v) Set("timerFont", v); Refresh() end },
-            EllesmereUI.BlankRowCfg())
-        y = y - h
-
-        _, h = W:SectionHeader(parent, "TIMER BAR", y); y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Timer Bar",
-              disabled=function() return Cfg("enabled") == false end,
-              disabledTooltip="the module",
-              getValue=function() return Cfg("showTimerBar") ~= false end,
-              setValue=function(v)
-                  Set("showTimerBar", v)
-                  Refresh(); EllesmereUI:RefreshPage()
-              end },
-            { type="toggle", text="Move Timer Inside Bar",
-              disabled=function() return Cfg("enabled") == false or Cfg("showTimerBar") == false end,
-              disabledTooltip=ModuleOr("Show Timer Bar"),
-              getValue=function() return Cfg("timerInBar") == true end,
-              setValue=function(v) Set("timerInBar", v); Refresh(); EllesmereUI:RefreshPage() end })
-        if not EllesmereUI._prebuilding then
-        -- These rows only affect the in-bar timer, so the cog also requires Move Timer Inside Bar.
-        EllesmereUI.BuildInlineCog(row._rightRegion, { icon = EllesmereUI.COGS_ICON, title = "In-Bar Timer", gap = 6, rows = {
-            { type="slider", label="In-Bar Height", min=8, max=40, step=1,
-              tooltip="Minimum height of the timer bar while the timer is inside it. The larger of this and Timer Bar Height is used.",
-              get=function() return Cfg("barHeightExpanded") or 22 end,
-              set=function(v) Set("barHeightExpanded", v); Refresh() end },
-            { type="slider", label="Fill Opacity", min=0, max=1, step=0.05,
-              tooltip="Opacity of the bar fill while the timer is inside it.",
-              get=function() return Cfg("barFillAlphaExpanded") or 0.85 end,
-              set=function(v) Set("barFillAlphaExpanded", v); Refresh() end },
-            { type="toggle", label="Left Text",
-              tooltip="Align the timer text to the left edge of the bar instead of centering it.",
-              get=function() return Cfg("timerInBarLeftText") == true end,
-              set=function(v) Set("timerInBarLeftText", v); Refresh() end },
-        }, disabled = function() return Cfg("enabled") == false or Cfg("showTimerBar") == false or Cfg("timerInBar") ~= true end,
-           disabledTooltip = function()
-               if Cfg("enabled") == false then return "the module" end
-               if Cfg("showTimerBar") == false then return "Show Timer Bar" end
-               return "Move Timer Inside Bar"
-           end })
-        end
-        y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="slider", text="Timer Bar Height",
-              tooltip="Height of the timer bar. While the timer is inside the bar, In-Bar Height sets the minimum.",
-              disabled=function() return Cfg("enabled") == false or Cfg("showTimerBar") == false end,
-              disabledTooltip=ModuleOr("Show Timer Bar"),
-              min=4, max=30, step=1, isPercent=false,
-              getValue=function() return Cfg("barHeight") or 8 end,
-              setValue=function(v)
-                  -- Pin the forces bar to its current height before the first
-                  -- change, so the two height sliders act independently.
-                  if Cfg("enemyBarHeight") == nil then Set("enemyBarHeight", Cfg("barHeight") or 8) end
-                  Set("barHeight", v); Refresh()
-              end },
-            { type="dropdown", text="Timer Bar Texture",
-              disabled=function() return Cfg("enabled") == false or Cfg("showTimerBar") == false end,
-              disabledTooltip=ModuleOr("Show Timer Bar"),
-              values=texValues,
-              order=texOrder,
-              getValue=function() return Cfg("barTexture") or "none" end,
-              setValue=function(v) Set("barTexture", v); Refresh() end })
-        -- Inline cog on Bar Texture: the bar's background texture
-        EllesmereUI.BuildInlineCog(row._rightRegion, { icon = EllesmereUI.COGS_ICON, title = "Bar Texture", gap = 6, rows = {
-            { type="dropdown", label="Background Texture",
-              values=texValues, order=texOrder,
-              get=function() return Cfg("barBgTexture") or "none" end,
-              set=function(v) Set("barBgTexture", v); Refresh() end },
-        }, disabled = function() return Cfg("enabled") == false or Cfg("showTimerBar") == false end, disabledTooltip = ModuleOr("Show Timer Bar") })
-        y = y - h
-
-        -- Builds a threshold toggle config plus an attach() that hangs the inline
-        -- RESIZE cog (white text / size / x / y) and the colour swatch onto a given
-        -- DualRow region, so two thresholds can share one dual row.
-        local function _ThresholdWidget(label, barColorKey, showKey, sizeKey, offsetXKey, offsetYKey, whiteKey, defR, defG, defB, afterBarSet)
-            local function IsTimerTextShown()
-                if showKey == "showThreshRemaining" then
-                    return Cfg(showKey) == true
-                end
-                return Cfg(showKey) ~= false
-            end
-
-            local cfg = { type="toggle", text="Show " .. label .. " Timer Text",
-                  tooltip="Show Timer Text",
-                  disabled=function() return Cfg("enabled") == false end,
-                  disabledTooltip="the module",
-                  getValue=IsTimerTextShown,
-                  setValue=function(v) Set(showKey, v); Refresh() end }
-
-            local function attach(rgn)
-                -- Inline colour swatch (the +N threshold / segment colour) first so it
-                -- sits adjacent to the control, before the cog (swatch-before-cog rule).
-                _AttachInlineSwatch(rgn, barColorKey, defR, defG, defB, afterBarSet,
-                    function() return Cfg("enabled") == false end, "the module")
-                -- Inline RESIZE cog (white text / size / x / y) on the toggle
-                EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.RESIZE_ICON, title = label .. " Timer Text", gap = 6, rows = {
-                    { type="toggle", label="White Text",
-                      get=function() return Cfg(whiteKey) == true end,
-                      set=function(v) Set(whiteKey, v); Refresh() end },
-                    { type="slider", label="Text Size", min=6, max=20, step=1,
-                      get=function() return Cfg(sizeKey) or Cfg("thresholdSize") or 12 end,
-                      set=function(v) Set(sizeKey, v); Refresh() end },
-                    { type="slider", label="Text X", min=-80, max=80, step=1,
-                      get=function() return Cfg(offsetXKey) or Cfg("thresholdTextOffsetX") or 0 end,
-                      set=function(v) Set(offsetXKey, v); Refresh() end },
-                    { type="slider", label="Text Y", min=-40, max=40, step=1,
-                      get=function() return Cfg(offsetYKey) or Cfg("thresholdTextOffsetY") or 0 end,
-                      set=function(v) Set(offsetYKey, v); Refresh() end },
-                }, disabled = function() return Cfg("enabled") == false or not IsTimerTextShown() end,
-                   disabledTooltip = ModuleOr(cfg.text) })
-            end
-
-            return cfg, attach
-        end
-
-        _, h = W:SectionHeader(parent, "THRESHOLDS", y); y = y - h
-
-        local p3cfg, p3attach = _ThresholdWidget("+3 Threshold", "timerSegment1Color", "showPlusThreeTimer", "thresholdPlusThreeSize", "thresholdPlusThreeTextOffsetX", "thresholdPlusThreeTextOffsetY", "thresholdPlusThreeTextWhite", 0.4, 1, 0.4,
-            function(r, g, b) Set("timerPlusThreeColor", { r = r, g = g, b = b }) end)
-        local p2cfg, p2attach = _ThresholdWidget("+2 Threshold", "timerSegment2Color", "showPlusTwoTimer", "thresholdPlusTwoSize", "thresholdPlusTwoTextOffsetX", "thresholdPlusTwoTextOffsetY", "thresholdPlusTwoTextWhite", 0.3, 0.8, 1,
-            function(r, g, b) Set("timerPlusTwoColor", { r = r, g = g, b = b }) end)
-        local p1cfg, p1attach = _ThresholdWidget("+1 Threshold", "timerSegment3Color", "showThreshRemaining", "thresholdPlusOneSize", "thresholdPlusOneTextOffsetX", "thresholdPlusOneTextOffsetY", "thresholdPlusOneTextWhite", 0.69, 0.35, 0.8)
-
-        -- Row 1: Ticks / Gaps (style + inline Tick Color swatch + cog) | +3 Threshold
-        row, h = W:DualRow(parent, y,
-            { type="dropdown", text="Ticks / Gaps",
-              disabled=function() return Cfg("enabled") == false or Cfg("showTimerBar") == false end,
-              disabledTooltip=ModuleOr("Show Timer Bar"),
-              values=timerBarStyleValues,
-              order=timerBarStyleOrder,
-              getValue=function() return Cfg("timerBarStyle") or "TICKS" end,
-              setValue=function(v) Set("timerBarStyle", v); Refresh(); EllesmereUI:RefreshPage() end },
-            p3cfg)
-        -- Inline Tick Color swatch (TICKS style only) first so it sits adjacent to
-        -- the control, before the cog (swatch-before-cog rule).
-        if not EllesmereUI._prebuilding then
-        _AttachInlineSwatch(row._leftRegion, "timerTickColor", 1, 1, 1, nil,
-            function() return Cfg("enabled") == false or Cfg("showTimerBar") == false or (Cfg("timerBarStyle") or "TICKS") ~= "TICKS" end, "Ticks")
-        EllesmereUI.BuildInlineCog(row._leftRegion, { icon = EllesmereUI.COGS_ICON, title = "Ticks / Gaps", gap = 6, rows = {
-            { type="slider", label="Tick Opacity", min=0, max=1, step=0.05,
-              disabled=function() return (Cfg("timerBarStyle") or "TICKS") ~= "TICKS" end,
-              disabledTooltip="Ticks",
-              get=function() return Cfg("tickAlpha") or 1 end,
-              set=function(v) Set("tickAlpha", v); Refresh() end },
-            { type="slider", pixel=true, label="Gap Size", min=0, max=12, step=1,
-              disabled=function() return (Cfg("timerBarStyle") or "TICKS") ~= "SEGMENTS" end,
-              disabledTooltip="Gaps",
-              get=function() return Cfg("timerBarSegmentGap") or 2 end,
-              set=function(v) Set("timerBarSegmentGap", v); Refresh() end },
-        }, disabled = function() return Cfg("enabled") == false or Cfg("showTimerBar") == false end, disabledTooltip = ModuleOr("Show Timer Bar") })
-        p3attach(row._rightRegion)
-        end
-        y = y - h
-
-        -- Row 2: +2 Threshold | +1 Threshold
-        row, h = W:DualRow(parent, y, p2cfg, p1cfg)
-        if not EllesmereUI._prebuilding then
-        p2attach(row._leftRegion)
-        p1attach(row._rightRegion)
-        end
-        y = y - h
-
-        _, h = W:SectionHeader(parent, "FORCES", y); y = y - h
-
-        local function _forcesOff() return Cfg("enabled") == false or Cfg("showEnemyBar") == false end
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Enemy Forces",
-              disabled=function() return Cfg("enabled") == false end,
-              disabledTooltip="the module",
-              getValue=function() return Cfg("showEnemyBar") ~= false end,
-              setValue=function(v) Set("showEnemyBar", v); Refresh(); EllesmereUI:RefreshPage() end },
-            { type="slider", text="Forces Bar Height",
-              disabled=_forcesOff,
-              disabledTooltip=ModuleOr("Show Enemy Forces"),
-              min=4, max=30, step=1, isPercent=false,
-              -- enemyBarHeight stays unset until either height slider is changed
-              -- and falls back to the timer bar height, so existing layouts keep
-              -- their look.
-              getValue=function() return Cfg("enemyBarHeight") or Cfg("barHeight") or 8 end,
-              setValue=function(v) Set("enemyBarHeight", v); Refresh() end })
-        y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="dropdown", text="Enemy Text Format",
-              disabled=_forcesOff,
-              disabledTooltip=ModuleOr("Show Enemy Forces"),
-              values=forcesTextValues,
-              order=forcesTextOrder,
-              getValue=function() return Cfg("enemyForcesTextFormat") or "PERCENT" end,
-              setValue=function(v) Set("enemyForcesTextFormat", v); Refresh() end },
-            { type="dropdown", text="Percent Position",
-              tooltip="Where the enemy forces percentage is shown: in the label text, in the bar or beside it.",
-              disabled=_forcesOff,
-              disabledTooltip=ModuleOr("Show Enemy Forces"),
-              values={ LABEL = "In Label Text", BAR = "In Bar", BESIDE = "Beside Bar" },
-              order={ "LABEL", "BAR", "BESIDE" },
-              getValue=function() return Cfg("enemyForcesPctPos") or "LABEL" end,
-              setValue=function(v) Set("enemyForcesPctPos", v); Refresh() end })
-        if not EllesmereUI._prebuilding then
-        EllesmereUI.BuildInlineCog(row._leftRegion, { icon = EllesmereUI.RESIZE_ICON, title = "Enemy Forces Text", gap = 6, rows = {
-            { type="toggle", label="Hide Label",
-              get=function() return Cfg("hideEnemyForcesLabel") == true end,
-              set=function(v) Set("hideEnemyForcesLabel", v); Refresh() end },
-            { type="slider", label="Text Size", min=8, max=24, step=1,
-              get=function() return Cfg("enemyForcesTextSize") or Cfg("objectivesSize") or 12 end,
-              set=function(v) Set("enemyForcesTextSize", v); Refresh() end },
-            { type="slider", label="Text X", min=-80, max=80, step=1,
-              get=function() return Cfg("enemyForcesTextOffsetX") or 0 end,
-              set=function(v) Set("enemyForcesTextOffsetX", v); Refresh() end },
-            { type="slider", label="Text Y", min=-40, max=40, step=1,
-              get=function() return Cfg("enemyForcesTextOffsetY") or 0 end,
-              set=function(v) Set("enemyForcesTextOffsetY", v); Refresh() end },
-        }, disabled = _forcesOff, disabledTooltip = ModuleOr("Show Enemy Forces") })
-        end
-        y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="dropdown", text="Enemy Forces Position",
-              disabled=_forcesOff,
-              disabledTooltip=ModuleOr("Show Enemy Forces"),
-              values={ BOTTOM = "Bottom", UNDER_BAR = "Under Timer Bar" },
-              order={ "BOTTOM", "UNDER_BAR" },
-              getValue=function() return Cfg("enemyForcesPos") or "BOTTOM" end,
-              setValue=function(v) Set("enemyForcesPos", v); Refresh() end },
-            { type="dropdown", text="Forces Bar Texture",
-              tooltip="Texture of the enemy forces bar. The swatches next to it set the Enemy Bar Color (theme accent or a custom color).",
-              disabled=_forcesOff,
-              disabledTooltip=ModuleOr("Show Enemy Forces"),
-              values=texValues,
-              order=texOrder,
-              getValue=function() return Cfg("enemyBarTexture") or "none" end,
-              setValue=function(v) Set("enemyBarTexture", v); Refresh() end })
-        if not EllesmereUI._prebuilding then
-        -- Fill colour (accent or custom) as inline swatches, then the background texture cog.
-        _AttachInlineAccentSwatches(row._rightRegion, "enemyBarUseAccent", "enemyBarColor", 0.35, 0.55, 0.8,
-            _forcesOff, ModuleOr("Show Enemy Forces"))
-        EllesmereUI.BuildInlineCog(row._rightRegion, { icon = EllesmereUI.COGS_ICON, title = "Bar Texture", gap = 6, rows = {
-            { type="dropdown", label="Background Texture",
-              values=texValues, order=texOrder,
-              get=function() return Cfg("enemyBarBgTexture") or "none" end,
-              set=function(v) Set("enemyBarBgTexture", v); Refresh() end },
-        }, disabled = _forcesOff, disabledTooltip = ModuleOr("Show Enemy Forces") })
-        end
-        y = y - h
-
-        -- The pull bar's default color is the forces fill color (accent or custom).
-        local function _enemyBarColor()
-            if Cfg("enemyBarUseAccent") ~= false then
-                return EllesmereUI.ResolveActiveAccent()
-            end
-            local c = Cfg("enemyBarColor")
-            if c then return c.r or 0.35, c.g or 0.55, c.b or 0.8 end
-            return 0.35, 0.55, 0.8
-        end
-        local function _pullBarOff()
-            return _forcesOff() or Cfg("showPullBar") ~= true
-        end
-        -- Names whichever requirement actually disables the pull controls.
-        local function _pullBarReq()
-            if Cfg("enabled") == false then return "the module" end
-            if Cfg("showEnemyBar") == false then return "Show Enemy Forces" end
-            return "Show Current Pull in Bar"
-        end
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Current Pull in Bar",
-              disabled=_forcesOff,
-              disabledTooltip=ModuleOr("Show Enemy Forces"),
-              tooltip="Previews the forces of every enemy in combat with a visible nameplate on the enemy forces bar.",
-              getValue=function() return Cfg("showPullBar") == true end,
-              setValue=function(v) Set("showPullBar", v); Refresh(); EllesmereUI:RefreshPage() end },
-            { type="slider", text="Current Pull Color", min=0, max=100, step=5, isPercent=false, trackWidth=130,
-              disabled=_pullBarOff,
-              disabledTooltip=_pullBarReq,
-              tooltip="Opacity of the current pull on the enemy forces bar.",
-              -- Stored 0..1 internally; displayed 0..100 to the user.
-              getValue=function() return (Cfg("pullBarAlpha") or 0.35) * 100 end,
-              setValue=function(v) Set("pullBarAlpha", v / 100); Refresh() end })
-        if not EllesmereUI._prebuilding then
-        -- Pull color: follows the enemy bar color by default, or a custom color.
-        _AttachInlineAccentSwatches(row._rightRegion, "pullBarUseBarColor", "pullBarColor", 1, 0.55, 0.1,
-            _pullBarOff, _pullBarReq, "Enemy Bar Color", _enemyBarColor)
-        end
-        y = y - h
-
-        _, h = W:SectionHeader(parent, "BOSS OBJECTIVES", y); y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Boss Objectives",
-              disabled=function() return Cfg("enabled") == false end,
-              disabledTooltip="the module",
-              getValue=function() return Cfg("showObjectives") ~= false end,
-              setValue=function(v) Set("showObjectives", v); Refresh(); EllesmereUI:RefreshPage() end },
-            { type="slider", text="Objectives Size",
-              disabled=function() return Cfg("enabled") == false or Cfg("showObjectives") == false end,
-              disabledTooltip=ModuleOr("Show Boss Objectives"),
-              min=8, max=20, step=1, isPercent=false,
-              getValue=function() return Cfg("objectivesSize") or 12 end,
-              setValue=function(v) Set("objectivesSize", v); Refresh() end })
-        if not EllesmereUI._prebuilding then
-        EllesmereUI.BuildInlineCog(row._leftRegion, { icon = EllesmereUI.RESIZE_ICON, title = "Boss Position", gap = 6, rows = {
-            { type="slider", label="Boss X", min=-80, max=80, step=1,
-              get=function() return Cfg("objectiveTextOffsetX") or 0 end,
-              set=function(v) Set("objectiveTextOffsetX", v); Refresh() end },
-            { type="slider", label="Boss Y", min=-40, max=40, step=1,
-              get=function() return Cfg("objectiveTextOffsetY") or 0 end,
-              set=function(v) Set("objectiveTextOffsetY", v); Refresh() end },
-        }, disabled = function() return Cfg("enabled") == false or Cfg("showObjectives") == false end, disabledTooltip = ModuleOr("Show Boss Objectives") })
-        end
-        y = y - h
-
-        -- Time Position also places the Split Compare text, so it stays usable
-        -- while either the objective times or a compare mode is shown.
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Objective Times",
-              disabled=function() return Cfg("enabled") == false or Cfg("showObjectives") == false end,
-              disabledTooltip=ModuleOr("Show Boss Objectives"),
-              getValue=function() return Cfg("showObjectiveTimes") ~= false end,
-              setValue=function(v) Set("showObjectiveTimes", v); Refresh() end },
-            { type="dropdown", text="Time Position",
-              tooltip="Which side of each boss objective shows its split times and Split Compare text.",
-              disabled=function()
-                  return Cfg("enabled") == false or Cfg("showObjectives") == false
-                      or (Cfg("showObjectiveTimes") == false and (Cfg("objectiveCompareMode") or "NONE") == "NONE")
-              end,
-              disabledTooltip=function()
-                  if Cfg("enabled") == false then return "the module" end
-                  if Cfg("showObjectives") == false then return "Show Boss Objectives" end
-                  return "This option requires Show Objective Times or a Split Compare mode"
-              end,
-              values=objectiveTimePositionValues,
-              order=objectiveTimePositionOrder,
-              getValue=function() return Cfg("objectiveTimePosition") or "RIGHT" end,
-              setValue=function(v) Set("objectiveTimePosition", v); Refresh() end })
-        y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="slider", pixel=true, text="Objective Spacing",
-              disabled=function() return Cfg("enabled") == false or Cfg("showObjectives") == false end,
-              disabledTooltip=ModuleOr("Show Boss Objectives"),
-              min=0, max=12, step=1, isPercent=false,
-              getValue=function() return Cfg("objectiveGap") or 4 end,
-              setValue=function(v) Set("objectiveGap", v); Refresh() end },
-            { type="dropdown", text="Split Compare",
-              disabled=function() return Cfg("enabled") == false or Cfg("showObjectives") == false end,
-              disabledTooltip=ModuleOr("Show Boss Objectives"),
-              values=compareModeValues,
-              order=compareModeOrder,
-              getValue=function() return Cfg("objectiveCompareMode") or "NONE" end,
-              setValue=function(v) Set("objectiveCompareMode", v); Refresh() end })
-        -- Split Compare cog: strict scoping (only meaningful for the level scopes,
-        -- since Per Dungeon is the fallback it removes) and the upcoming-split target.
-        if not EllesmereUI._prebuilding then
-        EllesmereUI.BuildInlineCog(row._rightRegion, { icon = EllesmereUI.COGS_ICON, title = "Split Compare", gap = 6, rows = {
-            { type="toggle", label="Always Show Split Times",
-              tooltip="Shows your best split on upcoming bosses instead of only killed ones.",
-              disabled=function() return (Cfg("objectiveCompareMode") or "NONE") == "NONE" end,
-              disabledTooltip="This option requires a Split Compare mode",
-              get=function() return Cfg("showUpcomingSplitTargets") == true end,
-              set=function(v) Set("showUpcomingSplitTargets", v); Refresh() end },
-            { type="toggle", label="Strict Comparison Mode",
-              tooltip="Compare only against splits from the same key level (off: new key levels compare against your dungeon best).",
-              disabled=function()
-                  local mode = Cfg("objectiveCompareMode") or "NONE"
-                  return mode ~= "LEVEL" and mode ~= "LEVEL_AFFIX"
-              end,
-              disabledTooltip="This option requires Split Compare to include a key level",
-              get=function() return Cfg("objectiveCompareStrict") == true end,
-              set=function(v) Set("objectiveCompareStrict", v); Refresh() end },
-            { type="toggle", label="Fastest Run Splits",
-              tooltip="Compare against the splits of your fastest completed run instead of your best individual splits.",
-              disabled=function() return (Cfg("objectiveCompareMode") or "NONE") == "NONE" end,
-              disabledTooltip="This option requires a Split Compare mode",
-              get=function() return Cfg("showFastestRunSplits") == true end,
-              set=function(v) Set("showFastestRunSplits", v); Refresh() end },
-        }, disabled = function() return Cfg("enabled") == false or Cfg("showObjectives") == false end, disabledTooltip = ModuleOr("Show Boss Objectives") })
-        end
-        y = y - h
-
-        _, h = W:Spacer(parent, y, 20); y = y - h
-
-        parent:SetHeight(math.abs(y - yOffset))
-    end
-
-    ---------------------------------------------------------------------------
-    --  Shared helpers for the Mythic+ Tools cast-bar tabs
-    ---------------------------------------------------------------------------
-    local function TSB()
-        local p = DB()
-        return p and p.tsb
-    end
-    local function TFB()
-        local p = DB()
-        return p and p.tfb
-    end
-    local function TFBBar(which)
-        local t = TFB()
-        return t and t[which]
-    end
-    local function TSBRefresh()
-        if ns.TSB_Refresh then ns.TSB_Refresh() end
-    end
-    local function TFBRefresh()
-        if ns.TFB_Refresh then ns.TFB_Refresh() end
-    end
-
-    -- Where to Show: same content-type list and multi-select checkbox
-    -- dropdown (EllesmereUI.BuildVisOptsCBDropdown) as AuraBuffReminders.
-    local TSB_WHERE_ITEMS = {
-        { key="open_world",        label="Open World" },
-        { key="raid_mythic",       label="Mythic Raid" },
-        { key="raid_heroic",       label="Heroic Raid" },
-        { key="raid_normal_lfr",   label="Normal/LFR Raid" },
-        { key="dungeon_mythic",    label="Mythic Dungeons" },
-        { key="dungeon_nonmythic", label="Non-Mythic Dungeons" },
-        { key="timewalking",       label="Timewalking" },
-        { key="delve",             label="Delve" },
-        { key="lair",              label="Lair" },
-        { key="scenario",          label="Scenario" },
-        { key="in_combat",         label="In Combat" },
-        { key="out_of_combat",     label="Out of Combat" },
-    }
-    local function TSBWhere()
-        local c = TSB(); if not c then return nil end
-        c.whereToShow = c.whereToShow or {}
-        return c.whereToShow
-    end
-    -- Positive filter: only selected entries are stored (true); nothing
-    -- selected = the bars show everywhere.
-    local function TSBWhereGet(k)
-        local t = TSBWhere()
-        return t and t[k] == true or false
-    end
-    local function TSBWhereSet(k, v)
-        local t = TSBWhere(); if not t then return end
-        t[k] = v and true or nil
-        TSBRefresh()
-    end
-
-    -- Auto-disable the cast-bar previews when the options window closes so
-    -- sample bars never linger (same contract as the timer preview).
-    local function _installCastPreviewAutoOff()
-        local mf = _G.EllesmereUIFrame
-        if not mf or mf._eMTCastPreviewHook then return end
-        mf._eMTCastPreviewHook = true
-        mf:HookScript("OnHide", function()
-            if ns.TSB_IsPreview and ns.TSB_IsPreview() then ns.TSB_SetPreview(false) end
-            if ns.TFB_IsPreview then
-                if ns.TFB_IsPreview("target") then ns.TFB_SetPreview("target", false) end
-                if ns.TFB_IsPreview("focus") then ns.TFB_SetPreview("focus", false) end
-            end
-        end)
-    end
-
-    -- Inline preview eyeball on a DualRow region.
-    local function MakeEye(rgn, isOnFn, toggleFn)
-        local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
-        local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
-        local btn = CreateFrame("Button", nil, rgn)
-        btn:SetSize(26, 26)
-        btn:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = btn
-        btn:SetFrameLevel(rgn:GetFrameLevel() + 5)
-        btn:SetAlpha(0.4)
-        local tex = btn:CreateTexture(nil, "OVERLAY")
-        tex:SetAllPoints()
-        tex:SetTexture(isOnFn() and EYE_INVISIBLE or EYE_VISIBLE)
-        btn:SetScript("OnClick", function()
-            toggleFn(not isOnFn())
-            tex:SetTexture(isOnFn() and EYE_INVISIBLE or EYE_VISIBLE)
-        end)
-        btn:SetScript("OnEnter", function(s)
-            s:SetAlpha(0.7)
-            EllesmereUI.ShowWidgetTooltip(s, isOnFn() and "Hide the preview" or "Preview the bars at their position")
-        end)
-        btn:SetScript("OnLeave", function(s)
-            s:SetAlpha(0.4)
-            EllesmereUI.HideWidgetTooltip()
-        end)
-        return btn
-    end
-
-    ---------------------------------------------------------------------------
-    --  Targeted Spell Bars page
-    ---------------------------------------------------------------------------
-    ---------------------------------------------------------------------------
-    --  Glow site: the Targeted Spell Bars important cast glow as a shared glow
-    --  descriptor, used by the TSB page and the Global Settings Glows page. The
-    --  bar is an engine host by choice (zero per-frame Lua): C-side styles only.
-    ---------------------------------------------------------------------------
-    local mtImpGlowDesc
-    do
-        local GO = EllesmereUI.GlowOptions
-        local function TsbOff() local c = TSB(); return not (c and c.enabled == true) end
-        mtImpGlowDesc = {
-            host = "engine",
-            caps = { mode = true, params = true, bg = true },
-            defaultColor = { r = 1, g = 0.2, b = 0.2 },
-            disabled = TsbOff, disabledTooltip = "Enable Targeted Spell Bars",
-            isOff = function() local c = TSB(); return not (c and c.importantGlow == true) end,
-            onChange = TSBRefresh,
-            get = function(f)
-                local c = TSB(); if not c then return nil end
-                if f == "style" then return c.importantGlowStyle or 1
-                elseif f == "mode" then return c.importantGlowColorMode or "custom"
-                elseif f == "color" then
-                    local col = c.importantGlowColor
-                    return (col and col.r) or 1, (col and col.g) or 0.2, (col and col.b) or 0.2
-                end
-                return EllesmereUI.GlowOptions.FlatGet(c, "importantGlow", f)
-            end,
-            set = function(f, a, b2, c2)
-                local c = TSB(); if not c then return end
-                if f == "style" then
-                    if a == 0 then c.importantGlow = false else c.importantGlow = true; c.importantGlowStyle = a end
-                elseif f == "mode" then c.importantGlowColorMode = a
-                else EllesmereUI.GlowOptions.FlatSet(c, "importantGlow", f, a, b2, c2)
-                end
-            end,
-        }
-        GO.RegisterSite({ id = "mt_importantcast", label = "Important Cast Glow", group = "module",
-            module = "EllesmereUIMythicTimer", page = PAGE_TSB, section = "INTERRUPT AND VISIBILITY",
-            highlight = "Important Cast Glow", desc = mtImpGlowDesc })
-    end
-
-    local function BuildTSBPage(pageName, parent, yOffset)
-        _installCastPreviewAutoOff()
-
-        local W = EllesmereUI.Widgets
-        local y = yOffset
-        local row, h
-
-        if EllesmereUI.ClearContentHeader then EllesmereUI:ClearContentHeader() end
-        parent._showRowDivider = true
-
-        local function On()
-            local c = TSB()
-            return c and c.enabled == true
-        end
-        local function Off() return not On() end
-        local REQ = "Enable Targeted Spell Bars"
-
-        _, h = W:SectionHeader(parent, "TARGETED SPELL BARS", y); y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Enable Targeted Spell Bars",
-              tooltip="Show one plain cast bar per enemy nameplate that is casting, gathered into a single movable group with the spell name, its target, and the cast timer.",
-              getValue=On,
-              setValue=function(v)
-                  local c = TSB(); if not c then return end
-                  c.enabled = v and true or false
-                  TSBRefresh(); EllesmereUI:RefreshPage()
-              end },
-            { type="dropdown", text="Where to Show",
-              disabled=Off, disabledTooltip=REQ,
-              tooltip="Limit the bars to the selected content and combat states; nothing selected shows them everywhere.",
-              values={ _placeholder="..." }, order={ "_placeholder" },
-              getValue=function() return "_placeholder" end, setValue=function() end });  y = y - h
-        if not EllesmereUI._prebuilding then
-            MakeEye(row._leftRegion,
-                function() return ns.TSB_IsPreview and ns.TSB_IsPreview() or false end,
-                function(v)
-                    if Off() then return end
-                    if ns.TSB_SetPreview then ns.TSB_SetPreview(v) end
-                end)
-
-            local rrgn = row._rightRegion
-            if rrgn._control then rrgn._control:Hide() end
-            local whereDD, whereRefresh = EllesmereUI.BuildVisOptsCBDropdown(
-                rrgn, 220, rrgn:GetFrameLevel() + 2, TSB_WHERE_ITEMS,
-                TSBWhereGet, TSBWhereSet)
-            EllesmereUI.PP.Point(whereDD, "RIGHT", rrgn, "RIGHT", -20, 0)
-            rrgn._control = whereDD
-            rrgn._lastInline = nil
-            -- Disabled while the feature is off: blocking overlay eats the
-            -- click and shows the requirement, dropdown dims.
-            local whereBlock = CreateFrame("Frame", nil, whereDD)
-            whereBlock:SetAllPoints()
-            whereBlock:SetFrameLevel(whereDD:GetFrameLevel() + 10)
-            whereBlock:EnableMouse(true)
-            whereBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(whereDD, EllesmereUI.DisabledTooltip(REQ))
-            end)
-            whereBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            local function SyncWhereDisabled()
-                local off = Off()
-                whereDD:SetAlpha(off and 0.3 or 1)
-                whereBlock:SetShown(off)
-            end
-            SyncWhereDisabled()
-            EllesmereUI.RegisterWidgetRefresh(function()
-                whereRefresh()
-                SyncWhereDisabled()
-            end)
-        end
-
-        _, h = W:DualRow(parent, y,
-            { type="dropdown", text="Grow Direction",
-              disabled=Off, disabledTooltip=REQ,
-              tooltip="Which way new bars stack as more enemies start casting.",
-              values={ DOWN="Down", UP="Up" }, order={ "DOWN", "UP" },
-              getValue=function()
-                  local c = TSB()
-                  return (c and c.growUp) and "UP" or "DOWN"
-              end,
-              setValue=function(v)
-                  local c = TSB(); if not c then return end
-                  c.growUp = v == "UP"
-                  TSBRefresh()
-              end },
-            { type="slider", text="Width", min=80, max=600, step=1, pixel=true,
-              disabled=Off, disabledTooltip=REQ,
-              getValue=function() local c = TSB(); return (c and c.width) or 240 end,
-              setValue=function(v) local c = TSB(); if c then c.width = v; TSBRefresh() end end });  y = y - h
-
-        _, h = W:DualRow(parent, y,
-            { type="slider", text="Height", min=6, max=60, step=1, pixel=true,
-              disabled=Off, disabledTooltip=REQ,
-              getValue=function() local c = TSB(); return (c and c.height) or 20 end,
-              setValue=function(v) local c = TSB(); if c then c.height = v; TSBRefresh() end end },
-            { type="slider", text="Bar Spacing", min=0, max=20, step=1, pixel=true,
-              disabled=Off, disabledTooltip=REQ,
-              getValue=function() local c = TSB(); return (c and c.spacing) or 4 end,
-              setValue=function(v) local c = TSB(); if c then c.spacing = v; TSBRefresh() end end });  y = y - h
-
-        local texValues, texOrder = BuildBarTexDropdown()
-        _, h = W:DualRow(parent, y,
-            { type="slider", text="Max Bars", min=1, max=10, step=1,
-              disabled=Off, disabledTooltip=REQ,
-              tooltip="The most cast bars shown at once. Extra casters take a bar as soon as one frees up.",
-              getValue=function() local c = TSB(); return (c and c.maxBars) or 5 end,
-              setValue=function(v) local c = TSB(); if c then c.maxBars = v; TSBRefresh() end end },
-            { type="dropdown", text="Bar Texture",
-              disabled=Off, disabledTooltip=REQ,
-              values=texValues, order=texOrder,
-              getValue=function() local c = TSB(); return (c and c.texture) or "none" end,
-              setValue=function(v) local c = TSB(); if c then c.texture = v; TSBRefresh() end end });  y = y - h
-
-        _, h = W:DualRow(parent, y,
-            { type="multiSwatch", text="Background Color",
-              disabled=Off, disabledTooltip=REQ,
-              swatches = {
-                { tooltip = "Background Color", hasAlpha = true,
-                  getValue = function()
-                      local c = TSB()
-                      local col = c and c.bgColor
-                      return (col and col.r) or 0, (col and col.g) or 0, (col and col.b) or 0, (col and col.a) or 0.45
-                  end,
-                  setValue = function(r, g, b, a)
-                      local c = TSB(); if not c then return end
-                      c.bgColor = { r = r, g = g, b = b, a = a }
-                      TSBRefresh()
-                  end },
-              } },
-            { type="slider", text="Border Size", min=0, max=5, step=1, pixel=true,
-              disabled=Off, disabledTooltip=REQ,
-              getValue=function()
-                  local c = TSB()
-                  local v = c and c.borderSize
-                  if v == nil then v = 1 end
-                  return v
-              end,
-              setValue=function(v) local c = TSB(); if c then c.borderSize = v; TSBRefresh() end end });  y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Icon",
-              disabled=Off, disabledTooltip=REQ,
-              getValue=function() local c = TSB(); return not c or c.showIcon ~= false end,
-              setValue=function(v) local c = TSB(); if c then c.showIcon = v and true or false; TSBRefresh() end end },
-            { type="toggle", text="Show Spell Name",
-              disabled=Off, disabledTooltip=REQ,
-              getValue=function() local c = TSB(); return not c or c.showSpellName ~= false end,
-              setValue=function(v) local c = TSB(); if c then c.showSpellName = v and true or false; TSBRefresh() end end });  y = y - h
-        if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineCog(row._leftRegion, { tip = "Spell Icon Settings",
-                title = "Spell Icon Settings",
-                rows = {
-                    { type="toggle", label="Icon on Right",
-                      tooltip = "Attach the spell icon to the right of the cast bar instead of the left.",
-                      get=function() local c = TSB(); return c and c.iconOnRight end,
-                      set=function(v) local c = TSB(); if c then c.iconOnRight = v; TSBRefresh() end end },
-                    { type="toggle", label="Show Icon Divider",
-                      tooltip = "Draw a 1px divider between the spell icon and the cast bar, matching the border color.",
-                      get=function() local c = TSB(); return c and c.showIconDivider end,
-                      set=function(v) local c = TSB(); if c then c.showIconDivider = v; TSBRefresh() end end },
-                },
-            })
-            EllesmereUI.BuildInlineCog(row._rightRegion, { tip = "Spell Name Settings",
-                title = "Spell Name",
-                rows = {
-                    { type="slider", label="Text Size", min=6, max=20, step=1,
-                      get=function() local c = TSB(); return (c and c.nameSize) or 10 end,
-                      set=function(v) local c = TSB(); if c then c.nameSize = v; TSBRefresh() end end },
-                    { type="slider", label="X Offset", min=-100, max=100, step=1, pixel=true,
-                      get=function() local c = TSB(); return (c and c.nameX) or 0 end,
-                      set=function(v) local c = TSB(); if c then c.nameX = v; TSBRefresh() end end },
-                    { type="slider", label="Y Offset", min=-100, max=100, step=1, pixel=true,
-                      get=function() local c = TSB(); return (c and c.nameY) or 0 end,
-                      set=function(v) local c = TSB(); if c then c.nameY = v; TSBRefresh() end end },
-                },
-            })
-        end
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Cast Timer",
-              disabled=Off, disabledTooltip=REQ,
-              getValue=function() local c = TSB(); return not c or c.showTimer ~= false end,
-              setValue=function(v) local c = TSB(); if c then c.showTimer = v and true or false; TSBRefresh() end end },
-            { type="toggle", text="Show Spell Target",
-              disabled=Off, disabledTooltip=REQ,
-              tooltip="Show who each spell is being cast on, exactly like the nameplate cast bars.",
-              getValue=function() local c = TSB(); return not c or c.showTarget ~= false end,
-              setValue=function(v) local c = TSB(); if c then c.showTarget = v and true or false; TSBRefresh() end end });  y = y - h
-        if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineCog(row._leftRegion, { tip = "Cast Timer Settings",
-                title = "Cast Timer",
-                rows = {
-                    { type="slider", label="Text Size", min=6, max=20, step=1,
-                      get=function() local c = TSB(); return (c and c.timerSize) or 10 end,
-                      set=function(v) local c = TSB(); if c then c.timerSize = v; TSBRefresh() end end },
-                    { type="slider", label="X Offset", min=-100, max=100, step=1, pixel=true,
-                      get=function() local c = TSB(); return (c and c.timerX) or 0 end,
-                      set=function(v) local c = TSB(); if c then c.timerX = v; TSBRefresh() end end },
-                    { type="slider", label="Y Offset", min=-100, max=100, step=1, pixel=true,
-                      get=function() local c = TSB(); return (c and c.timerY) or 0 end,
-                      set=function(v) local c = TSB(); if c then c.timerY = v; TSBRefresh() end end },
-                },
-            })
-            EllesmereUI.BuildInlineCog(row._rightRegion, { tip = "Spell Target Settings",
-                title = "Spell Target",
-                rows = {
-                    { type="slider", label="Text Size", min=6, max=20, step=1,
-                      get=function() local c = TSB(); return (c and c.targetSize) or 10 end,
-                      set=function(v) local c = TSB(); if c then c.targetSize = v; TSBRefresh() end end },
-                    { type="slider", label="X Offset", min=-100, max=100, step=1, pixel=true,
-                      get=function() local c = TSB(); return (c and c.targetX) or 0 end,
-                      set=function(v) local c = TSB(); if c then c.targetX = v; TSBRefresh() end end },
-                    { type="slider", label="Y Offset", min=-100, max=100, step=1, pixel=true,
-                      get=function() local c = TSB(); return (c and c.targetY) or 0 end,
-                      set=function(v) local c = TSB(); if c then c.targetY = v; TSBRefresh() end end },
-                    { type="toggle", label="Class Colored Names",
-                      get=function() local c = TSB(); return not c or c.targetClassColor ~= false end,
-                      set=function(v) local c = TSB(); if c then c.targetClassColor = v and true or false; TSBRefresh() end end },
-                    { type="colorpicker", label="Custom Color",
-                      disabled=function() local c = TSB(); return not c or c.targetClassColor ~= false end,
-                      disabledTooltip="Class Colored Names to be off",
-                      get=function()
-                          local c = TSB()
-                          local col = c and c.targetColor
-                          return (col and col.r) or 1, (col and col.g) or 1, (col and col.b) or 1
-                      end,
-                      set=function(r, g, b)
-                          local c = TSB(); if not c then return end
-                          c.targetColor = { r = r, g = g, b = b }
-                          TSBRefresh()
-                      end },
-                },
-            })
-        end
-
-        ---------------------------------------------------------------------
-        --  Interrupt awareness and visibility
-        ---------------------------------------------------------------------
-        _, h = W:SectionHeader(parent, "INTERRUPT AND VISIBILITY", y); y = y - h
-
-        local GO = EllesmereUI.GlowOptions
-        local mtDesc = mtImpGlowDesc
-
-        -- Row: Cast Colors (always-on kick-ready/uninterruptible tints, no
-        -- off switch; 4 swatches + cog for the separate opt-in Important
-        -- Cast tint) | Important Cast Glow (dropdown-as-enable + inline
-        -- glow-color swatch + cog, same layout as the Nameplates module).
-        row, h = W:DualRow(parent, y,
-            { type="multiSwatch", text="Cast Colors",
-              disabled=Off, disabledTooltip=REQ,
-              swatches = {
-                { tooltip = "Interruptible Cast",
-                  getValue = function()
-                      local c = TSB()
-                      local col = c and c.barColor
-                      return (col and col.r) or 0.70, (col and col.g) or 0.40, (col and col.b) or 0.90
-                  end,
-                  setValue = function(r, g, b)
-                      local c = TSB(); if not c then return end
-                      c.barColor = { r = r, g = g, b = b }
-                      TSBRefresh()
-                  end },
-                { tooltip = "Interrupt on CD",
-                  getValue = function()
-                      local c = TSB()
-                      local col = c and c.interruptReady
-                      return (col and col.r) or 0.92, (col and col.g) or 0.35, (col and col.b) or 0.20
-                  end,
-                  setValue = function(r, g, b)
-                      local c = TSB(); if not c then return end
-                      c.interruptReady = { r = r, g = g, b = b }
-                      TSBRefresh()
-                  end },
-                { tooltip = "Uninterruptible Cast",
-                  getValue = function()
-                      local c = TSB()
-                      local col = c and c.uninterruptible
-                      return (col and col.r) or 0.45, (col and col.g) or 0.45, (col and col.b) or 0.45
-                  end,
-                  setValue = function(r, g, b)
-                      local c = TSB(); if not c then return end
-                      c.uninterruptible = { r = r, g = g, b = b }
-                      TSBRefresh()
-                  end },
-                { tooltip = "Important Cast",
-                  disabled = function() local c = TSB(); return not (c and c.importantEnabled == true) end,
-                  disabledTooltip = "Important Cast Color",
-                  getValue = function()
-                      local c = TSB()
-                      local col = c and c.importantColor
-                      return (col and col.r) or 1, (col and col.g) or 0.2, (col and col.b) or 0.2
-                  end,
-                  setValue = function(r, g, b)
-                      local c = TSB(); if not c then return end
-                      c.importantColor = { r = r, g = g, b = b }
-                      TSBRefresh()
-                  end },
-              } },
-            GO.DropdownSpec(mtDesc, "Important Cast Glow",
-                "Glow the bar when the enemy casts a spell Blizzard flags as important."));  y = y - h
-
-        if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineCog(row._leftRegion, { tip = "Important Cast Color",
-                title = "Important Cast Color",
-                rows = {
-                    { type="toggle", label="Important Cast Color",
-                      tooltip="Tint the bar with the Important colour when the enemy casts a spell the game flags as important.",
-                      get=function() local c = TSB(); return c and c.importantEnabled == true end,
-                      set=function(v)
-                          local c = TSB(); if not c then return end
-                          c.importantEnabled = v and true or false
-                          TSBRefresh(); EllesmereUI:RefreshPage()
-                      end },
-                },
-            })
-
-            GO.AttachInline(row._rightRegion, mtDesc)
-        end
-
-        -- Row: Fade Out of Interrupt Range | Show Raid Target Marker.
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Fade Out of Interrupt Range",
-              disabled=Off, disabledTooltip=REQ,
-              tooltip="Fade a bar when the enemy is beyond your active interrupt spell's range. Has no effect for specs without an interrupt.",
-              getValue=function() local c = TSB(); return c and c.oorEnabled == true end,
-              setValue=function(v)
-                  local c = TSB(); if not c then return end
-                  c.oorEnabled = v and true or false
-                  TSBRefresh()
-              end },
-            { type="toggle", text="Show Raid Target Marker",
-              disabled=Off, disabledTooltip=REQ,
-              tooltip="Show the enemy's raid target marker to the left of the spell name.",
-              getValue=function() local c = TSB(); return c and c.showRaidMarker == true end,
-              setValue=function(v)
-                  local c = TSB(); if not c then return end
-                  c.showRaidMarker = v and true or false
-                  TSBRefresh()
-              end });  y = y - h
-
-        if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineCog(row._leftRegion, { tip = "Range Fade Settings",
-                title = "Fade Out of Interrupt Range",
-                rows = {
-                    { type="slider", label="Opacity", min=0, max=100, step=5,
-                      get=function() local c = TSB(); return math.floor(((c and c.oorAlpha) or 0.45) * 100 + 0.5) end,
-                      set=function(v) local c = TSB(); if c then c.oorAlpha = v / 100; TSBRefresh() end end },
-                },
-            })
-            EllesmereUI.BuildInlineCog(row._rightRegion, { tip = "Raid Marker Settings",
-                title = "Raid Target Marker",
-                rows = {
-                    { type="slider", label="Marker Size", min=6, max=30, step=1, pixel=true,
-                      get=function() local c = TSB(); return (c and c.raidMarkerSize) or 14 end,
-                      set=function(v) local c = TSB(); if c then c.raidMarkerSize = v; TSBRefresh() end end },
-                },
-            })
-        end
-
-        _, h = W:Spacer(parent, y, 20); y = y - h
-        parent:SetHeight(math.abs(y - yOffset))
-    end
-
-    ---------------------------------------------------------------------------
-    --  Target/Focus Bars page
-    ---------------------------------------------------------------------------
-    local function BuildTFBPage(pageName, parent, yOffset)
-        _installCastPreviewAutoOff()
-
-        local W = EllesmereUI.Widgets
-        local y = yOffset
-        local row, h
-
-        if EllesmereUI.ClearContentHeader then EllesmereUI:ClearContentHeader() end
-        parent._showRowDivider = true
-
-        local texValues, texOrder = BuildBarTexDropdown()
-
-        local function AnyOn()
-            local t = TFBBar("target")
-            local f = TFBBar("focus")
-            return (t and t.enabled == true) or (f and f.enabled == true)
-        end
-
-        -- One section per bar; identical rows driven by `which`.
-        local function BuildBarSection(which, header, enableLabel)
-            local function C() return TFBBar(which) end
-            local function On()
-                local c = C()
-                return c and c.enabled == true
-            end
-            local function Off() return not On() end
-            local REQ = enableLabel
-
-            _, h = W:SectionHeader(parent, header, y); y = y - h
-
-            row, h = W:DualRow(parent, y,
-                { type="toggle", text=enableLabel,
-                  tooltip="A standalone cast bar for this unit, placeable anywhere in Unlock Mode. Runs alongside the Unit Frames cast bars.",
-                  getValue=On,
-                  setValue=function(v)
-                      local c = C(); if not c then return end
-                      c.enabled = v and true or false
-                      TFBRefresh(); EllesmereUI:RefreshPage()
-                  end },
-                { type="dropdown", text="Bar Texture",
-                  disabled=Off, disabledTooltip=REQ,
-                  values=texValues, order=texOrder,
-                  getValue=function() local c = C(); return (c and c.texture) or "none" end,
-                  setValue=function(v) local c = C(); if c then c.texture = v; TFBRefresh() end end });  y = y - h
-            if not EllesmereUI._prebuilding then
-                MakeEye(row._leftRegion,
-                    function() return ns.TFB_IsPreview and ns.TFB_IsPreview(which) or false end,
-                    function(v)
-                        if Off() then return end
-                        if ns.TFB_SetPreview then ns.TFB_SetPreview(which, v) end
-                    end)
-            end
-
-            _, h = W:DualRow(parent, y,
-                { type="slider", text="Width", min=80, max=600, step=1, pixel=true,
-                  disabled=Off, disabledTooltip=REQ,
-                  getValue=function() local c = C(); return (c and c.width) or 260 end,
-                  setValue=function(v) local c = C(); if c then c.width = v; TFBRefresh() end end },
-                { type="slider", text="Height", min=6, max=60, step=1, pixel=true,
-                  disabled=Off, disabledTooltip=REQ,
-                  getValue=function() local c = C(); return (c and c.height) or 22 end,
-                  setValue=function(v) local c = C(); if c then c.height = v; TFBRefresh() end end });  y = y - h
-
-            row, h = W:DualRow(parent, y,
-                { type="toggle", text="Show Spell Name",
-                  disabled=Off, disabledTooltip=REQ,
-                  getValue=function() local c = C(); return not c or c.showSpellName ~= false end,
-                  setValue=function(v) local c = C(); if c then c.showSpellName = v and true or false; TFBRefresh() end end },
-                { type="toggle", text="Show Cast Timer",
-                  disabled=Off, disabledTooltip=REQ,
-                  getValue=function() local c = C(); return not c or c.showTimer ~= false end,
-                  setValue=function(v) local c = C(); if c then c.showTimer = v and true or false; TFBRefresh() end end });  y = y - h
-            if not EllesmereUI._prebuilding then
-                EllesmereUI.BuildInlineCog(row._leftRegion, { tip = "Spell Name Settings",
-                    title = "Spell Name",
-                    icon = EllesmereUI.RESIZE_ICON,
-                    disabled = Off, disabledTooltip = REQ,
-                    rows = {
-                        { type="slider", label="Text Size", min=6, max=22, step=1,
-                          get=function() local c = C(); return (c and c.nameSize) or 11 end,
-                          set=function(v) local c = C(); if c then c.nameSize = v; TFBRefresh() end end },
-                    },
-                })
-                EllesmereUI.BuildInlineCog(row._rightRegion, { tip = "Cast Timer Settings",
-                    title = "Cast Timer",
-                    icon = EllesmereUI.RESIZE_ICON,
-                    disabled = Off, disabledTooltip = REQ,
-                    rows = {
-                        { type="slider", label="Text Size", min=6, max=22, step=1,
-                          get=function() local c = C(); return (c and c.timerSize) or 11 end,
-                          set=function(v) local c = C(); if c then c.timerSize = v; TFBRefresh() end end },
-                    },
-                })
-            end
-
-            row, h = W:DualRow(parent, y,
-                { type="toggle", text="Show Icon",
-                  disabled=Off, disabledTooltip=REQ,
-                  getValue=function() local c = C(); return not c or c.showIcon ~= false end,
-                  setValue=function(v) local c = C(); if c then c.showIcon = v and true or false; TFBRefresh() end end },
-                { type="toggle", text="Show Spell Target",
-                  disabled=Off, disabledTooltip=REQ,
-                  tooltip="Show who the spell is being cast on, exactly like the nameplate cast bars.",
-                  -- Per bar; an unset bar inherits the former shared toggle.
-                  getValue=function()
-                      local c = C()
-                      local v = c and c.showTarget
-                      if v == nil then
-                          local t = TFB()
-                          v = not t or t.showTarget ~= false
-                      end
-                      return v
-                  end,
-                  setValue=function(v) local c = C(); if c then c.showTarget = v and true or false; TFBRefresh() end end });  y = y - h
-            if not EllesmereUI._prebuilding then
-                -- Colors are shared by both bars; only the text size is per bar.
-                EllesmereUI.BuildInlineCog(row._rightRegion, { tip = "Spell Target Settings",
-                    title = "Spell Target",
-                    disabled = Off, disabledTooltip = REQ,
-                    rows = {
-                        { type="toggle", label="Class Colored Names",
-                          get=function() local t = TFB(); return not t or t.targetClassColor ~= false end,
-                          set=function(v) local t = TFB(); if t then t.targetClassColor = v and true or false; TFBRefresh() end end },
-                        { type="colorpicker", label="Custom Color",
-                          disabled=function() local t = TFB(); return not t or t.targetClassColor ~= false end,
-                          disabledTooltip="Class Colored Names to be off",
-                          get=function()
-                              local t = TFB()
-                              local c = t and t.targetColor
-                              return (c and c.r) or 1, (c and c.g) or 1, (c and c.b) or 1
-                          end,
-                          set=function(r, g, b)
-                              local t = TFB(); if not t then return end
-                              t.targetColor = { r = r, g = g, b = b }
-                              TFBRefresh()
-                          end },
-                        { type="slider", label=(which == "target") and "Text Size (Target)" or "Text Size (Focus)", min=6, max=20, step=1,
-                          get=function() local c = C(); return (c and c.targetSize) or 10 end,
-                          set=function(v) local c = C(); if c then c.targetSize = v; TFBRefresh() end end },
-                    },
-                })
-            end
-        end
-
-        BuildBarSection("target", "TARGET CAST BAR", "Enable Target Cast Bar")
-        BuildBarSection("focus", "FOCUS CAST BAR", "Enable Focus Cast Bar")
-
-        -- ── CAST COLORS AND EFFECTS (shared by both bars) ─────────────────
-        _, h = W:SectionHeader(parent, "CAST COLORS AND EFFECTS", y); y = y - h
-
-        local function SharedOff() return not AnyOn() end
-        local SHARED_REQ = "a Target or Focus Cast Bar"
-
-        local kickHintValues = { none = "None", tick = "Tick", tickbar = "Tick + Bar" }
-        local kickHintOrder = { "none", "tick", "tickbar" }
-
-        row, h = W:DualRow(parent, y,
-            { type="multiSwatch", text="Cast Color",
-              disabled=SharedOff, disabledTooltip=SHARED_REQ,
-              swatches = {
-                { tooltip = "Interruptible Cast",
-                  getValue = function()
-                      local t = TFB()
-                      local c = t and t.castColor
-                      return (c and c.r) or 0.70, (c and c.g) or 0.40, (c and c.b) or 0.90
-                  end,
-                  setValue = function(r, g, b)
-                      local t = TFB(); if not t then return end
-                      t.castColor = { r = r, g = g, b = b }
-                      TFBRefresh()
-                  end },
-                { tooltip = "Interrupt on CD",
-                  getValue = function()
-                      local t = TFB()
-                      local c = t and t.interruptReady
-                      return (c and c.r) or 0.92, (c and c.g) or 0.35, (c and c.b) or 0.20
-                  end,
-                  setValue = function(r, g, b)
-                      local t = TFB(); if not t then return end
-                      t.interruptReady = { r = r, g = g, b = b }
-                      TFBRefresh()
-                  end },
-                { tooltip = "Uninterruptible Cast",
-                  getValue = function()
-                      local t = TFB()
-                      local c = t and t.uninterruptible
-                      return (c and c.r) or 0.45, (c and c.g) or 0.45, (c and c.b) or 0.45
-                  end,
-                  setValue = function(r, g, b)
-                      local t = TFB(); if not t then return end
-                      t.uninterruptible = { r = r, g = g, b = b }
-                      TFBRefresh()
-                  end },
-                { tooltip = "Important Cast",
-                  disabled = function()
-                      local t = TFB()
-                      return not (t and t.importantEnabled == true)
-                  end,
-                  disabledTooltip = "Important Cast Color",
-                  getValue = function()
-                      local t = TFB()
-                      local c = t and t.importantColor
-                      return (c and c.r) or 1, (c and c.g) or 0.2, (c and c.b) or 0.2
-                  end,
-                  setValue = function(r, g, b)
-                      local t = TFB(); if not t then return end
-                      t.importantColor = { r = r, g = g, b = b }
-                      TFBRefresh()
-                  end },
-              } },
-            { type="dropdown", text="Kick Ready Mid-Cast Hint",
-              disabled=SharedOff, disabledTooltip=SHARED_REQ,
-              tooltip="Shows where your interrupt will be ready during a cast. \"Tick\" marks the exact spot on the cast bar; \"Tick + Bar\" also colours the window during which your interrupt will be available.",
-              values=kickHintValues, order=kickHintOrder,
-              getValue=function()
-                  local t = TFB()
-                  if not t then return "tick" end
-                  if t.kickTickEnabled == false then return "none" end
-                  if t.midCastEnabled == true then return "tickbar" end
-                  return "tick"
-              end,
-              setValue=function(v)
-                  local t = TFB(); if not t then return end
-                  if v == "none" then
-                      t.kickTickEnabled = false
-                      t.midCastEnabled = false
-                  elseif v == "tick" then
-                      t.kickTickEnabled = true
-                      t.midCastEnabled = false
-                  else
-                      t.kickTickEnabled = true
-                      t.midCastEnabled = true
-                  end
-                  TFBRefresh()
-              end });  y = y - h
-        if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineCog(row._leftRegion, { tip = "Cast Color Settings",
-                title = "Cast Color",
-                rows = {
-                    { type="toggle", label="Show Shield Icon",
-                      tooltip="Show a shield icon on the cast bar when the cast cannot be interrupted.",
-                      get=function() local t = TFB(); return not t or t.showShield ~= false end,
-                      set=function(v) local t = TFB(); if t then t.showShield = v and true or false; TFBRefresh() end end },
-                    { type="toggle", label="Show Spark",
-                      tooltip="Show the bright spark at the leading edge of the cast bar fill.",
-                      get=function() local t = TFB(); return not t or t.showSpark ~= false end,
-                      set=function(v) local t = TFB(); if t then t.showSpark = v and true or false; TFBRefresh() end end },
-                    { type="toggle", label="Important Cast Color",
-                      tooltip="Tint the cast bar with the Important colour when the unit casts a spell the game flags as important. Your interrupt being on cooldown still takes priority.",
-                      get=function() local t = TFB(); return t and t.importantEnabled == true end,
-                      set=function(v)
-                          local t = TFB(); if not t then return end
-                          t.importantEnabled = v and true or false
-                          TFBRefresh(); EllesmereUI:RefreshPage()
-                      end },
-                },
-            })
-            EllesmereUI.BuildInlineCog(row._rightRegion, { tip = "Kick Hint Settings",
-                title = "Kick Ready Mid-Cast Hint",
-                rows = {
-                    { type="colorpicker", label="Mid-Cast Bar Color",
-                      disabled=function() local t = TFB(); return not (t and t.midCastEnabled == true) end,
-                      disabledTooltip="Tick + Bar",
-                      get=function()
-                          local t = TFB()
-                          local c = t and t.midCastColor
-                          return (c and c.r) or 0.318, (c and c.g) or 0.820, (c and c.b) or 0.357
-                      end,
-                      set=function(r, g, b)
-                          local t = TFB(); if not t then return end
-                          t.midCastColor = { r = r, g = g, b = b }
-                          TFBRefresh()
-                      end },
-                    { type="colorpicker", label="Tick Color",
-                      get=function()
-                          local t = TFB()
-                          local c = t and t.kickTickColor
-                          return (c and c.r) or 1, (c and c.g) or 1, (c and c.b) or 1
-                      end,
-                      set=function(r, g, b)
-                          local t = TFB(); if not t then return end
-                          t.kickTickColor = { r = r, g = g, b = b }
-                          TFBRefresh()
-                      end },
-                },
-            })
-        end
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Interrupted Flash Effect",
-              disabled=SharedOff, disabledTooltip=SHARED_REQ,
-              tooltip="Flash the cast bar and show \"Interrupted\" for a moment when the cast is interrupted.",
-              getValue=function() local t = TFB(); return not t or t.interruptedFlash ~= false end,
-              setValue=function(v) local t = TFB(); if t then t.interruptedFlash = v and true or false; TFBRefresh() end end },
-            { type="label", text="" });  y = y - h
-        if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineCog(row._leftRegion, { tip = "Interrupted Flash Settings",
-                title = "Interrupted Flash",
-                rows = {
-                    { type="colorpicker", label="Flash Color",
-                      get=function()
-                          local t = TFB()
-                          local c = t and t.interruptedColor
-                          return (c and c.r) or 0.8, (c and c.g) or 0, (c and c.b) or 0
-                      end,
-                      set=function(r, g, b)
-                          local t = TFB(); if not t then return end
-                          t.interruptedColor = { r = r, g = g, b = b }
-                          TFBRefresh()
-                      end },
-                },
-            })
-        end
-
-        _, h = W:Spacer(parent, y, 20); y = y - h
-        parent:SetHeight(math.abs(y - yOffset))
-    end
-
-    -----------------------------------------------------------------------
-    --  Run Summary page
-    -----------------------------------------------------------------------
-    local function RSCfg()
-        local p = DB()
-        return p and p.runSummary
-    end
-
-    local function RSGet(key, fallback)
-        local c = RSCfg()
-        local v = c and c[key]
-        if v == nil then return fallback end
-        return v
-    end
-
-    local function RSSet(key, val)
-        local c = RSCfg()
-        if c then c[key] = val end
-        if ns.RS_Apply then ns.RS_Apply() end
-        -- Column toggles and the scale change how an already open panel looks,
-        -- so repaint it instead of waiting for the next time it is opened.
-        if ns.RS_Refresh then ns.RS_Refresh() end
-    end
-
-    local function RSOn() return RSCfg() ~= nil and RSCfg().enabled == true end
-    local function RSOff() return not RSOn() end
-
-    local function BuildRSPage(pageName, parent, yOffset)
-        local W = EllesmereUI.Widgets
-        local y = yOffset
-        local row, h
-
-        if EllesmereUI.ClearContentHeader then EllesmereUI:ClearContentHeader() end
-        parent._showRowDivider = true
-
-        local REQ = "Enable Run Summary"
-
-        -----------------------------------------------------------------
-        --  Top action buttons: Show Preview + Clear Run History, two 312x38
-        --  buttons centred with a 40px gap.
-        -----------------------------------------------------------------
-        do
-            local PPn = EllesmereUI.PanelPP
-            local BTN_W = 312
-            local BTN_H = 38
-            local GAP = 40
-            local ROW_H = BTN_H + 20
-            local rowFrame = CreateFrame("Frame", nil, parent)
-            local totalW = parent:GetWidth() - EllesmereUI.CONTENT_PAD * 2
-            PPn.Size(rowFrame, totalW, ROW_H)
-            PPn.Point(rowFrame, "TOPLEFT", parent, "TOPLEFT", EllesmereUI.CONTENT_PAD, y)
-
-            local previewBtn = CreateFrame("Button", nil, rowFrame)
-            PPn.Size(previewBtn, BTN_W, BTN_H)
-            PPn.Point(previewBtn, "RIGHT", rowFrame, "CENTER", -(GAP / 2), 0)
-            previewBtn:SetFrameLevel(rowFrame:GetFrameLevel() + 1)
-            EllesmereUI.MakeStyledButton(previewBtn, "Show Preview", 14,
-                EllesmereUI.WB_COLOURS, function()
-                    if ns.RS_ShowPreview then ns.RS_ShowPreview() end
-                end)
-
-            local clearBtn = CreateFrame("Button", nil, rowFrame)
-            PPn.Size(clearBtn, BTN_W, BTN_H)
-            PPn.Point(clearBtn, "LEFT", rowFrame, "CENTER", GAP / 2, 0)
-            clearBtn:SetFrameLevel(rowFrame:GetFrameLevel() + 1)
-            EllesmereUI.MakeStyledButton(clearBtn, "Clear Run History", 14,
-                EllesmereUI.WB_COLOURS, function()
-                    EllesmereUI:ShowConfirmPopup({
-                        title = "Clear Run History",
-                        message = "Delete every recorded Mythic+ run for this character?",
-                        confirmText = "Delete",
-                        cancelText = "Cancel",
-                        onConfirm = function()
-                            if ns.RS_ClearHistory then ns.RS_ClearHistory() end
-                        end,
-                    })
-                end)
-
-            y = y - ROW_H
-        end
-
-        row, h = W:SectionHeader(parent, "RUN SUMMARY", y); y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Enable Run Summary",
-              tooltip="Records every finished Mythic+ key and shows an overview of the group when the run ends. Nothing is registered or created while this is off.",
-              getValue=RSOn,
-              setValue=function(v) RSSet("enabled", v and true or false); EllesmereUI:RefreshPage() end },
-            { type="toggle", text="Show After Looting",
-              tooltip="Open the overview once the end of run chest has been looted. With this off it opens as soon as the key ends. /ov reopens it at any time.",
-              disabled=RSOff, disabledTooltip=REQ,
-              getValue=function() return RSGet("showAfterLoot", true) == true end,
-              setValue=function(v) RSSet("showAfterLoot", v and true or false) end });  y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="slider", text="History Size", min=5, max=50, step=1,
-              disabled=RSOff, disabledTooltip=REQ,
-              getValue=function() return RSGet("historySize", 20) end,
-              setValue=function(v) RSSet("historySize", v) end },
-            { type="slider", text="Panel Scale", min=0.5, max=2, step=0.05,
-              disabled=RSOff, disabledTooltip=REQ,
-              getValue=function() return RSGet("scale", 1) end,
-              setValue=function(v) RSSet("scale", v) end });  y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="slider", text="Text Size", min=10, max=20, step=1,
-              tooltip="Size of the player rows. The title and column headers keep their own size.",
-              disabled=RSOff, disabledTooltip=REQ,
-              getValue=function() return RSGet("textSize", 14) end,
-              setValue=function(v) RSSet("textSize", v) end },
-            { type="label", text="" });  y = y - h
-
-        row, h = W:SectionHeader(parent, "COLUMNS", y); y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Spec Icons",
-              disabled=RSOff, disabledTooltip=REQ,
-              getValue=function() return RSGet("showSpecIcons", true) == true end,
-              setValue=function(v) RSSet("showSpecIcons", v and true or false) end },
-            { type="toggle", text="Item Level",
-              tooltip="Shown in grey next to each name. Item levels are read by inspecting party members during the run, so a member who stayed out of range shows none.",
-              disabled=RSOff, disabledTooltip=REQ,
-              getValue=function() return RSGet("colItemLevel", true) == true end,
-              setValue=function(v) RSSet("colItemLevel", v and true or false) end });  y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="M+ Score",
-              tooltip="Current season score plus the gain from this run. Your own gain is the exact value the server reports; for party members it is their score before the key subtracted from their score after it.",
-              disabled=RSOff, disabledTooltip=REQ,
-              getValue=function() return RSGet("colScore", true) == true end,
-              setValue=function(v) RSSet("colScore", v and true or false) end },
-            { type="toggle", text="Loot",
-              tooltip="What each player looted. Your own chest reward always appears; other players' items only when the server announces the loot to the group, which it does not always do for the end of run chest.",
-              disabled=RSOff, disabledTooltip=REQ,
-              getValue=function() return RSGet("colLoot", true) == true end,
-              setValue=function(v) RSSet("colLoot", v and true or false) end });  y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="DPS",
-              tooltip="Read from Blizzard's own damage meter. With that meter switched off this column, Damage Taken and Interrupts stay empty.",
-              disabled=RSOff, disabledTooltip=REQ,
-              getValue=function() return RSGet("colDps", true) == true end,
-              setValue=function(v) RSSet("colDps", v and true or false) end },
-            { type="toggle", text="Damage Taken",
-              disabled=RSOff, disabledTooltip=REQ,
-              getValue=function() return RSGet("colDamageTaken", true) == true end,
-              setValue=function(v) RSSet("colDamageTaken", v and true or false) end });  y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Interrupts",
-              disabled=RSOff, disabledTooltip=REQ,
-              getValue=function() return RSGet("colInterrupts", true) == true end,
-              setValue=function(v) RSSet("colInterrupts", v and true or false) end },
-            { type="toggle", text="Deaths",
-              disabled=RSOff, disabledTooltip=REQ,
-              getValue=function() return RSGet("colDeaths", true) == true end,
-              setValue=function(v) RSSet("colDeaths", v and true or false) end });  y = y - h
-
-        row, h = W:Spacer(parent, y, 20); y = y - h
-        parent:SetHeight(math.abs(y - yOffset))
-    end
-
-    -- RegisterModule
-    EllesmereUI:RegisterModule("EllesmereUIMythicTimer", {
-        title       = "Mythic+ Tools",
-        description = "Mythic+ timer, targeted spell bars, and standalone cast bars.",
-        pages    = { PAGE_DISPLAY, PAGE_TSB, PAGE_TFB, PAGE_RS },
-        buildPage = function(pageName, parent, yOffset)
-            if pageName == PAGE_TSB then
-                return BuildTSBPage(pageName, parent, yOffset)
-            elseif pageName == PAGE_TFB then
-                return BuildTFBPage(pageName, parent, yOffset)
-            elseif pageName == PAGE_RS then
-                return BuildRSPage(pageName, parent, yOffset)
-            end
-            return BuildPage(pageName, parent, yOffset)
-        end,
-        onReset  = function()
-            -- Lite DB stores data at EllesmereUIDB.profiles[X].addons.EllesmereUIMythicTimer
-            if EllesmereUIDB and EllesmereUIDB.profiles then
-                local profile = EllesmereUIDB.activeProfile or "Default"
-                local p = EllesmereUIDB.profiles[profile]
-                if p and p.addons and p.addons.EllesmereUIMythicTimer then
-                    wipe(p.addons.EllesmereUIMythicTimer)
-                end
-            end
-        end,
-    })
-end)
--- LoadOnDemand: this addon loads after PLAYER_LOGIN, so the event above will never fire; run the init now.
-if IsLoggedIn() then initFrame:GetScript("OnEvent")(initFrame) end
+local TIMER_FORMATS = {
+	"REMAINING", "11:37",
+	"REMAINING_TOTAL", "11:37 / 33:00",
+	"ELAPSED", "21:23",
+	"ELAPSED_DETAIL", "21:23 (11:37 / 33:00)",
+}
+local FORCES_FORMATS = {
+	"PERCENT", "Percent",
+	"COUNT", "Count / Total",
+	"COUNT_PERCENT", "Count / Total + %",
+	"COUNT_REMAINING", "Count / Total + Remaining",
+	"REMAINING", "Remaining Count",
+	"PERCENT_COUNT_REMAINING", "% || Count / Total || Remaining",  -- NaowhUI extra format
+}
+
+local function BuildTimerPage(p)
+	-- DISPLAY
+	p:Section("DISPLAY")
+	p:Toggle("Show Preview", "Shows a sample Challenge Mode run so you can set the timer up outside a dungeon.",
+		function() return Cfg("showPreview") == true end,
+		function(v) EMT.SetPreview(v) end)
+	ListDropdown(p, "Text Align", nil, { "LEFT", "Left", "RIGHT", "Right" },
+		function() return Cfg("alignAllText") or "RIGHT" end,
+		function(v) Set("alignAllText", v); EMT.Rebuild() end, Off)
+	p:Slider("Scale", nil, 0.5, 2.0, 0.01,
+		function() return Cfg("scale") or 1.0 end,
+		function(v) Set("scale", v) end, Off)
+	p:Cog("Frame Width", {
+		{ type = "slider", label = "Width", min = 180, max = 420, step = 1,
+			get = function() return Cfg("frameWidth") or 260 end,
+			set = function(v) Set("frameWidth", v) end },
+	}, { icon = "resize", disabled = Off })
+	p:Slider("Background Opacity", nil, 0, 100, 5,
+		function() return floor((Cfg("standaloneAlpha") or 0) * 100 + 0.5) end,
+		function(v) Set("standaloneAlpha", v / 100) end, Off)
+
+	local function barsOff()
+		return Off() or (Cfg("showTimerBar") == false and Cfg("showEnemyBar") == false)
+	end
+	p:Slider("Bar Width", nil, 120, 420, 1,
+		function() return Cfg("barWidth") or 210 end,
+		function(v) Set("barWidth", v) end, barsOff)
+	p:Toggle("Custom Border Style", "Show the border size and color controls for the timer bars.",
+		function() return Cfg("customBorderStyle") == true end,
+		function(v) Set("customBorderStyle", v) end, barsOff)
+	if Cfg("customBorderStyle") then
+		local function borderOff()
+			if barsOff() then return true end
+			return Cfg("showTimerBar") == false and Cfg("borderApplyToForces") == false
+		end
+		p:Slider("Border Size", "Width of the solid border in pixels. 5.4.8 draws a solid border only.", 0, 4, 1,
+			function() return Cfg("borderSize") or 0 end,
+			function(v) Set("borderSize", v) end, borderOff)
+		p:Swatch("Border Color",
+			function() return Cfg("borderR") or 0, Cfg("borderG") or 0, Cfg("borderB") or 0, Cfg("borderA") or 1 end,
+			function(r, g, b, a) Set("borderR", r); Set("borderG", g); Set("borderB", b); Set("borderA", a or 1) end,
+			{ alpha = true, disabled = borderOff })
+		p:Cog("Border Options", {
+			{ type = "toggle", label = "Apply to Forces Bar",
+				get = function() return Cfg("borderApplyToForces") ~= false end,
+				set = function(v) Set("borderApplyToForces", v) end },
+		}, { disabled = barsOff })
+	end
+
+	-- TITLE (retail "TITLE AND AFFIXES"; 5.4.8 has no affixes)
+	p:Section("TITLE")
+	local function titleOff() return Off() or Cfg("showTitle") == false end
+	p:Toggle("Show Title", "Shows the dungeon name and the medal you are on for.",
+		function() return Cfg("showTitle") ~= false end,
+		function(v) Set("showTitle", v) end, Off)
+	AccentSwatches(p, "titleUseAccent", "titleColor", 1, 1, 1, titleOff)
+	p:Cog("Title", {
+		{ type = "toggle", label = "Show Dungeon Name",
+			get = function() return Cfg("showDungeonName") ~= false end,
+			set = function(v) Set("showDungeonName", v) end },
+		{ type = "toggle", label = "Show Medal on Timer",
+			tip = "Retail Show Key Level on Timer: the medal you are on for, left of the clock. Needs Show Dungeon Name off.",
+			disabled = function() return Cfg("showDungeonName") ~= false end,
+			get = function() return Cfg("showKeyLevelOnTimer") == true end,
+			set = function(v) Set("showKeyLevelOnTimer", v) end },
+		{ type = "slider", label = "Spacing", min = 0, max = 40, step = 1,
+			disabled = function() return Cfg("showKeyLevelOnTimer") ~= true end,
+			get = function() return Cfg("keyLevelTimerSpacing") or 8 end,
+			set = function(v) Set("keyLevelTimerSpacing", v) end },
+	}, { disabled = titleOff })
+	p:Slider("Title Size", nil, 8, 24, 1,
+		function() return Cfg("titleSize") or 16 end,
+		function(v) Set("titleSize", v) end, titleOff)
+	ListDropdown(p, "Title Position", nil, { "ABOVE_TIMER", "Above Timer", "BELOW_TIMER", "Below Timer" },
+		function() return Cfg("titleAffixPosition") or "ABOVE_TIMER" end,
+		function(v) Set("titleAffixPosition", v) end, Off)
+	p:Cog("Title Spacing", {
+		{ type = "slider", label = "Death Gap", min = -10, max = 30, step = 1,
+			disabled = function() return (Cfg("titleAffixPosition") or "ABOVE_TIMER") == "BELOW_TIMER" end,
+			get = function() return Cfg("titleAffixDeathGap") or 11 end,
+			set = function(v) Set("titleAffixDeathGap", v) end },
+		{ type = "slider", label = "Timer Gap", min = -10, max = 30, step = 1,
+			disabled = function() return (Cfg("titleAffixPosition") or "ABOVE_TIMER") ~= "BELOW_TIMER" end,
+			get = function() return Cfg("titleAffixTimerGap") or Cfg("titleAffixSandwichGap") or 6 end,
+			set = function(v) Set("titleAffixTimerGap", v) end },
+		{ type = "slider", label = "Bar Gap", min = -10, max = 30, step = 1,
+			disabled = function() return (Cfg("titleAffixPosition") or "ABOVE_TIMER") ~= "BELOW_TIMER" end,
+			get = function() return Cfg("titleAffixBarGap") or Cfg("titleAffixSandwichGap") or 6 end,
+			set = function(v) Set("titleAffixBarGap", v) end },
+	}, { icon = "resize", disabled = Off })
+	p:Toggle("Show Deaths", "Shows the group's deaths of the run (hover for the list). 5.4.8 has no death time penalty.",
+		function() return Cfg("showDeaths") ~= false end,
+		function(v) Set("showDeaths", v) end, Off)
+	p:Swatch("Death Text Color", function() return Col("deathTextColor", 0.93, 0.33, 0.33) end,
+		function(r, g, b) SetCol("deathTextColor", r, g, b) end,
+		{ disabled = function() return Off() or Cfg("showDeaths") == false end })
+
+	-- TIMER
+	p:Section("TIMER")
+	p:Slider("Timer Size", nil, 10, 32, 1,
+		function() return Cfg("timerTextSize") or 20 end,
+		function(v) Set("timerTextSize", v) end,
+		function() return Off() or (Cfg("timerInBar") == true and Cfg("showTimerBar") ~= false) end)
+	ListDropdown(p, "Timer Format", nil, TIMER_FORMATS,
+		function() return Cfg("timerDisplayMode") or "REMAINING_TOTAL" end,
+		function(v) Set("timerDisplayMode", v) end, Off)
+	local function FontItems()
+		local lead = { { name = "EUI Global Default", value = "__global" } }
+		return U.FontItems and U.FontItems(lead) or lead
+	end
+	p:Dropdown("Timer Font", "Font of the timer clock. EUI Global Default follows the Mythic+ Tools module font.",
+		FontItems,
+		function() return Cfg("timerFont") or "__global" end,
+		function()
+			local v = Cfg("timerFont") or "__global"
+			for _, item in ipairs(FontItems()) do
+				if item.value == v then return item.name end
+			end
+			return tostring(v)
+		end,
+		function(v) Set("timerFont", v) end,
+		{ fontPreview = true, fontPath = function(v)
+			if v == "__global" then return ns.GetFontPath("mythicTimer") end
+			return ns.ResolveFontName(v)
+		end }, Off)
+	p:Swatch("Timer Expired Color", function() return Col("timerExpiredColor", 0.9, 0.2, 0.2) end,
+		function(r, g, b) SetCol("timerExpiredColor", r, g, b) end, { disabled = Off })
+	p:Blank()
+
+	-- TIMER BAR
+	p:Section("TIMER BAR")
+	local function timerBarOff() return Off() or Cfg("showTimerBar") == false end
+	p:Toggle("Show Timer Bar", nil,
+		function() return Cfg("showTimerBar") ~= false end,
+		function(v) Set("showTimerBar", v) end, Off)
+	p:Toggle("Move Timer Inside Bar", nil,
+		function() return Cfg("timerInBar") == true end,
+		function(v) Set("timerInBar", v) end, timerBarOff)
+	p:Cog("In-Bar Timer", {
+		{ type = "slider", label = "In-Bar Height", min = 8, max = 40, step = 1,
+			tip = "Minimum height of the timer bar while the timer is inside it. The larger of this and Timer Bar Height is used.",
+			get = function() return Cfg("barHeightExpanded") or 22 end,
+			set = function(v) Set("barHeightExpanded", v) end },
+		{ type = "slider", label = "Fill Opacity", min = 0, max = 1, step = 0.05,
+			tip = "Opacity of the bar fill while the timer is inside it.",
+			get = function() return Cfg("barFillAlphaExpanded") or 0.85 end,
+			set = function(v) Set("barFillAlphaExpanded", v) end },
+		{ type = "toggle", label = "Left Text",
+			tip = "Align the timer text to the left edge of the bar instead of centering it.",
+			get = function() return Cfg("timerInBarLeftText") == true end,
+			set = function(v) Set("timerInBarLeftText", v) end },
+	}, { disabled = function() return timerBarOff() or Cfg("timerInBar") ~= true end })
+	p:Slider("Timer Bar Height", "Height of the timer bar. While the timer is inside the bar, In-Bar Height sets the minimum.", 4, 30, 1,
+		function() return Cfg("barHeight") or 8 end,
+		function(v)
+			if Cfg("enemyBarHeight") == nil then Set("enemyBarHeight", Cfg("barHeight") or 8) end
+			Set("barHeight", v)
+		end, timerBarOff)
+	TexDropdown(p, "Timer Bar Texture", nil,
+		function() return Cfg("barTexture") or "none" end,
+		function(v) Set("barTexture", v) end, timerBarOff)
+	p:Cog("Bar Texture", {
+		TexCogRow("Background Texture", function() return Cfg("barBgTexture") or "none" end,
+			function(v) Set("barBgTexture", v) end),
+	}, { disabled = timerBarOff })
+
+	-- THRESHOLDS: Gold / Silver / Bronze (retail +3 / +2 / +1)
+	p:Section("THRESHOLDS")
+	ListDropdown(p, "Ticks / Gaps", nil, { "TICKS", "Ticks", "SEGMENTS", "Gaps" },
+		function() return Cfg("timerBarStyle") or "TICKS" end,
+		function(v) Set("timerBarStyle", v) end, timerBarOff)
+	p:Swatch("Tick Color", function() return Col("timerTickColor", 1, 1, 1) end,
+		function(r, g, b) SetCol("timerTickColor", r, g, b) end,
+		{ disabled = function() return timerBarOff() or (Cfg("timerBarStyle") or "TICKS") ~= "TICKS" end })
+	p:Cog("Ticks / Gaps", {
+		{ type = "slider", label = "Tick Opacity", min = 0, max = 1, step = 0.05,
+			disabled = function() return (Cfg("timerBarStyle") or "TICKS") ~= "TICKS" end,
+			get = function() return Cfg("tickAlpha") or 1 end,
+			set = function(v) Set("tickAlpha", v) end },
+		{ type = "slider", label = "Gap Size", min = 0, max = 12, step = 1,
+			disabled = function() return (Cfg("timerBarStyle") or "TICKS") ~= "SEGMENTS" end,
+			get = function() return Cfg("timerBarSegmentGap") or 2 end,
+			set = function(v) Set("timerBarSegmentGap", v) end },
+	}, { disabled = timerBarOff })
+
+	local function Threshold(label, tip, colorKey, showKey, sizeKey, oxKey, oyKey, whiteKey, dr, dg, db, alsoKey)
+		local function shown()
+			if showKey == "showThreshRemaining" then return Cfg(showKey) == true end
+			return Cfg(showKey) ~= false
+		end
+		p:Toggle("Show " .. label .. " Timer Text", tip, shown, function(v) Set(showKey, v) end, Off)
+		p:Swatch(label .. " Color", function() return Col(colorKey, dr, dg, db) end,
+			function(r, g, b)
+				SetCol(colorKey, r, g, b)
+				if alsoKey then SetCol(alsoKey, r, g, b) end
+			end, { disabled = Off })
+		p:Cog(label .. " Timer Text", {
+			{ type = "toggle", label = "White Text",
+				get = function() return Cfg(whiteKey) == true end,
+				set = function(v) Set(whiteKey, v) end },
+			{ type = "slider", label = "Text Size", min = 6, max = 20, step = 1,
+				get = function() return Cfg(sizeKey) or Cfg("thresholdSize") or 12 end,
+				set = function(v) Set(sizeKey, v) end },
+			{ type = "slider", label = "Text X", min = -80, max = 80, step = 1,
+				get = function() return Cfg(oxKey) or Cfg("thresholdTextOffsetX") or 0 end,
+				set = function(v) Set(oxKey, v) end },
+			{ type = "slider", label = "Text Y", min = -40, max = 40, step = 1,
+				get = function() return Cfg(oyKey) or Cfg("thresholdTextOffsetY") or 0 end,
+				set = function(v) Set(oyKey, v) end },
+		}, { icon = "resize", disabled = function() return Off() or not shown() end })
+	end
+	Threshold("Gold", "Time left for the Gold medal (retail +3 threshold).",
+		"timerSegment1Color", "showPlusThreeTimer", "thresholdPlusThreeSize",
+		"thresholdPlusThreeTextOffsetX", "thresholdPlusThreeTextOffsetY", "thresholdPlusThreeTextWhite",
+		0.4, 1, 0.4, "timerPlusThreeColor")
+	Threshold("Silver", "Time left for the Silver medal (retail +2 threshold).",
+		"timerSegment2Color", "showPlusTwoTimer", "thresholdPlusTwoSize",
+		"thresholdPlusTwoTextOffsetX", "thresholdPlusTwoTextOffsetY", "thresholdPlusTwoTextWhite",
+		0.3, 0.8, 1, "timerPlusTwoColor")
+	Threshold("Bronze", "Time left for the Bronze medal, the time limit (retail +1 threshold). Goes negative once over time.",
+		"timerSegment3Color", "showThreshRemaining", "thresholdPlusOneSize",
+		"thresholdPlusOneTextOffsetX", "thresholdPlusOneTextOffsetY", "thresholdPlusOneTextWhite",
+		0.69, 0.35, 0.8)
+	p:Blank()
+
+	-- FORCES (the enemy count criteria of a Challenge Mode)
+	p:Section("FORCES")
+	local function forcesOff() return Off() or Cfg("showEnemyBar") == false end
+	p:Toggle("Show Enemy Forces", "Shows the enemy count objective of the Challenge Mode as a bar.",
+		function() return Cfg("showEnemyBar") ~= false end,
+		function(v) Set("showEnemyBar", v) end, Off)
+	p:Slider("Forces Bar Height", nil, 4, 30, 1,
+		function() return Cfg("enemyBarHeight") or Cfg("barHeight") or 8 end,
+		function(v) Set("enemyBarHeight", v) end, forcesOff)
+	ListDropdown(p, "Enemy Text Format", nil, FORCES_FORMATS,
+		function() return Cfg("enemyForcesTextFormat") or "PERCENT" end,
+		function(v) Set("enemyForcesTextFormat", v) end, forcesOff)
+	p:Cog("Enemy Forces Text", {
+		{ type = "toggle", label = "Hide Label",
+			get = function() return Cfg("hideEnemyForcesLabel") == true end,
+			set = function(v) Set("hideEnemyForcesLabel", v) end },
+		{ type = "slider", label = "Text Size", min = 8, max = 24, step = 1,
+			get = function() return Cfg("enemyForcesTextSize") or Cfg("objectivesSize") or 12 end,
+			set = function(v) Set("enemyForcesTextSize", v) end },
+		{ type = "slider", label = "Text X", min = -80, max = 80, step = 1,
+			get = function() return Cfg("enemyForcesTextOffsetX") or 0 end,
+			set = function(v) Set("enemyForcesTextOffsetX", v) end },
+		{ type = "slider", label = "Text Y", min = -40, max = 40, step = 1,
+			get = function() return Cfg("enemyForcesTextOffsetY") or 0 end,
+			set = function(v) Set("enemyForcesTextOffsetY", v) end },
+	}, { icon = "resize", disabled = forcesOff })
+	ListDropdown(p, "Percent Position", "Where the enemy forces percentage is shown: in the label text, in the bar or beside it.",
+		{ "LABEL", "In Label Text", "BAR", "In Bar", "BESIDE", "Beside Bar" },
+		function() return Cfg("enemyForcesPctPos") or "LABEL" end,
+		function(v) Set("enemyForcesPctPos", v) end, forcesOff)
+	ListDropdown(p, "Enemy Forces Position", nil, { "BOTTOM", "Bottom", "UNDER_BAR", "Under Timer Bar" },
+		function() return Cfg("enemyForcesPos") or "BOTTOM" end,
+		function(v) Set("enemyForcesPos", v) end, forcesOff)
+	TexDropdown(p, "Forces Bar Texture", "Texture of the enemy forces bar. The swatches next to it set the Enemy Bar Color (theme accent or a custom color).",
+		function() return Cfg("enemyBarTexture") or "none" end,
+		function(v) Set("enemyBarTexture", v) end, forcesOff)
+	p:Cog("Bar Texture", {
+		TexCogRow("Background Texture", function() return Cfg("enemyBarBgTexture") or "none" end,
+			function(v) Set("enemyBarBgTexture", v) end),
+	}, { disabled = forcesOff })
+	AccentSwatches(p, "enemyBarUseAccent", "enemyBarColor", 0.35, 0.55, 0.8, forcesOff)
+
+	-- BOSS OBJECTIVES
+	p:Section("BOSS OBJECTIVES")
+	local function objOff() return Off() or Cfg("showObjectives") == false end
+	p:Toggle("Show Boss Objectives", nil,
+		function() return Cfg("showObjectives") ~= false end,
+		function(v) Set("showObjectives", v) end, Off)
+	p:Cog("Boss Position", {
+		{ type = "slider", label = "Boss X", min = -80, max = 80, step = 1,
+			get = function() return Cfg("objectiveTextOffsetX") or 0 end,
+			set = function(v) Set("objectiveTextOffsetX", v) end },
+		{ type = "slider", label = "Boss Y", min = -40, max = 40, step = 1,
+			get = function() return Cfg("objectiveTextOffsetY") or 0 end,
+			set = function(v) Set("objectiveTextOffsetY", v) end },
+	}, { icon = "resize", disabled = objOff })
+	p:Slider("Objectives Size", nil, 8, 20, 1,
+		function() return Cfg("objectivesSize") or 12 end,
+		function(v) Set("objectivesSize", v) end, objOff)
+	p:Toggle("Show Objective Times", nil,
+		function() return Cfg("showObjectiveTimes") ~= false end,
+		function(v) Set("showObjectiveTimes", v) end, objOff)
+	ListDropdown(p, "Time Position", "Which side of each boss objective shows its split times and Split Compare text.",
+		{ "RIGHT", "Right", "LEFT", "Left" },
+		function() return Cfg("objectiveTimePosition") or "RIGHT" end,
+		function(v) Set("objectiveTimePosition", v) end,
+		function()
+			return objOff() or (Cfg("showObjectiveTimes") == false and (Cfg("objectiveCompareMode") or "NONE") == "NONE")
+		end)
+	p:Slider("Objective Spacing", nil, 0, 12, 1,
+		function() return Cfg("objectiveGap") or 4 end,
+		function(v) Set("objectiveGap", v) end, objOff)
+	-- 5.4.8 has no key level / affixes: only the per dungeon scope remains
+	-- (a retail "Per Dungeon + Level" value reads the same splits).
+	local COMPARE = { "NONE", "None", "DUNGEON", "Per Dungeon" }
+	ListDropdown(p, "Split Compare", "Compares each boss kill with your best time for that boss in this dungeon.", COMPARE,
+		function() return Cfg("objectiveCompareMode") or "NONE" end,
+		function(v) Set("objectiveCompareMode", v) end, objOff,
+		function()
+			local v = Cfg("objectiveCompareMode") or "NONE"
+			return v == "NONE" and "None" or "Per Dungeon"
+		end)
+	p:Cog("Split Compare", {
+		{ type = "toggle", label = "Always Show Split Times",
+			tip = "Shows your best split on upcoming bosses instead of only killed ones.",
+			disabled = function() return (Cfg("objectiveCompareMode") or "NONE") == "NONE" end,
+			get = function() return Cfg("showUpcomingSplitTargets") == true end,
+			set = function(v) Set("showUpcomingSplitTargets", v) end },
+		{ type = "toggle", label = "Delta Only",
+			tip = "Show only the difference to the reference split.",
+			disabled = function() return (Cfg("objectiveCompareMode") or "NONE") == "NONE" end,
+			get = function() return Cfg("objectiveCompareDeltaOnly") == true end,
+			set = function(v) Set("objectiveCompareDeltaOnly", v) end },
+		{ type = "toggle", label = "Fastest Run Splits",
+			tip = "Compare against the splits of your fastest completed run instead of your best individual splits.",
+			disabled = function() return (Cfg("objectiveCompareMode") or "NONE") == "NONE" end,
+			get = function() return Cfg("showFastestRunSplits") == true end,
+			set = function(v) Set("showFastestRunSplits", v) end },
+	}, { disabled = objOff })
+end
+
+-------------------------------------------------------------------------------
+--  Page: Targeted Spell Bars
+-------------------------------------------------------------------------------
+local function TSB()
+	local t = T()
+	return t and t.tsb
+end
+local function TSBGet(key, default)
+	local c = TSB()
+	local v = c and c[key]
+	if v == nil then return default end
+	return v
+end
+local function TSBSet(key, value)
+	local c = TSB()
+	if c then c[key] = value end
+end
+local function TSBCol(key, dr, dg, db)
+	local c = TSBGet(key)
+	if c then return c.r or dr, c.g or dg, c.b or db, c.a or 1 end
+	return dr, dg, db, 1
+end
+
+local TSB_WHERE = {
+	"open_world", "Open World",
+	"raid_heroic", "Heroic Raid",
+	"raid_normal_lfr", "Normal/LFR/Flex Raid",
+	"dungeon_mythic", "Challenge Mode Dungeons",
+	"dungeon_nonmythic", "Normal/Heroic Dungeons",
+	"scenario", "Scenario",
+	"in_combat", "In Combat",
+	"out_of_combat", "Out of Combat",
+}
+
+local function OffsetCog(p, title, sizeKey, sizeDefault, xKey, yKey, extra, disabled)
+	local rows = {
+		{ type = "slider", label = "Text Size", min = 6, max = 20, step = 1,
+			get = function() return TSBGet(sizeKey, sizeDefault) end,
+			set = function(v) TSBSet(sizeKey, v) end },
+		{ type = "slider", label = "X Offset", min = -100, max = 100, step = 1,
+			get = function() return TSBGet(xKey, 0) end,
+			set = function(v) TSBSet(xKey, v) end },
+		{ type = "slider", label = "Y Offset", min = -100, max = 100, step = 1,
+			get = function() return TSBGet(yKey, 0) end,
+			set = function(v) TSBSet(yKey, v) end },
+	}
+	for _, r in ipairs(extra or {}) do rows[#rows + 1] = r end
+	p:Cog(title, rows, { disabled = disabled })
+end
+
+local function BuildTSBPage(p)
+	local function TOff() return TSBGet("enabled") ~= true end
+	p:Section("TARGETED SPELL BARS")
+	p:Toggle("Enable Targeted Spell Bars",
+		"Show one plain cast bar per enemy that is casting, gathered into a single movable group with the spell name, its target, and the cast timer. 5.4.8: enemies you or your group can target are exact; other casters from the combat log are timed from the spell's cast time.",
+		function() return TSBGet("enabled") == true end,
+		function(v) TSBSet("enabled", v and true or false) end)
+	local eye = p:InlineIcon("Preview the bars at their position", EYE_ON, function()
+		if TOff() then return end
+		P.TSB_SetPreview(not P.TSB_IsPreview())
+	end, 22)
+	p:OnRefresh(function()
+		eye.texture = eye.texture or select(1, eye:GetRegions())
+		if eye.texture then eye.texture:SetTexture(P.TSB_IsPreview() and EYE_OFF or EYE_ON) end
+	end)
+	p:MultiSelect("Where to Show", "Limit the bars to the selected content and combat states; nothing selected shows them everywhere.",
+		function() return Items(TSB_WHERE) end,
+		function(v) local w = TSBGet("whereToShow"); return w and w[v] == true end,
+		function(v)
+			local c = TSB()
+			if not c then return end
+			c.whereToShow = c.whereToShow or {}
+			c.whereToShow[v] = (not c.whereToShow[v]) and true or nil
+		end,
+		function()
+			local w = TSBGet("whereToShow") or {}
+			local n = 0
+			for i = 1, #TSB_WHERE, 2 do
+				if w[TSB_WHERE[i]] then n = n + 1 end
+			end
+			if n == 0 then return "Everywhere" end
+			return n .. " selected"
+		end, TOff)
+
+	ListDropdown(p, "Grow Direction", "Which way new bars stack as more enemies start casting.",
+		{ "DOWN", "Down", "UP", "Up" },
+		function() return TSBGet("growUp") and "UP" or "DOWN" end,
+		function(v) TSBSet("growUp", v == "UP") end, TOff)
+	p:Slider("Width", nil, 80, 600, 1, function() return TSBGet("width", 240) end,
+		function(v) TSBSet("width", v) end, TOff)
+	p:Slider("Height", nil, 6, 60, 1, function() return TSBGet("height", 20) end,
+		function(v) TSBSet("height", v) end, TOff)
+	p:Slider("Bar Spacing", nil, 0, 20, 1, function() return TSBGet("spacing", 4) end,
+		function(v) TSBSet("spacing", v) end, TOff)
+	p:Slider("Max Bars", "The most cast bars shown at once. Extra casters take a bar as soon as one frees up.", 1, 10, 1,
+		function() return TSBGet("maxBars", 5) end, function(v) TSBSet("maxBars", v) end, TOff)
+	TexDropdown(p, "Bar Texture", nil, function() return TSBGet("texture", "none") end,
+		function(v) TSBSet("texture", v) end, TOff)
+	p:ColorRow("Background Color", nil,
+		function() return TSBCol("bgColor", 0, 0, 0) end,
+		function(r, g, b, a) TSBSet("bgColor", { r = r, g = g, b = b, a = a or 0.45 }) end,
+		{ alpha = true }, TOff)
+	p:Slider("Border Size", nil, 0, 5, 1, function() return TSBGet("borderSize", 1) end,
+		function(v) TSBSet("borderSize", v) end, TOff)
+
+	p:Toggle("Show Icon", nil, function() return TSBGet("showIcon") ~= false end,
+		function(v) TSBSet("showIcon", v and true or false) end, TOff)
+	p:Cog("Spell Icon Settings", {
+		{ type = "toggle", label = "Icon on Right", tip = "Attach the spell icon to the right of the cast bar instead of the left.",
+			get = function() return TSBGet("iconOnRight") == true end,
+			set = function(v) TSBSet("iconOnRight", v) end },
+		{ type = "toggle", label = "Show Icon Divider", tip = "Draw a 1px divider between the spell icon and the cast bar, matching the border color.",
+			get = function() return TSBGet("showIconDivider") == true end,
+			set = function(v) TSBSet("showIconDivider", v) end },
+	}, { disabled = TOff })
+	p:Toggle("Show Spell Name", nil, function() return TSBGet("showSpellName") ~= false end,
+		function(v) TSBSet("showSpellName", v and true or false) end, TOff)
+	OffsetCog(p, "Spell Name", "nameSize", 10, "nameX", "nameY", nil, TOff)
+	p:Toggle("Show Cast Timer", nil, function() return TSBGet("showTimer") ~= false end,
+		function(v) TSBSet("showTimer", v and true or false) end, TOff)
+	OffsetCog(p, "Cast Timer", "timerSize", 10, "timerX", "timerY", nil, TOff)
+	p:Toggle("Show Spell Target", "Show who each spell is being cast on (the caster's target), like the nameplate cast bars.",
+		function() return TSBGet("showTarget") ~= false end,
+		function(v) TSBSet("showTarget", v and true or false) end, TOff)
+	OffsetCog(p, "Spell Target", "targetSize", 10, "targetX", "targetY", {
+		{ type = "toggle", label = "Class Colored Names",
+			get = function() return TSBGet("targetClassColor") ~= false end,
+			set = function(v) TSBSet("targetClassColor", v and true or false) end },
+		{ type = "color", label = "Custom Color",
+			disabled = function() return TSBGet("targetClassColor") ~= false end,
+			get = function() return TSBCol("targetColor", 1, 1, 1) end,
+			set = function(r, g, b) TSBSet("targetColor", { r = r, g = g, b = b }) end },
+	}, TOff)
+
+	p:Section("INTERRUPT AND VISIBILITY")
+	p:Label("Cast Colors", "Interruptible cast, your interrupt on cooldown, uninterruptible cast.", TOff)
+	p:Swatch("Uninterruptible Cast", function() return TSBCol("uninterruptible", 0.45, 0.45, 0.45) end,
+		function(r, g, b) TSBSet("uninterruptible", { r = r, g = g, b = b }) end, { disabled = TOff })
+	p:Swatch("Interrupt on CD", function() return TSBCol("interruptReady", 0.92, 0.35, 0.20) end,
+		function(r, g, b) TSBSet("interruptReady", { r = r, g = g, b = b }) end, { disabled = TOff })
+	p:Swatch("Interruptible Cast", function() return TSBCol("barColor", 0.70, 0.40, 0.90) end,
+		function(r, g, b) TSBSet("barColor", { r = r, g = g, b = b }) end, { disabled = TOff })
+	p:Blank()
+	p:Toggle("Fade Out of Interrupt Range", "Fade a bar when the enemy is beyond your interrupt spell's range. Has no effect for specs without an interrupt, or for casters only seen in the combat log.",
+		function() return TSBGet("oorEnabled") == true end,
+		function(v) TSBSet("oorEnabled", v and true or false) end, TOff)
+	p:Cog("Fade Out of Interrupt Range", {
+		{ type = "slider", label = "Opacity", min = 0, max = 100, step = 5,
+			get = function() return floor((TSBGet("oorAlpha", 0.45)) * 100 + 0.5) end,
+			set = function(v) TSBSet("oorAlpha", v / 100) end },
+	}, { disabled = TOff })
+	p:Toggle("Show Raid Target Marker", "Show the enemy's raid target marker to the left of the spell name.",
+		function() return TSBGet("showRaidMarker") == true end,
+		function(v) TSBSet("showRaidMarker", v and true or false) end, TOff)
+	p:Cog("Raid Target Marker", {
+		{ type = "slider", label = "Marker Size", min = 6, max = 30, step = 1,
+			get = function() return TSBGet("raidMarkerSize", 14) end,
+			set = function(v) TSBSet("raidMarkerSize", v) end },
+	}, { disabled = TOff })
+end
+
+-------------------------------------------------------------------------------
+--  Page: Target/Focus Bars
+-------------------------------------------------------------------------------
+local function TFB()
+	local t = T()
+	return t and t.tfb
+end
+local function TFBBar(which)
+	local t = TFB()
+	return t and t[which]
+end
+local function TFBCol(key, dr, dg, db)
+	local t = TFB()
+	local c = t and t[key]
+	if c then return c.r or dr, c.g or dg, c.b or db, 1 end
+	return dr, dg, db, 1
+end
+local function TFBSetCol(key, r, g, b)
+	local t = TFB()
+	if t then t[key] = { r = r, g = g, b = b } end
+end
+
+local function BuildTFBPage(p)
+	local function BarSection(which, header, enableLabel)
+		local function bGet(key, default)
+			local c = TFBBar(which)
+			local v = c and c[key]
+			if v == nil then return default end
+			return v
+		end
+		local function bSet(key, v)
+			local c = TFBBar(which)
+			if c then c[key] = v end
+		end
+		local function bOff() return bGet("enabled") ~= true end
+		p:Section(header)
+		p:Toggle(enableLabel, "A standalone cast bar for this unit, placeable anywhere in Unlock Mode. Runs alongside the Unit Frames cast bars.",
+			function() return bGet("enabled") == true end,
+			function(v) bSet("enabled", v and true or false) end)
+		local eye = p:InlineIcon("Preview the bar at its position", EYE_ON, function()
+			if bOff() then return end
+			P.TFB_SetPreview(which, not P.TFB_IsPreview(which))
+		end, 22)
+		p:OnRefresh(function()
+			eye.texture = eye.texture or select(1, eye:GetRegions())
+			if eye.texture then eye.texture:SetTexture(P.TFB_IsPreview(which) and EYE_OFF or EYE_ON) end
+		end)
+		TexDropdown(p, "Bar Texture", nil, function() return bGet("texture", "none") end,
+			function(v) bSet("texture", v) end, bOff)
+		p:Slider("Width", nil, 80, 600, 1, function() return bGet("width", 260) end,
+			function(v) bSet("width", v) end, bOff)
+		p:Slider("Height", nil, 6, 60, 1, function() return bGet("height", 22) end,
+			function(v) bSet("height", v) end, bOff)
+		p:Toggle("Show Spell Name", nil, function() return bGet("showSpellName") ~= false end,
+			function(v) bSet("showSpellName", v and true or false) end, bOff)
+		p:Cog("Spell Name", {
+			{ type = "slider", label = "Text Size", min = 6, max = 22, step = 1,
+				get = function() return bGet("nameSize", 11) end, set = function(v) bSet("nameSize", v) end },
+		}, { disabled = bOff })
+		p:Toggle("Show Cast Timer", nil, function() return bGet("showTimer") ~= false end,
+			function(v) bSet("showTimer", v and true or false) end, bOff)
+		p:Cog("Cast Timer", {
+			{ type = "slider", label = "Text Size", min = 6, max = 22, step = 1,
+				get = function() return bGet("timerSize", 11) end, set = function(v) bSet("timerSize", v) end },
+		}, { disabled = bOff })
+		p:Toggle("Show Icon", nil, function() return bGet("showIcon") ~= false end,
+			function(v) bSet("showIcon", v and true or false) end, bOff)
+		p:Toggle("Show Spell Target", "Show who the spell is being cast on (the unit's target), like the nameplate cast bars.",
+			function()
+				local v = bGet("showTarget")
+				if v == nil then v = TFB() and TFB().showTarget end
+				return v ~= false
+			end,
+			function(v) bSet("showTarget", v and true or false) end, bOff)
+		p:Cog("Spell Target", {
+			{ type = "toggle", label = "Class Colored Names",
+				get = function() return TFB().targetClassColor ~= false end,
+				set = function(v) TFB().targetClassColor = v and true or false end },
+			{ type = "color", label = "Custom Color",
+				disabled = function() return TFB().targetClassColor ~= false end,
+				get = function() return TFBCol("targetColor", 1, 1, 1) end,
+				set = function(r, g, b) TFBSetCol("targetColor", r, g, b) end },
+			{ type = "slider", label = (which == "target") and "Text Size (Target)" or "Text Size (Focus)", min = 6, max = 20, step = 1,
+				get = function() return bGet("targetSize", 10) end, set = function(v) bSet("targetSize", v) end },
+		}, { disabled = bOff })
+	end
+	BarSection("target", "TARGET CAST BAR", "Enable Target Cast Bar")
+	BarSection("focus", "FOCUS CAST BAR", "Enable Focus Cast Bar")
+
+	p:Section("CAST COLORS AND EFFECTS")
+	local function sharedOff()
+		local t, f = TFBBar("target"), TFBBar("focus")
+		return not ((t and t.enabled) or (f and f.enabled))
+	end
+	p:Label("Cast Color", "Interruptible cast, your interrupt on cooldown, uninterruptible cast.", sharedOff)
+	p:Swatch("Uninterruptible Cast", function() return TFBCol("uninterruptible", 0.45, 0.45, 0.45) end,
+		function(r, g, b) TFBSetCol("uninterruptible", r, g, b) end, { disabled = sharedOff })
+	p:Swatch("Interrupt on CD", function() return TFBCol("interruptReady", 0.92, 0.35, 0.20) end,
+		function(r, g, b) TFBSetCol("interruptReady", r, g, b) end, { disabled = sharedOff })
+	p:Swatch("Interruptible Cast", function() return TFBCol("castColor", 0.70, 0.40, 0.90) end,
+		function(r, g, b) TFBSetCol("castColor", r, g, b) end, { disabled = sharedOff })
+	p:Cog("Cast Color", {
+		{ type = "toggle", label = "Show Shield Icon", tip = "Show a shield icon on the cast bar when the cast cannot be interrupted.",
+			get = function() return TFB().showShield ~= false end,
+			set = function(v) TFB().showShield = v and true or false end },
+		{ type = "toggle", label = "Show Spark", tip = "Show the bright spark at the leading edge of the cast bar fill.",
+			get = function() return TFB().showSpark ~= false end,
+			set = function(v) TFB().showSpark = v and true or false end },
+	}, { disabled = sharedOff })
+	local HINTS = { "none", "None", "tick", "Tick", "tickbar", "Tick + Bar" }
+	ListDropdown(p, "Kick Ready Mid-Cast Hint",
+		"Shows where your interrupt will be ready during a cast. \"Tick\" marks the exact spot on the cast bar; \"Tick + Bar\" also colours the window during which your interrupt will be available.",
+		HINTS,
+		function()
+			local t = TFB()
+			if not t then return "tick" end
+			if t.kickTickEnabled == false then return "none" end
+			if t.midCastEnabled == true then return "tickbar" end
+			return "tick"
+		end,
+		function(v)
+			local t = TFB()
+			if not t then return end
+			t.kickTickEnabled = v ~= "none"
+			t.midCastEnabled = v == "tickbar"
+		end, sharedOff)
+	p:Cog("Kick Ready Mid-Cast Hint", {
+		{ type = "color", label = "Mid-Cast Bar Color",
+			get = function() return TFBCol("midCastColor", 0.318, 0.820, 0.357) end,
+			set = function(r, g, b) TFBSetCol("midCastColor", r, g, b) end },
+		{ type = "color", label = "Tick Color",
+			get = function() return TFBCol("kickTickColor", 1, 1, 1) end,
+			set = function(r, g, b) TFBSetCol("kickTickColor", r, g, b) end },
+	}, { disabled = sharedOff })
+	p:Toggle("Show Interrupted Flash Effect", "Flash the cast bar and show \"Interrupted\" for a moment when the cast is interrupted.",
+		function() return TFB().interruptedFlash ~= false end,
+		function(v) TFB().interruptedFlash = v and true or false end, sharedOff)
+	p:Cog("Interrupted Flash", {
+		{ type = "color", label = "Flash Color",
+			get = function() return TFBCol("interruptedColor", 0.8, 0, 0) end,
+			set = function(r, g, b) TFBSetCol("interruptedColor", r, g, b) end },
+	}, { disabled = sharedOff })
+	p:Blank()
+end
+
+-------------------------------------------------------------------------------
+--  Page: Run Summary
+-------------------------------------------------------------------------------
+local function RS()
+	local t = T()
+	return t and t.runSummary
+end
+local function RSGet(key, default)
+	local c = RS()
+	local v = c and c[key]
+	if v == nil then return default end
+	return v
+end
+local function RSSet(key, v)
+	local c = RS()
+	if c then c[key] = v end
+end
+
+local function BuildRSPage(p)
+	local function RSOff() return RSGet("enabled") ~= true end
+	p:Section("RUN SUMMARY")
+	p:Button("Preview", "Shows the overview with a sample group.", "Show Preview", function() P.RS_ShowPreview() end)
+	p:Button("Run History", "Deletes every recorded Challenge Mode run of this character.", "Clear Run History", function()
+		ns.ShowConfirmPopup({
+			title = "Clear Run History",
+			message = "Delete every recorded Challenge Mode run for this character?",
+			confirmText = "Delete",
+			cancelText = "Cancel",
+			onConfirm = function() P.RS_ClearHistory() end,
+		})
+	end)
+	p:Toggle("Enable Run Summary",
+		"Records every finished Challenge Mode and shows an overview of the group when the run ends. /ov reopens it at any time. Nothing is registered or created while this is off.",
+		function() return RSGet("enabled") == true end,
+		function(v) RSSet("enabled", v and true or false) end)
+	p:Slider("History Size", nil, 5, 50, 1, function() return RSGet("historySize", 20) end,
+		function(v) RSSet("historySize", v) end, RSOff)
+	p:Slider("Panel Scale", nil, 0.5, 2, 0.05, function() return RSGet("scale", 1) end,
+		function(v) RSSet("scale", v) end, RSOff)
+	p:Slider("Text Size", "Size of the player rows. The title and column headers keep their own size.", 10, 20, 1,
+		function() return RSGet("textSize", 14) end, function(v) RSSet("textSize", v) end, RSOff)
+
+	p:Section("COLUMNS")
+	local function Col(label, key, tip)
+		p:Toggle(label, tip, function() return RSGet(key, true) == true end,
+			function(v) RSSet(key, v and true or false) end, RSOff)
+	end
+	Col("Show Spec Icons", "showSpecIcons")
+	Col("Item Level", "colItemLevel", "Shown in grey next to each name. Item levels are read by inspecting party members during the run, so a member who stayed out of range shows none.")
+	Col("DPS", "colDps", "Damage done over the run time, from the combat log. Pets count for their owner.")
+	Col("Damage Taken", "colDamageTaken")
+	Col("Interrupts", "colInterrupts")
+	Col("Deaths", "colDeaths")
+end
+
+-------------------------------------------------------------------------------
+--  Register
+-------------------------------------------------------------------------------
+local function PreviewsOff()
+	local t = T()
+	if t and t.showPreview then EMT.SetPreview(false) end
+	if P.TSB_IsPreview and P.TSB_IsPreview() then P.TSB_SetPreview(false) end
+	if P.TFB_IsPreview then
+		if P.TFB_IsPreview("target") then P.TFB_SetPreview("target", false) end
+		if P.TFB_IsPreview("focus") then P.TFB_SetPreview("focus", false) end
+	end
+end
+
+ns.RegisterSettingsModule({
+	key = "EllesmereUIMythicTimer",
+	name = "Mythic+ Tools",
+	group = "UI Reskin Addons",
+	tabs = {
+		{ key = "timer", name = "Mythic+ Timer", description = "Challenge Mode timer: medal thresholds, boss splits, enemy count and deaths.", build = BuildTimerPage },
+		{ key = "tsb", name = "Targeted Spell Bars", description = "One cast bar per casting enemy, in one movable group.", build = BuildTSBPage },
+		{ key = "tfb", name = "Target/Focus Bars", description = "Standalone target and focus cast bars with interrupt colors.", build = BuildTFBPage },
+		{ key = "rs", name = "Run Summary", description = "End of run overview and a per character run history (/ov).", build = BuildRSPage },
+	},
+	reset = function() EMT.Reset() end,
+	resetTip = "Set all Mythic+ Tools settings back to default.",
+	onLeave = PreviewsOff,
+})

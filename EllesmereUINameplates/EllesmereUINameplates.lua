@@ -1,136 +1,42 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
-local addon, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
-EllesmereUI._ModuleNS[addon] = ns  -- LOD options files read this module ns via the registry
-ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
+-------------------------------------------------------------------------------
+--  EllesmereUINameplates.lua  (5.4.8 port of the EllesmereUI Nameplates,
+--  retail 9.3.8)
+--
+--  The defaults (the retail keys and values, copied as they are), the saved
+--  settings (EllesmereUINameplatesDB.profile, like the retail profile), the
+--  first-run seed with the retail "Naowh" profile, and the helpers the other
+--  files share: timers (5.4.8 has no C_Timer), pixel borders, fonts, bar and
+--  overlay textures, target arrow styles, the interrupt spell and the execute
+--  window of the player.
+--
+--  Files: this one, EUI_Nameplates_Plates.lua (finds the Blizzard plates and
+--  reads them), EUI_Nameplates_Colors.lua (health bar colors), _Display.lua
+--  (the look of a plate), _Cast.lua (cast bar), _Auras.lua (debuffs, buffs,
+--  crowd control), _Init.lua (events, start-up, /enp).
+--
+--  5.4.8 nameplates have no unit token: a plate is read from the Blizzard
+--  plate itself (health bar value and color, name, level, elite and boss
+--  icons, threat glow, raid icon, cast bar). Things that need the unit
+--  (caster type, quest mob, auras, cast target) are known while the plate is
+--  the target, the mouseover or the focus, and are kept by GUID / name after.
+-------------------------------------------------------------------------------
+local addonName, P = ...
+local ns = EllesmereUI
 
-local ENP = EllesmereUI.Lite.NewAddon("EllesmereUINameplates")
+local ENP = {}
+ns.ENP = ENP
+P.ENP = ENP
+P.ns = ns
 
--- Profile alias: set in OnInitialize; getters fall back to defaults while nil.
-local p
+local floor, max, min = math.floor, math.max, math.min
 
-local ipairs = ipairs
-local PP = EllesmereUI.PP
-local UnitIsUnit = UnitIsUnit
+P.MEDIA = "Interface\\AddOns\\" .. addonName .. "\\media\\"
+P.WHITE = "Interface\\Buttons\\WHITE8X8"
 
-local function GetFont() return EllesmereUI.GetFontPath("nameplates") end
--- Slug-gated at the source (GetFontOutlineFlag); SetFSFont gates the
--- explicit-flag path too, so aura literals are covered.
-local function GetNPOutline() return EllesmereUI.GetFontOutlineFlag("nameplates") end
-local function GetNPUseShadow() return EllesmereUI.GetFontUseShadow("nameplates") end
-local function SetFSFont(fs, size, flags)
-  -- "Never Show Slug": gates the explicit-flag path so hardcoded aura
-  -- "OUTLINE, SLUG" literals drop the slug (body text is gated at the source).
-  EllesmereUI.ApplyModuleFont(fs, nil, size or 11, "nameplates", EllesmereUI.SlugFlag(flags or GetNPOutline()))
-end
-
-ns.GetFont = GetFont
-ns.GetNPOutline = GetNPOutline
-ns.GetNPUseShadow = GetNPUseShadow
-ns.SetFSFont = SetFSFont
-ns.plates = {}
-_G.EllesmereNameplates_NS = ns
-
--- Weak-keyed external state for nameplate Y-offsets: never write custom keys
--- onto Blizzard C_NamePlate frames (taint).
-local _npYOffsetState = setmetatable({}, { __mode = "k" })
-
--- Health text bar slots; file scope to avoid per-call alloc in UpdateHealthValues.
--- The bottom slots hang under the health bar's corners (see PlaceSlotText); keep
--- them after the three bar slots, which are also read by index.
-local HP_BAR_SLOTS = {
-    { key = "textSlotRight",  anchor = "RIGHT",  point = "RIGHT",  xOff = -2 },
-    { key = "textSlotLeft",   anchor = "LEFT",   point = "LEFT",   xOff = 4 },
-    { key = "textSlotCenter", anchor = "CENTER", point = "CENTER", xOff = 0 },
-    { key = "textSlotBottomLeft",  anchor = "TOPLEFT",  point = "BOTTOMLEFT",  xOff = 0, justify = "LEFT",  bottom = true,
-      xKey = "textSlotBottomLeftXOffset",  yKey = "textSlotBottomLeftYOffset" },
-    { key = "textSlotBottomRight", anchor = "TOPRIGHT", point = "BOTTOMRIGHT", xOff = 0, justify = "RIGHT", bottom = true,
-      xKey = "textSlotBottomRightXOffset", yKey = "textSlotBottomRightYOffset" },
-}
-
-ns.NP_ABSORB_STYLE_TEX = {
-    blizzard = "Interface\\AddOns\\EllesmereUI\\media\\textures\\shields\\blizzard-nameplates.png",
-    striped  = "Interface\\AddOns\\EllesmereUI\\media\\textures\\shields\\striped3.tga",
-    clean    = "Interface\\Buttons\\WHITE8X8",
-    pixelsShield     = "Interface\\AddOns\\EllesmereUI\\media\\textures\\shields\\pixels-shield.tga",
-    pixelsShieldEdge = "Interface\\AddOns\\EllesmereUI\\media\\textures\\shields\\pixels-shield-edge.tga",
-    pixelsShieldFill = "Interface\\AddOns\\EllesmereUI\\media\\textures\\shields\\pixels-shield-fill.tga",
-}
-ns.NP_ABSORB_STYLE_ALPHA = {
-    blizzard = 0.8,
-    striped  = 0.8,
-    clean    = 0.3,
-}
-
--- Overflow for _displayPresetKeys; outside the main function scope to stay
--- under Lua 5.1's 200-local limit.
-function ns._appendDisplayPresetKeys(t)
-    for _, k in ipairs({
-        "topSlotSize", "topSlotXOffset", "topSlotYOffset", "topSlotRaiseStrata",
-        "rightSlotSize", "rightSlotXOffset", "rightSlotYOffset", "rightSlotRaiseStrata",
-        "leftSlotSize", "leftSlotXOffset", "leftSlotYOffset", "leftSlotRaiseStrata",
-        "toprightSlotSize", "toprightSlotXOffset", "toprightSlotYOffset", "toprightSlotGrowth", "toprightSlotRaiseStrata",
-        "topleftSlotSize", "topleftSlotXOffset", "topleftSlotYOffset", "topleftSlotGrowth", "topleftSlotRaiseStrata",
-        "textSlotTopSize", "textSlotTopXOffset", "textSlotTopYOffset", "textSlotTopStrata",
-        "textSlotRightSize", "textSlotRightXOffset", "textSlotRightYOffset", "textSlotRightStrata",
-        "textSlotLeftSize", "textSlotLeftXOffset", "textSlotLeftYOffset", "textSlotLeftStrata",
-        "textSlotCenterSize", "textSlotCenterXOffset", "textSlotCenterYOffset", "textSlotCenterStrata",
-        "textSlotBottomLeftSize", "textSlotBottomLeftXOffset", "textSlotBottomLeftYOffset", "textSlotBottomLeftStrata",
-        "textSlotBottomRightSize", "textSlotBottomRightXOffset", "textSlotBottomRightYOffset", "textSlotBottomRightStrata",
-        "textSlotTopColor", "textSlotRightColor", "textSlotLeftColor", "textSlotCenterColor",
-        "textSlotBottomLeftColor", "textSlotBottomRightColor",
-        "threatColorHealth", "threatColorBorder", "threatColorName",
-        "textSlotTopClassColor", "textSlotRightClassColor", "textSlotLeftClassColor", "textSlotCenterClassColor",
-        "textSlotBottomLeftClassColor", "textSlotBottomRightClassColor",
-        "textSlotTopColorMode", "textSlotTopNameColorOn", "textSlotTopNameColor",
-        "textSlotTopLevelColorOn", "textSlotTopLevelColor", "textSlotTopLevelDiffOn",
-        "textSlotRightColorMode", "textSlotRightNameColorOn", "textSlotRightNameColor",
-        "textSlotRightLevelColorOn", "textSlotRightLevelColor", "textSlotRightLevelDiffOn",
-        "textSlotLeftColorMode", "textSlotLeftNameColorOn", "textSlotLeftNameColor",
-        "textSlotLeftLevelColorOn", "textSlotLeftLevelColor", "textSlotLeftLevelDiffOn",
-        "textSlotCenterColorMode", "textSlotCenterNameColorOn", "textSlotCenterNameColor",
-        "textSlotCenterLevelColorOn", "textSlotCenterLevelColor", "textSlotCenterLevelDiffOn",
-        "textSlotBottomLeftColorMode", "textSlotBottomLeftNameColorOn", "textSlotBottomLeftNameColor",
-        "textSlotBottomLeftLevelColorOn", "textSlotBottomLeftLevelColor", "textSlotBottomLeftLevelDiffOn",
-        "textSlotBottomRightColorMode", "textSlotBottomRightNameColorOn", "textSlotBottomRightNameColor",
-        "textSlotBottomRightLevelColorOn", "textSlotBottomRightLevelColor", "textSlotBottomRightLevelDiffOn",
-        "tankHasAggroEnabled", "tankHasAggro", "classicTankAggro", "tankHasAggroOverrideMobType",
-        "tankHasAggroOverrideBoss",
-        "dpsHasAggro", "dpsNearAggro", "offTankAggroEnabled", "offTankAggro",
-        "dpsNoAggroEnabled", "dpsNoAggro", "dpsNoAggroOverrideMiniBoss", "dpsNoAggroOverrideCaster",
-        "dpsNoAggroOverrideBoss",
-        "targetArrowDouble", "targetArrowStyle", "targetArrowColor", "targetArrowClassColor",
-        "auraStackTextSize", "auraStackTextColor",
-        "auraStackTextPosition", "auraStackTextX", "auraStackTextY",
-        "auraDurationTextX", "auraDurationTextY",
-        "debuffDurationTextSize", "debuffDurationTextX", "debuffDurationTextY", "debuffDurationTextColor",
-        "buffDurationTextSize", "buffDurationTextX", "buffDurationTextY", "buffDurationTextColor",
-        "ccDurationTextSize", "ccDurationTextX", "ccDurationTextY", "ccDurationTextColor",
-        "buffTextSize", "buffTextColor", "ccTextSize", "ccTextColor",
-        "raidMarkerPos", "classificationSlot", "classificationShowInInstances",
-        "factionSlot", "classificationIncludeFaction",
-        "classificationHideRare", "classificationHideQuest",
-        "castNameSize", "castNameColor", "castCombineNameTarget",
-        "castTargetSize", "castTargetClassColor", "castTargetColor",
-        "showCastTimer", "castTimerSize", "castTimerColor", "targetScale",
-        "castNameSide", "castTargetSide", "castTimerSide",
-        "castNameWidthPct", "castNameWrap", "castTargetWidthPct", "castTargetWrap",
-        "enemyNameWidthPct", "enemyNameWrap", "wrapBorderCastbar", "wrapBorderSeam",
-        "debuffSlot", "buffSlot", "ccSlot",
-        "debuffYOffset", "sideAuraXOffset", "auraSpacing",
-        "debuffSpacing", "buffSpacing", "ccSpacing",
-        "debuffTimerPosition", "buffTimerPosition", "ccTimerPosition",
-        "auraDurationTextSize", "auraDurationTextColor",
-        "debuffCropIcons", "buffCropIcons", "ccCropIcons",
-        "debuffCropPercent", "buffCropPercent", "ccCropPercent",
-        "hideCastIconBorder", "hideDebuffIconBorder", "hideBuffIconBorder", "hideCCIconBorder",
-        "showCastLockoutAsCrowdControl",
-        "castIconOffsetX", "castIconOffsetY",
-        "targetGlowEllesmereUI", "targetGlowBorderColor", "targetGlowHighlight", "targetBorderColor",
-        "targetGlowBorderSize", "targetBorderSizeValue",
-    }) do t[#t + 1] = k end
-end
-
+-------------------------------------------------------------------------------
+--  Defaults (retail EllesmereUINameplates.lua `defaults`, same keys and
+--  values; the WoW Forever switches take their retail values)
+-------------------------------------------------------------------------------
 local defaults = {
     -- EUI_DEBUFF_COLORS: optional player-debuff tinting (Colors page). The
     -- per-class lists ("debuffColors" .. class token) have no defaults: unset
@@ -206,7 +112,7 @@ local defaults = {
     threatColorName   = false,
     -- Show Threat Colors: where the threat colors apply -- "never", "instances" (party/raid
     -- instances and delves) or "always". Per client: WoW Forever defaults to "always".
-    threatColorMode = (EllesmereUI.IS_FOREVER == true) and "always" or "instances",
+    threatColorMode = "instances",
     tankHasAggro = { r = 0.05, g = 0.82, b = 0.62 },
     tankHasAggroEnabled = false,
     tankHasAggroOverrideMobType = false,  -- on: overrides Mini-Boss/Caster (above priority step 7); off = stays low
@@ -240,7 +146,6 @@ local defaults = {
     castBarUninterruptible = { r = 0.45, g = 0.45, b = 0.45 },
     castBarImportant = { r = 1, g = 0.2, b = 0.2 },
     importantCastColorEnabled = false,
-    importantCastKickReadyAsInterruptible = false,
     castBarShieldEnabled = true,
     interruptedFlashEnabled = true,
     interruptedFlashColor = { r = 0.8, g = 0.0, b = 0.0 },
@@ -279,7 +184,7 @@ local defaults = {
     textSlotTop = "enemyName",
     textSlotRight = "healthPercent",
     -- WoW Forever shows the level by default (retail leaves the slot empty).
-    textSlotLeft = (EllesmereUI.IS_FOREVER == true) and "level" or "none",
+    textSlotLeft = "none",
     textSlotCenter = "none",
     textSlotBottomLeft = "none",
     textSlotBottomRight = "none",
@@ -295,7 +200,7 @@ local defaults = {
     -- The 8x3 base pip is reported as too small to read on Forever, where this is
     -- the target-side display rather than a second one. The Size slider (0.5 to
     -- 4.0) still overrides it.
-    classPowerScale = (EllesmereUI.IS_FOREVER == true) and 1.8 or 1.0,
+    classPowerScale = 1.0,
     classPowerClassColors = true,
     classPowerCustomColor = { r = 1.00, g = 0.84, b = 0.30 },
     classPowerBgColor = { r = 0.082, g = 0.082, b = 0.082, a = 1.0 },
@@ -374,7 +279,7 @@ local defaults = {
     factionStyle = "pvp",  -- Icon Style: a key of EllesmereUI.FACTION_ART
     classificationIncludeFaction = false,  -- "Rare/Quest + Faction": the badge shares the classification slot
     -- The classification element's two halves, each switchable in Core Positions:
-    -- the Elite/Rare Indicator (elite and rare marks) and the Quest Indicator.
+    -- the Rare Indicator (elite and rare marks) and the Quest Indicator.
     classificationHideRare = false,
     classificationHideQuest = false,
     factionOppositeOnly = false,
@@ -425,7 +330,6 @@ local defaults = {
     rangeTextOffsetY = 0,
     rangeTextColor = { r = 0.816, g = 0.357, b = 0.220 },  -- #D05B38
     maxDebuffs = 5,
-    showAuraTooltips = false,  -- Buff / Debuff icons show their tooltip on hover
     showBorder = true,
     borderSize = 1,
     borderColor = { r = 0.067, g = 0.067, b = 0.067 },
@@ -468,12 +372,12 @@ local defaults = {
     dispelGlowUseTypeColor = false,
     -- Enemy Buff Filter ("important" | "dispellable" | "showall"): unset reads
     -- as Important; WoW Forever shows every enemy buff by default.
-    npEnemyBuffFilter = (EllesmereUI.IS_FOREVER == true) and "showall" or nil,
+    npEnemyBuffFilter = nil,
     castScale = 100,
     focusCastHeight = 100,
     questMobColorEnabled = false,
     questMobColor = { r = 0.157, g = 0.855, b = 0.475 },
-    replaceQuestIconWithObjective = (EllesmereUI.IS_FOREVER == true) and true or false,
+    replaceQuestIconWithObjective = false,
     questObjectiveTextSize = 14,
     showCastIcon = true,
     castIconScale = 1,
@@ -521,9 +425,9 @@ local defaults = {
     bottomSlotSize = 26,     bottomSlotXOffset = 0,   bottomSlotYOffset = 0,   bottomSlotRaiseStrata = false,
     -- Core Text Positions: slot-based size + XY offsets (WoW Forever: a larger
     -- top text, raised 3px; retail keeps 10 / 0)
-    textSlotTopSize = (EllesmereUI.IS_FOREVER == true) and 12 or 10,
+    textSlotTopSize = 10,
     textSlotTopXOffset = 0,
-    textSlotTopYOffset = (EllesmereUI.IS_FOREVER == true) and 3 or 0,
+    textSlotTopYOffset = 0,
     textSlotRightSize = 10,  textSlotRightXOffset = 0, textSlotRightYOffset = 0,
     textSlotLeftSize = 10,   textSlotLeftXOffset = 0,  textSlotLeftYOffset = 0,
     textSlotCenterSize = 10, textSlotCenterXOffset = 0, textSlotCenterYOffset = 0,
@@ -548,428 +452,861 @@ local defaults = {
     healthBarTexture = "none",  -- bar texture overlay
     castBarTexture = "none",
 }
+
 local BAR_W = 150
-ns.defaults = defaults
-ns.BAR_W = BAR_W
-local CAST_H = 17
+P.defaults = defaults
+ENP.defaults = defaults
+P.BAR_W = BAR_W
 
--- Custom nameplate border (opt-in) -----------------------------------------
--- Per-style/size offset defaults for the shared border engine (mirrors Unit Frames). do/end
--- keeps these locals from leaking (file is near Lua 5.1's main-chunk local cap).
-do
-    if EllesmereUI and EllesmereUI.RegisterBorderDefaults then
-        local function AllSizes(ox, oy, sx, sy)
-            local t = {}
-            for k = 0, 4 do t[k] = { offsetX = ox, offsetY = oy, shiftX = sx, shiftY = sy } end
-            return t
-        end
-        EllesmereUI.RegisterBorderDefaults("nameplates", {
-            ["glow"]  = { defaultSize = 1, sizes = AllSizes(0, 0, 0, 0) },
-            ["blizz"] = {
-                defaultSize = 4,
-                sizes = {
-                    [0] = { offsetX = 0, offsetY = 0, shiftX = 0, shiftY = 0 },
-                    [1] = { offsetX = 2, offsetY = 1, shiftX = 0, shiftY = 0 },
-                    [2] = { offsetX = 3, offsetY = 1, shiftX = 1, shiftY = 0 },
-                    [3] = { offsetX = 4, offsetY = 2, shiftX = 2, shiftY = 0 },
-                    [4] = { offsetX = 5, offsetY = 3, shiftX = 2, shiftY = 0 },
-                },
-            },
-            ["dialog"] = {
-                defaultSize = 2,
-                sizes = {
-                    [0] = { offsetX = 0, offsetY = 0, shiftX = 0, shiftY = 0 },
-                    [1] = { offsetX = 2, offsetY = 2, shiftX = 0, shiftY = 0 },
-                    [2] = { offsetX = 2, offsetY = 2, shiftX = 0, shiftY = 0 },
-                    [3] = { offsetX = 4, offsetY = 4, shiftX = 0, shiftY = 0 },
-                    [4] = { offsetX = 8, offsetY = 8, shiftX = 0, shiftY = 0 },
-                },
-            },
-            ["sm:Blizzard Achievement Wood"] = { defaultSize = 1, sizes = AllSizes(1, 1, 0, 0) },
-        })
-    end
-end
+-------------------------------------------------------------------------------
+--  First run: the retail EllesmereUI "Naowh" profile (EllesmereUIDB.profiles.
+--  Naowh.addons.EllesmereUINameplates on the retail client). Retail saves
+--  only what differs from the defaults, inside color tables too (a missing
+--  r / g / b is the default one), so the seed is merged into the defaults.
+-------------------------------------------------------------------------------
+local NAOWH_SEED = {
+	["absorbCleanAlpha"] = 40,
+	["absorbStyle"] = "clean",
+	["auraDurationTextSize"] = 14,
+	["auraStackTextPosition"] = "center",
+	["auraStackTextSize"] = 14,
+	["auraStackTextY"] = 11,
+	["auraTextPosition"] = "center",
+	["bgColor"] = {
+	  ["b"] = 0.10980392156863,
+	  ["g"] = 0.10980392156863,
+	  ["r"] = 0.10980392156863,
+	},
+	["boss"] = {
+	  ["b"] = 0.90588235294118,
+	  ["g"] = 0.4,
+	  ["r"] = 0.47450980392157,
+	},
+	["bottomSlotRaiseStrata"] = true,
+	["bottomSlotSize"] = 46,
+	["bottomSlotYOffset"] = 60,
+	["buffCropIcons"] = true,
+	["buffDurationTextY"] = 0,
+	["buffSlot"] = "topleft",
+	["buffTimerPosition"] = "center",
+	["castBar"] = {
+	  ["b"] = 0.4313725490196079,
+	  ["g"] = 0.9333333333333333,
+	  ["r"] = 1,
+	},
+	["castBarHeight"] = 14,
+	["castbarIconInWidth"] = true,
+	["castBarImportant"] = {
+	  ["b"] = 0,
+	  ["g"] = 0.5400021927057537,
+	},
+	["castBarOffsetY"] = 1,
+	["castBarShieldEnabled"] = false,
+	["castBarSparkEnabled"] = false,
+	["castBarTexture"] = "sm:NaowhGradient",
+	["castBarUninterruptible"] = {
+	  ["b"] = 0.6941176470588235,
+	  ["g"] = 0.7333333333333333,
+	  ["r"] = 0.7058823529411765,
+	},
+	["castBgAlpha"] = 0.7,
+	["castBgColor"] = {
+	  ["b"] = 0.10980392156863,
+	  ["g"] = 0.10980392156863,
+	  ["r"] = 0.10980392156863,
+	},
+	["castBorderSize"] = 1,
+	["castCombineNameTarget"] = true,
+	["caster"] = {
+	  ["b"] = 1,
+	  ["g"] = 0.97647058823529,
+	  ["r"] = 0,
+	},
+	["castIconFullSize"] = true,
+	["castIconOffsetX"] = 1,
+	["castNameOffsetY"] = -5,
+	["castNameSize"] = 13,
+	["castNameWidthPct"] = 40,
+	["castTargetOffsetY"] = -5,
+	["castTargetSize"] = 13,
+	["castTargetWidthPct"] = 40,
+	["castTimerOffsetY"] = -5,
+	["castTimerSize"] = 13,
+	["ccCropIcons"] = true,
+	["ccDurationTextSize"] = 16,
+	["ccSlot"] = "top",
+	["ccSpacing"] = 1,
+	["ccTimerPosition"] = "center",
+	["classificationSlot"] = "none",
+	["classPowerShape"] = "circle",
+	["darkenEnemiesOOC"] = false,
+	["debuffCropIcons"] = true,
+	["debuffSlot"] = "topright",
+	["debuffSpacing"] = 0,
+	["debuffTimerPosition"] = "center",
+	["dispelGlowStyle"] = 1,
+	["dpsHasAggro"] = {
+	  ["b"] = 0.30980392156863,
+	  ["g"] = 0.29803921568627,
+	  ["r"] = 0.99607843137255,
+	},
+	["dpsNearAggro"] = {
+	  ["b"] = 0.43137254901961,
+	  ["g"] = 0.93333333333333,
+	  ["r"] = 1,
+	},
+	["dpsNoAggro"] = {
+	  ["b"] = 0.29803921568627,
+	  ["g"] = 0.87450980392157,
+	  ["r"] = 0.34509803921569,
+	},
+	["dpsNoAggroEnabled"] = true,
+	["enemyInCombat"] = {
+	  ["b"] = 0.30980392156863,
+	  ["g"] = 0.29803921568627,
+	  ["r"] = 0.99607843137255,
+	},
+	["focusColorEnabled"] = false,
+	["focusLetterAnchor"] = "BOTTOMRIGHT",
+	["focusLetterSize"] = 15,
+	["focusLetterX"] = -2,
+	["focusLetterY"] = -6,
+	["focusOverlayAlpha"] = 0.5,
+	["focusOverlayColor"] = {
+	  ["b"] = 0,
+	  ["g"] = 0,
+	  ["r"] = 0,
+	},
+	["focusOverlayTexture"] = "striped-wide-v2",
+	["healthBarHeight"] = 20,
+	["healthBarTexture"] = "sm:NaowhGradient",
+	["healthBarWidth"] = 70,
+	["hitboxScaleX"] = 110,
+	["hitboxScaleY"] = 220,
+	["hoverAlpha"] = 0.6,
+	["hoverOverlayFullBgAlpha"] = true,
+	["hoverOverlayTexture"] = "sm:NaowhMouseover",
+	["importantCastColorEnabled"] = true,
+	["importantCastGlowColor"] = {
+	  ["b"] = 1,
+	  ["g"] = 1,
+	},
+	["importantCastGlowThickness"] = 1,
+	["interruptedFlashColor"] = {
+	  ["b"] = 0.33500056382266,
+	  ["g"] = 0.33500056382266,
+	  ["r"] = 1,
+	},
+	["interruptMidCastColor"] = {
+	  ["b"] = 0.41176470588235,
+	  ["g"] = 0.87450980392157,
+	  ["r"] = 0.34509803921569,
+	},
+	["interruptReady"] = {
+	  ["b"] = 0.36862745098039,
+	  ["g"] = 0.36862745098039,
+	  ["r"] = 1,
+	},
+	["lowHpGlow"] = true,
+	["maxDebuffs"] = 4,
+	["miniboss"] = {
+	  ["b"] = 1,
+	  ["g"] = 0.69019607843137,
+	  ["r"] = 0,
+	},
+	["nameRaidMarkerEnabled"] = true,
+	["nameRaidMarkerSize"] = 24,
+	["neutral"] = {
+	  ["b"] = 0.43137254901961,
+	  ["g"] = 0.93333333333333,
+	  ["r"] = 1,
+	},
+	["nonTargetAlpha"] = 100,
+	["npAuraFilters"] = {
+	  ["ccExclude"] = {
 
--- Custom border apply helpers. Read the enemy profile `p` (friendly plates mirror it 1:1) and
--- route through the shared border engine. Lives on plate._customBorder (a child frame we own)
--- so it never collides with the simple PP.CreateBorder on plate.health. ns fields, not new
--- file-scope locals (local cap).
-function ns.IsCustomBorderEnabled()
-    -- Stock styles: the Blizzard background art, or the classic plate's plain
-    -- 1px edge, stands in for the custom border.
-    if ns.NP_Blizz() then return false end
-    local v = p and p.customBorderEnabled
-    if v == nil then return defaults.customBorderEnabled end
-    return v
-end
--- szOverride: optional size for the "Border Size" target effect (rebuilds at that size).
-function ns.ApplyCustomBorderStyle(plate, szOverride)
-    if not plate or not plate.health then return end
-    if not (EllesmereUI and EllesmereUI.ApplyBorderStyle) then return end
-    local tex    = (p and p.customBorderTexture) or defaults.customBorderTexture
-    local sz     = szOverride or (p and p.customBorderSize) or defaults.customBorderSize
-    -- Exact pixel size (customBorderSizePx) counts only for the plate's own size; a
-    -- target/hover effect size is a substitute and keeps the legacy path.
-    local px
-    if not szOverride then px = EllesmereUI.BorderPx(p and p.customBorderSizePx, sz, tex) end
-    local col    = (p and p.customBorderColor) or defaults.customBorderColor
-    local a      = (p and p.customBorderAlpha) or defaults.customBorderAlpha or 1
-    local behind = p and p.customBorderBehind
-    if behind == nil then behind = defaults.customBorderBehind end
-    local bf = plate._customBorder
-    if not bf then
-        bf = CreateFrame("Frame", nil, plate.health)
-        bf:SetAllPoints(plate.health)
-        plate._customBorder = bf
-        -- Plates move by sub-pixels: the Pixels styles need their edge fill.
-        EllesmereUI.SetBorderEdgeFill(bf, true)
-    end
-    -- Health bars flatten render layers: a BORDER-layer backdrop would be clipped by the
-    -- ARTWORK health fill, so lift it onto MEDIUM strata (same escape the plate uses for
-    -- text/aura layers). Set before ApplyBorderStyle so any backdrop child it creates inherits it.
-    bf:SetFrameStrata("MEDIUM")
-    bf:SetFrameLevel(behind and math.max(1, plate.health:GetFrameLevel() - 1) or (plate.health:GetFrameLevel() + 1))
-    EllesmereUI.ApplyBorderStyle(bf, sz, col.r, col.g, col.b, a, tex,
-        p and p.customBorderOffset, p and p.customBorderOffsetY,
-        p and p.customBorderShiftX, p and p.customBorderShiftY,
-        "nameplates", sz, nil, px)
-    -- Solid strips need the scaleGuard the Basic border has, or Scale Target/Casting
-    -- Nameplate leaves them sub-pixel and their sides vanish as the plate moves.
-    if PP.GetBorders(bf) then PP.CreateBorder(bf, nil, nil, nil, nil, nil, nil, nil, true) end
-    -- The size it is drawn at (a target/hover effect size included): the cast bar
-    -- wrap's lower piece and seam copy it (ns.NP_UpdateCustomBorderWrap).
-    bf._cbTex, bf._cbSz, bf._cbPx = tex, sz, px
-    -- A target/hover effect size redraws a rounded glow at that size (ApplyBorder
-    -- rounds after its own call).
-    if szOverride and plate._npRounded then ns.NP_ApplyRounding(plate, "health") end
-end
-function ns.ApplyCustomBorderColor(plate)
-    if not plate or not plate._customBorder then return end
-    if not (EllesmereUI and EllesmereUI.SetBorderStyleColor) then return end
-    local col = (p and p.customBorderColor) or defaults.customBorderColor
-    local a   = (p and p.customBorderAlpha) or defaults.customBorderAlpha or 1
-    EllesmereUI.SetBorderStyleColor(plate._customBorder, col.r, col.g, col.b, a)
-end
-function ns.HideCustomBorder(plate)
-    local bf = plate and plate._customBorder
-    if bf and EllesmereUI and EllesmereUI.ApplyBorderStyle then
-        -- A border wrapping the cast bar gets its anchors back first.
-        if plate._cbWrapActive then ns.NP_UnwrapCustomBorder(plate) end
-        EllesmereUI.ApplyBorderStyle(bf, 0)
-        bf:Hide()
-    end
-end
+	  },
+	  ["ccInclude"] = {
+	    [127797] = true,
+	  },
+	  ["ccIncludeAnyCaster"] = {
+	    [127797] = true,
+	  },
+	  ["debuffs"] = {
+	    ["all"] = false,
+	  },
+	  ["exclude"] = {
 
--- Wrap Around Castbar, custom border (called from plate:UpdateBorderWrap, which also
--- runs the Basic wrap). The custom border is one frame lifted to MEDIUM strata above
--- the plate's flattened layer, so while the cast bar sits in the plate that frame
--- itself spans the health bar's top to the cast bar's bottom. Casts In Front of
--- Nameplates moves the cast bar out of the plate: the border then stays on the health
--- bar and a lower piece (a child of the cast bar, drawn with the border's style, size
--- and live colour) spans the health bar's bottom to the cast bar's bottom. The two
--- pieces drop the edges where they touch (solid: the strips; textured: the backdrop
--- pieces, ns.NP_SetWrapJoin), so both modes draw the same single outline and the seam
--- follows Show Seam Line alone. While wrapped, the cast bar's 1px icon separator is
--- hidden (the Basic wrap's rule). Unwrapping only re-anchors the frame or drops the
--- lower piece, so a border a target or hover effect resized keeps that size. Own flag:
--- plate._cbWrapActive. ns fields (local cap).
-function ns.NP_UpdateCustomBorderWrap(plate)
-    local bf, cast = plate._customBorder, plate.cast
-    if not (bf and bf._cbSz and cast and ns.GetWrapBorderCastbar() and cast:IsShown()
-            and ns.IsCustomBorderEnabled()) then
-        if plate._cbWrapActive then ns.NP_UnwrapCustomBorder(plate) end
-        return
-    end
-    local EUI = EllesmereUI
-    local tex, sz, px = bf._cbTex, bf._cbSz, bf._cbPx
-    local solid = not tex or tex == "" or tex == "solid"
-    -- The colour the border shows right now (base, hover or target), read back from it.
-    local uc = PP.GetBorders(bf)
-    local r, g, b, a
-    local bd = not solid and EUI._bdBorderData[bf]
-    if bd then
-        r, g, b, a = bd:GetBackdropBorderColor()
-    elseif uc and uc._bdColor then
-        local c = uc._bdColor
-        r, g, b, a = c[1], c[2], c[3], c[4] or 1
-    end
-    if not r then
-        local c = (p and p.customBorderColor) or defaults.customBorderColor
-        r, g, b, a = c.r, c.g, c.b, (p and p.customBorderAlpha) or defaults.customBorderAlpha or 1
-    end
-    if plate._castOverlayLifted then
-        if plate._cbWrapMode == "single" then
-            bf:ClearAllPoints()
-            bf:SetAllPoints(plate.health)
-            ns.NP_SetWrapSeam(bf, nil, false)
-        end
-        plate._cbWrapMode = "split"
-        local lower = plate._cbWrapLower
-        if not lower then
-            lower = CreateFrame("Frame", nil, cast)
-            lower:SetPoint("TOPLEFT", plate.health, "BOTTOMLEFT", 0, 0)
-            lower:SetPoint("TOPRIGHT", plate.health, "BOTTOMRIGHT", 0, 0)
-            lower:SetPoint("BOTTOM", cast, "BOTTOM", 0, 0)
-            plate._cbWrapLower = lower
-            EUI.SetBorderEdgeFill(lower, true)
-        end
-        -- Above the cast spell icon, re-set every pass (a strata change on the lifted
-        -- cast bar resets its children's levels).
-        local lvl = (plate.castIconFrame and plate.castIconFrame:GetFrameLevel() or cast:GetFrameLevel()) + 2
-        local offX, offY = p and p.customBorderOffset, p and p.customBorderOffsetY
-        local shX, shY = p and p.customBorderShiftX, p and p.customBorderShiftY
-        -- Full restyle only when a style input moved, the level was reset or the piece
-        -- is down; a colour change alone is a tint.
-        if not lower:IsShown() or lower:GetFrameLevel() ~= lvl
-            or lower._sTex ~= tex or lower._sSz ~= sz or lower._sPx ~= px
-            or lower._sOX ~= offX or lower._sOY ~= offY or lower._sSX ~= shX or lower._sSY ~= shY then
-            lower:SetFrameLevel(lvl)
-            EUI.ApplyBorderStyle(lower, sz, r, g, b, a, tex, offX, offY, shX, shY, "nameplates", sz, nil, px)
-            if PP.GetBorders(lower) then PP.CreateBorder(lower, nil, nil, nil, nil, nil, nil, nil, true) end
-            lower._sTex, lower._sSz, lower._sPx = tex, sz, px
-            lower._sOX, lower._sOY, lower._sSX, lower._sSY = offX, offY, shX, shY
-        else
-            EUI.SetBorderStyleColor(lower, r, g, b, a)
-        end
-        -- Solid strips: hide the two that touch so the pieces read as one outline (the
-        -- flags survive every re-snap and are cleared on unwrap).
-        local join = solid or nil
-        if uc and uc._hideBottom ~= join then
-            uc._hideBottom = join
-            if uc:IsShown() then PP.SetBorderSize(bf, px or sz) end
-        end
-        local lc = PP.GetBorders(lower)
-        if lc and lc._hideTop ~= join then
-            lc._hideTop = join
-            if lc:IsShown() then PP.SetBorderSize(lower, px or sz) end
-        end
-        -- Textured: the same join from the backdrop pieces (off for solid).
-        ns.NP_SetWrapJoin(plate, not solid, tex, r, g, b, a)
-        ns.NP_SetWrapSeam(lower, cast, (p and p.wrapBorderSeam) == true, tex, sz, px, r, g, b, a, plate.health)
-    else
-        if plate._cbWrapMode == "split" then ns.NP_DropCustomWrapLower(plate) end
-        if plate._cbWrapMode ~= "single" then
-            bf:ClearAllPoints()
-            bf:SetPoint("TOPLEFT", plate.health, "TOPLEFT", 0, 0)
-            bf:SetPoint("TOPRIGHT", plate.health, "TOPRIGHT", 0, 0)
-            bf:SetPoint("BOTTOM", cast, "BOTTOM", 0, 0)
-            plate._cbWrapMode = "single"
-        end
-        ns.NP_SetWrapSeam(bf, cast, (p and p.wrapBorderSeam) == true, tex, sz, px, r, g, b, a, plate.health)
-    end
-    plate._cbWrapActive = true
-    -- The 1px icon separator would show inside the outline (NP_UnwrapCustomBorder
-    -- gives it back).
-    if plate.castLeftBorder then plate.castLeftBorder:Hide() end
-    -- Tint the full-size cast icon's border like the wrapped bar (the Basic wrap's rule).
-    local icon = plate.castIconFrame
-    if icon and PP.GetBorders(icon) then
-        if p and p.castIconTargetBorder
-            and ns.GetShowCastIcon() and ns.GetCastIconFullSize()
-            and plate.unit and UnitIsUnit(plate.unit, "target")
-            and ns.GetTargetGlowBorderColor()
-        then
-            PP.SetBorderColor(icon, r, g, b, a)
-        else
-            PP.SetBorderColor(icon, 0, 0, 0, 1)
-        end
-    end
-end
--- Textured split wrap: a backdrop cannot drop one strip the way the solid pieces do,
--- so the touching art is hidden piece by piece on the two backdrop frames (ours): the
--- upper piece's bottom edge and bottom corners, the lower piece's top edge and top
--- corners. Two fillers on the lower piece, drawn with the style's own side-edge art,
--- run each side line from where the upper piece's stops (its hidden bottom corner's
--- top) to where the lower piece's starts (its hidden top corner's bottom), so the two
--- pieces draw the single-frame outline. A backdrop re-layout (restyle, UI scale)
--- re-anchors its pieces but never shows them, and the fillers ride the corners'
--- anchors. on = false gives the upper piece its bottom back and drops the fillers;
--- the lower piece is only ever the lower piece, so its top stays down.
-function ns.NP_SetWrapJoin(plate, on, tex, r, g, b, a)
-    local bf, lower = plate._customBorder, plate._cbWrapLower
-    local bdData = EllesmereUI._bdBorderData
-    local ubd = on and bf and bdData[bf]
-    local lbd = on and lower and bdData[lower]
-    -- Off, or the two backdrops not both drawn and laid out: give the upper piece its
-    -- bottom back and drop the fillers. A joined lower piece keeps its top down, which
-    -- only matters while it draws, and every setting that stops one backdrop drawing
-    -- (size 0, a missing border file) stops both.
-    if not (ubd and lbd and ubd:IsShown() and lbd:IsShown()
-            and ubd.BottomLeftCorner and lbd.TopLeftCorner) then
-        local joined = bf and bf._cbJoinBd
-        if joined then
-            joined.BottomEdge:Show()
-            joined.BottomLeftCorner:Show()
-            joined.BottomRightCorner:Show()
-            bf._cbJoinBd = nil
-            EllesmereUI.SyncBorderEdgeFill(bf)
-        end
-        if lower and lower._cbFillL then
-            lower._cbFillL:Hide()
-            lower._cbFillR:Hide()
-        end
-        return
-    end
-    ubd.BottomEdge:Hide()
-    ubd.BottomLeftCorner:Hide()
-    ubd.BottomRightCorner:Hide()
-    bf._cbJoinBd = ubd
-    lbd.TopEdge:Hide()
-    lbd.TopLeftCorner:Hide()
-    lbd.TopRightCorner:Hide()
-    EllesmereUI.SyncBorderEdgeFill(bf)
-    EllesmereUI.SyncBorderEdgeFill(lower)
-    local fl, fr = lower._cbFillL, lower._cbFillR
-    if not fl then
-        fl = lower:CreateTexture(nil, "BORDER")
-        fr = lower:CreateTexture(nil, "BORDER")
-        fl:SetPoint("TOPLEFT", ubd.BottomLeftCorner, "TOPLEFT", 0, 0)
-        fl:SetPoint("BOTTOMRIGHT", lbd.TopLeftCorner, "BOTTOMRIGHT", 0, 0)
-        fr:SetPoint("TOPRIGHT", ubd.BottomRightCorner, "TOPRIGHT", 0, 0)
-        fr:SetPoint("BOTTOMLEFT", lbd.TopRightCorner, "BOTTOMLEFT", 0, 0)
-        lower._cbFillL, lower._cbFillR = fl, fr
-    end
-    if lower._cbFillTex ~= tex then
-        local path = EllesmereUI.ResolveBorderTexture(tex)
-        fl:SetTexture(path)
-        fr:SetTexture(path)
-        -- The left and right edge cells of the edge file, trimmed as the backdrop
-        -- trims every cell (texels 2-30 of 32).
-        fl:SetTexCoord(0.0078125, 0.1171875, 0.0625, 0.9375)
-        fr:SetTexCoord(0.1328125, 0.2421875, 0.0625, 0.9375)
-        lower._cbFillTex = tex
-    end
-    fl:SetVertexColor(r, g, b, a)
-    fr:SetVertexColor(r, g, b, a)
-    fl:Show()
-    fr:Show()
-end
--- Takes the Casts In Front lower piece and its seam down, and gives the border back
--- its bottom (solid strip or textured pieces). Turned off through
--- ApplyBorderStyle(lower, 0) so the UI scale re-apply cannot bring it back.
-function ns.NP_DropCustomWrapLower(plate)
-    ns.NP_SetWrapJoin(plate, false)
-    local lower = plate._cbWrapLower
-    if lower then
-        ns.NP_SetWrapSeam(lower, nil, false)
-        local lc = PP.GetBorders(lower)
-        if lc then lc._hideTop = nil end
-        EllesmereUI.ApplyBorderStyle(lower, 0)
-        lower:Hide()
-        lower._sTex = nil
-    end
-    local bf = plate._customBorder
-    local uc = bf and PP.GetBorders(bf)
-    if uc and uc._hideBottom then
-        uc._hideBottom = nil
-        if uc:IsShown() then PP.SetBorderSize(bf, bf._cbPx or bf._cbSz or 1) end
-    end
-end
-function ns.NP_UnwrapCustomBorder(plate)
-    local mode = plate._cbWrapMode
-    plate._cbWrapActive, plate._cbWrapMode = nil, nil
-    if mode == "split" then
-        ns.NP_DropCustomWrapLower(plate)
-    else
-        local bf = plate._customBorder
-        if bf then
-            bf:ClearAllPoints()
-            bf:SetAllPoints(plate.health)
-            ns.NP_SetWrapSeam(bf, nil, false)
-        end
-    end
-    -- The icon separator comes back unless the Basic wrap (this same pass) owns it now.
-    if plate.castLeftBorder and not plate._wrapActive then plate.castLeftBorder:Show() end
-    if plate.castIconFrame and PP.GetBorders(plate.castIconFrame) then
-        PP.SetBorderColor(plate.castIconFrame, 0, 0, 0, 1)
-    end
-end
+	  },
+	  ["fv3"] = true,
+	  ["include"] = {
+	    [204598] = true,
+	    [257284] = true,
+	    [426593] = true,
+	  },
+	  ["includeAnyCaster"] = {
 
--- "Show Seam Line": only a border style with separator art draws one (the Pixels styles).
-function ns.NP_CanShowWrapSeam(tex)
-    return EllesmereUI.GetBorderCompanion(tex, "sepH") ~= nil
-end
--- A divider along anchor's top edge (the cast bar's), spanning the health bar's
--- width even when the cast bar reserves space for its icon. A lazy child of owner
--- (a border frame we own) above its border art, tinted like the live border.
--- tex / step / px = the texture key, size step and exact px the border is drawn at.
--- Shared by the live plates and the options preview.
-function ns.NP_SetWrapSeam(owner, anchor, show, tex, step, px, r, g, b, a, health)
-    local host = owner and owner._cbSeamHost
-    if not show or not ns.NP_CanShowWrapSeam(tex) then
-        if host and host:IsShown() then
-            host:Hide()
-            EllesmereUI.RegisterPxReapply(host, nil)
-        end
-        return
-    end
-    if not host then
-        host = CreateFrame("Frame", nil, owner)
-        host:SetAllPoints(owner)
-        host._seam = host:CreateTexture(nil, "OVERLAY", nil, 7)
-        owner._cbSeamHost = host
-    end
-    -- Above the border's backdrop (owner level) and its pixel strips (owner level + 1).
-    host:SetFrameLevel(owner:GetFrameLevel() + 2)
-    host._seamAnchor, host._seamTex, host._seamStep, host._seamPx = anchor, tex, step, px
-    host._seamHealth = health
-    host._seam:SetVertexColor(r, g, b, a)
-    host:Show()
-    ns.NP_LayoutWrapSeam(host)
-    -- An exact size is pixels at UIParent scale: re-lay the seam when the pixel grid moves.
-    EllesmereUI.RegisterPxReapply(host, px and ns.NP_LayoutWrapSeam or nil)
-end
-function ns.NP_LayoutWrapSeam(host)
-    local t, anchor, health = host._seam, host._seamAnchor, host._seamHealth
-    if not (t and anchor and health) then return end
-    local EUI = EllesmereUI
-    local tex, step, px = host._seamTex, host._seamStep, host._seamPx
-    local es = host:GetEffectiveScale()
-    if not (es and es > 0.01) then es = UIParent:GetEffectiveScale() end
-    local path = EUI.GetBorderCompanion(tex, "sepH")
-    local thick = path and EUI.BorderCompanionThickness(tex, step, px, es)
-    if not thick or thick <= 0 then
-        t:Hide()
-        return
-    end
-    -- The strip's line sits near its top edge: raising it 3/16 of its thickness
-    -- puts the line on the join, where the border's own line runs.
-    local raise = PP.SnapForES(thick * 3 / 16, es)
-    if host._seamPath ~= path then
-        t:SetTexture(path)
-        host._seamPath = path
-    end
-    if host._lThick ~= thick or host._lRaise ~= raise or host._lAnchor ~= anchor or host._lHealth ~= health then
-        t:ClearAllPoints()
-        t:SetPoint("TOP", anchor, "TOP", 0, raise)
-        t:SetPoint("LEFT", health, "LEFT", 0, 0)
-        t:SetPoint("RIGHT", health, "RIGHT", 0, 0)
-        t:SetHeight(thick)
-        host._lThick, host._lRaise, host._lAnchor = thick, raise, anchor
-        host._lHealth = health
-    end
-    t:Show()
-end
-
--- Main-chunk locals the EUI_Nameplates_*.lua files re-import by name.
--- profileSetters: every file keeps its own copy of the profile alias p and
--- adds a setter here; the places that re-read the profile write through
--- SetProfile, which runs them all.
--- broken: true while an EUI_Nameplates_*.lua file loads; a file that fails
--- leaves it set, and the files behind it return at their first lines.
-ns._npInternals = {
-    _npYOffsetState = _npYOffsetState, BAR_W = BAR_W, CAST_H = CAST_H, defaults = defaults,
-    ENP = ENP, GetFont = GetFont, GetNPOutline = GetNPOutline, HP_BAR_SLOTS = HP_BAR_SLOTS,
-    SetFSFont = SetFSFont,
-    profileSetters = { function(v) p = v end },
-    SetProfile = function(v)
-        local list = ns._npInternals.profileSetters
-        for i = 1, #list do list[i](v) end
-    end,
-    broken = false,
+	  },
+	},
+	["offTankAggro"] = {
+	  ["b"] = 1,
+	  ["g"] = 0.19607843137255,
+	  ["r"] = 0.73333333333333,
+	},
+	["pandemicGlowColor"] = {
+	  ["b"] = 1,
+	  ["g"] = 1,
+	},
+	["pandemicGlowLines"] = 6,
+	["pandemicGlowSpeed"] = 3,
+	["questMobColor"] = {
+	  ["b"] = 0.21500044591723,
+	  ["g"] = 0.54469767830135,
+	  ["r"] = 1,
+	},
+	["questMobColorEnabled"] = true,
+	["raidMarkerPos"] = "none",
+	["rangeTextColor"] = {
+	  ["b"] = 0.45999976236371,
+	  ["g"] = 0.91360007591845,
+	  ["r"] = 1,
+	},
+	["rangeTextSize"] = 14,
+	["replaceQuestIconWithObjective"] = true,
+	["showCastLockoutAsCrowdControl"] = true,
+	["stackSpacingScale"] = 90,
+	["tankHasAggro"] = {
+	  ["b"] = 0.29803921568627,
+	  ["g"] = 0.87450980392157,
+	  ["r"] = 0.34509803921569,
+	},
+	["tankHasAggroEnabled"] = true,
+	["tankHasAggroOverrideBoss"] = false,
+	["tankLosingAggro"] = {
+	  ["b"] = 0.43137254901961,
+	  ["g"] = 0.93333333333333,
+	  ["r"] = 1,
+	},
+	["tankNoAggro"] = {
+	  ["b"] = 0.30980392156863,
+	  ["g"] = 0.29803921568627,
+	  ["r"] = 0.99607843137255,
+	},
+	["target"] = {
+	  ["b"] = 0,
+	  ["g"] = 0.47999776996674,
+	  ["r"] = 1,
+	},
+	["targetArrowScale"] = 1.4,
+	["targetArrowStyle"] = "feathered",
+	["targetGlowAlpha"] = 0.6,
+	["targetGlowBorderColor"] = false,
+	["targetGlowColor"] = {
+	  ["g"] = 1,
+	  ["r"] = 1,
+	},
+	["targetGlowEllesmereUI"] = true,
+	["targetGlowHighlight"] = false,
+	["targetGlowStyle"] = "vibrant",
+	["targetHighlightAlpha"] = 0.32,
+	["targetOverlayTexture"] = "sm:NaowhMouseoverArrows",
+	["targetScale"] = 120,
+	["textSlotLeft"] = "enemyName",
+	["textSlotLeftSize"] = 14,
+	["textSlotLeftXOffset"] = -1,
+	["textSlotLeftYOffset"] = 9,
+	["textSlotRightPctDecimal"] = false,
+	["textSlotRightSize"] = 14,
+	["textSlotRightYOffset"] = 9,
+	["textSlotTop"] = "none",
+	["topleftSlotGrowth"] = "right",
+	["topleftSlotSize"] = 30,
+	["topleftSlotYOffset"] = -3,
+	["toprightSlotGrowth"] = "left",
+	["toprightSlotSize"] = 30,
+	["toprightSlotYOffset"] = -3,
+	["topSlotRaiseStrata"] = true,
+	["topSlotSize"] = 46,
+	["topSlotYOffset"] = -16,
 }
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._npInternals, { __index = function(_, k)
-    error("ns._npInternals has no entry " .. tostring(k), 2)
-end })
+
+-------------------------------------------------------------------------------
+--  Saved settings
+-------------------------------------------------------------------------------
+local function DeepCopy(v)
+	if type(v) ~= "table" then
+		return v
+	end
+	local t = {}
+	for k, x in pairs(v) do
+		t[k] = DeepCopy(x)
+	end
+	return t
+end
+P.DeepCopy = DeepCopy
+
+-- Seed values over a profile; tables are merged key by key (see the seed note).
+local function MergeSeed(dst, src)
+	for k, v in pairs(src) do
+		if type(v) == "table" and type(dst[k]) == "table" then
+			MergeSeed(dst[k], v)
+		else
+			dst[k] = DeepCopy(v)
+		end
+	end
+end
+
+-- MoP: most elite trash is 1-2 levels above the player, so the level-based
+-- Mini-Boss / Boss steps (and Caster) would hide the tank aggro color on
+-- nearly every mob. Tank "Has Aggro" overrides them (Has Aggro cog).
+local function MopTankOverrides(profile)
+	profile.tankHasAggroOverrideMobType = true
+	profile.tankHasAggroOverrideBoss = true
+end
+
+local function NewProfile(seed)
+	local profile = DeepCopy(defaults)
+	if seed then
+		MergeSeed(profile, seed)
+		profile.seeded = "Naowh"
+	end
+	MopTankOverrides(profile)
+	return profile
+end
+
+function ENP:InitDB()
+	if type(EllesmereUINameplatesDB) ~= "table" then
+		EllesmereUINameplatesDB = {}
+	end
+	local sv = EllesmereUINameplatesDB
+	if type(sv.profile) ~= "table" then
+		sv.profile = NewProfile(NAOWH_SEED)
+	else
+		ns.CopyDefaults(defaults, sv.profile)
+	end
+	if (tonumber(sv.version) or 0) < 2 then
+		MopTankOverrides(sv.profile)
+	end
+	sv.version = 2
+	self.db = { sv = sv, profile = sv.profile }
+	P.p = sv.profile
+end
+
+-- Settings > Reset: the EllesmereUI defaults (like retail's module reset).
+function ENP:ResetProfile()
+	self.db.sv.profile = NewProfile(nil)
+	self.db.profile = self.db.sv.profile
+	P.p = self.db.profile
+end
+
+-- Settings > "Naowh" button: the retail Naowh profile again.
+function ENP:ApplyNaowhProfile()
+	self.db.sv.profile = NewProfile(NAOWH_SEED)
+	self.db.profile = self.db.sv.profile
+	P.p = self.db.profile
+end
+
+function P.Profile()
+	return P.p or defaults
+end
+
+-- Profile value with the default as fallback (nil-default keys stay nil).
+function P.Get(key)
+	local p = P.p
+	local v = p and p[key]
+	if v == nil then
+		v = defaults[key]
+	end
+	return v
+end
+
+-- Boolean value: nil reads as the default, false stays false.
+function P.On(key)
+	local p = P.p
+	local v = p and p[key]
+	if v == nil then
+		v = defaults[key]
+	end
+	return v == true
+end
+
+function P.Color(key)
+	local c = P.Get(key)
+	if type(c) ~= "table" then
+		return 1, 1, 1
+	end
+	return c.r or 1, c.g or 1, c.b or 1
+end
+
+-------------------------------------------------------------------------------
+--  Timers (5.4.8 has no C_Timer): After and NewTicker (handles with
+--  :Cancel()), all on one OnUpdate.
+-------------------------------------------------------------------------------
+do
+	local tasks = {}
+	local driver = CreateFrame("Frame")
+	driver:Hide()
+	local handle = {}
+	handle.__index = handle
+	handle.Cancel = function(self)
+		self.cancelled = true
+	end
+	driver:SetScript("OnUpdate", function(self)
+		local now = GetTime()
+		local i = 1
+		while i <= #tasks do
+			local t = tasks[i]
+			if t.cancelled then
+				table.remove(tasks, i)
+			elseif now >= t.at then
+				if t.interval then
+					t.at = now + t.interval
+					i = i + 1
+				else
+					table.remove(tasks, i)
+				end
+				local ok, err = pcall(t.fn, t)
+				if not ok then
+					geterrorhandler()(err)
+				end
+			else
+				i = i + 1
+			end
+		end
+		if #tasks == 0 then
+			self:Hide()
+		end
+	end)
+	local function Add(t)
+		setmetatable(t, handle)
+		tasks[#tasks + 1] = t
+		driver:Show()
+		return t
+	end
+	function P.After(delay, fn)
+		return Add({ at = GetTime() + (delay or 0), fn = fn })
+	end
+	function P.NewTicker(interval, fn)
+		return Add({ at = GetTime() + interval, interval = interval, fn = fn })
+	end
+end
+
+-- Run after combat (work that must not run in combat), keyed.
+do
+	local pending = {}
+	local f = CreateFrame("Frame")
+	f:RegisterEvent("PLAYER_REGEN_ENABLED")
+	f:SetScript("OnEvent", function()
+		local list = pending
+		pending = {}
+		for _, fn in pairs(list) do
+			fn()
+		end
+	end)
+	function P.AfterCombat(key, fn)
+		if InCombatLockdown() then
+			pending[key] = fn
+		else
+			fn()
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+--  Pixels and borders
+-------------------------------------------------------------------------------
+-- One physical pixel in the units of `frame` (nameplates have their own
+-- scale: WorldFrame, not UIParent).
+function P.PixelFor(frame)
+	local h = ns.PhysicalHeight and ns.PhysicalHeight() or 1080
+	local es = (frame and frame:GetEffectiveScale()) or UIParent:GetEffectiveScale()
+	if not es or es <= 0 then
+		es = 1
+	end
+	return 768 / h / es
+end
+
+-- Four edge textures (the EllesmereUI "solid" pixel border), drawn on the
+-- inside of the host. Pixel size is set by P.LayoutEdges.
+function P.CreateEdges(parent, host, layer, sub)
+	local e = { host = host or parent }
+	for i = 1, 4 do
+		e[i] = parent:CreateTexture(nil, layer or "OVERLAY", nil, sub or 7)
+		e[i]:SetTexture(1, 1, 1, 1)
+	end
+	return e
+end
+
+-- sizePx: physical pixels; outside = true grows the border out of the host.
+function P.LayoutEdges(e, sizePx, r, g, b, a, outside)
+	local host = e.host
+	if not sizePx or sizePx <= 0 then
+		for i = 1, 4 do e[i]:Hide() end
+		e.size = 0
+		return
+	end
+	local size = sizePx * P.PixelFor(host)
+	local o = outside and size or 0
+	e.size = size
+	e[1]:ClearAllPoints()
+	e[1]:SetPoint("TOPLEFT", host, "TOPLEFT", -o, o)
+	e[1]:SetPoint("TOPRIGHT", host, "TOPRIGHT", o, o)
+	e[1]:SetHeight(size)
+	e[2]:ClearAllPoints()
+	e[2]:SetPoint("BOTTOMLEFT", host, "BOTTOMLEFT", -o, -o)
+	e[2]:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", o, -o)
+	e[2]:SetHeight(size)
+	e[3]:ClearAllPoints()
+	e[3]:SetPoint("TOPLEFT", e[1], "BOTTOMLEFT")
+	e[3]:SetPoint("BOTTOMLEFT", e[2], "TOPLEFT")
+	e[3]:SetWidth(size)
+	e[4]:ClearAllPoints()
+	e[4]:SetPoint("TOPRIGHT", e[1], "BOTTOMRIGHT")
+	e[4]:SetPoint("BOTTOMRIGHT", e[2], "TOPRIGHT")
+	e[4]:SetWidth(size)
+	for i = 1, 4 do
+		e[i]:SetVertexColor(r or 0, g or 0, b or 0, a or 1)
+		e[i]:Show()
+	end
+end
+
+function P.ColorEdges(e, r, g, b, a)
+	for i = 1, 4 do
+		e[i]:SetVertexColor(r or 0, g or 0, b or 0, a or 1)
+	end
+end
+
+-------------------------------------------------------------------------------
+--  Fonts (Global Settings > Fonts, module key "nameplates")
+-------------------------------------------------------------------------------
+function P.FontPath()
+	return (ns.GetFontPath and ns.GetFontPath("nameplates")) or "Fonts\\FRIZQT__.TTF"
+end
+
+function P.Outline()
+	return (ns.GetFontOutlineFlag and ns.GetFontOutlineFlag("nameplates")) or "OUTLINE"
+end
+
+-- Icon text (aura timers and stacks): Outline Icon Text of the Fonts page.
+function P.IconOutline()
+	return (ns.GetIconTextOutlineFlag and ns.GetIconTextOutlineFlag("nameplates")) or "OUTLINE"
+end
+
+function P.SetFont(fs, size, flags)
+	size = size or 11
+	if size < 1 then
+		size = 1
+	end
+	if ns.ApplyModuleFont then
+		ns.ApplyModuleFont(fs, size, "nameplates", flags)
+	else
+		fs:SetFont(P.FontPath(), size, flags or "OUTLINE")
+	end
+end
+
+-- New FontString with a font set (5.4.8 errors on SetText without one).
+function P.NewText(parent, size, layer, sub)
+	local fs = parent:CreateFontString(nil, layer or "OVERLAY", nil, sub)
+	P.SetFont(fs, size or 11)
+	fs:SetWordWrap(false)
+	return fs
+end
+
+-------------------------------------------------------------------------------
+--  Bar textures ("none" = flat, a retail EllesmereUI texture key, or
+--  "sm:<name>" = a LibSharedMedia status bar)
+-------------------------------------------------------------------------------
+ENP.BAR_TEXTURE_ORDER = {
+	"none", "melli", "atrocity", "fade", "fade-right", "thin-line-top", "thin-line-bottom",
+	"beautiful", "plating", "divide", "glass", "gradient-lr", "gradient-rl", "gradient-bt", "gradient-tb",
+	"matte", "sheer", "pixels-fill", "pixels-dark", "pixels-bg", "blinkii-diamonds", "kringel-window",
+}
+ENP.BAR_TEXTURE_NAMES = {
+	none = "None", melli = "Melli (ElvUI)", beautiful = "Beautiful", plating = "Plating", atrocity = "Atrocity",
+	divide = "Divide", glass = "Glass", ["fade-right"] = "Fade Right", ["thin-line-top"] = "Thin Line Top",
+	["thin-line-bottom"] = "Thin Line Bottom", fade = "Fade", ["gradient-lr"] = "Gradient Right",
+	["gradient-rl"] = "Gradient Left", ["gradient-bt"] = "Gradient Up", ["gradient-tb"] = "Gradient Down",
+	matte = "Matte", sheer = "Sheer", ["pixels-fill"] = "Pixels Fill", ["pixels-dark"] = "Pixels Dark",
+	["pixels-bg"] = "Pixels Background", ["blinkii-diamonds"] = "Blinkii Diamonds", ["kringel-window"] = "Kringel Window",
+}
+
+local function LSM()
+	return ns.GetLSM and ns.GetLSM() or (LibStub and LibStub("LibSharedMedia-3.0", true))
+end
+
+function P.TexturePath(key)
+	if not key or key == "none" or key == "" then
+		return P.WHITE
+	end
+	if key:sub(1, 3) == "sm:" then
+		local lsm = LSM()
+		return (lsm and lsm:Fetch("statusbar", key:sub(4), true)) or P.WHITE
+	end
+	if ENP.BAR_TEXTURE_NAMES[key] then
+		return P.MEDIA .. "textures\\" .. key
+	end
+	return P.WHITE
+end
+
+function ENP.TextureLabel(key)
+	if key and key:sub(1, 3) == "sm:" then
+		return key:sub(4)
+	end
+	return ENP.BAR_TEXTURE_NAMES[key or "none"] or ENP.OVERLAY_STRIPE_NAMES[key or ""] or "None"
+end
+
+function ENP.TextureItems()
+	local items = {}
+	for _, key in ipairs(ENP.BAR_TEXTURE_ORDER) do
+		items[#items + 1] = { name = ENP.BAR_TEXTURE_NAMES[key], value = key }
+	end
+	local lsm = LSM()
+	if lsm then
+		local list = lsm:List("statusbar")
+		for i = 1, #list do
+			items[#items + 1] = { name = list[i], value = "sm:" .. list[i] }
+		end
+	end
+	return items
+end
+
+-- Target / focus / hover overlay textures: the stripe art of the nameplate
+-- media, else a bar texture (retail ns.ResolveOverlayTexPath).
+ENP.OVERLAY_STRIPE_KEYS = {
+	["striped-v2"] = true, ["striped-wide-v2"] = true, ["stripes-medium"] = true,
+	["stripes-small-close"] = true, ["stripes-small-spread"] = true, ["striped-tiny"] = true,
+}
+ENP.OVERLAY_STRIPE_ORDER = {
+	"striped-v2", "striped-wide-v2", "stripes-medium", "stripes-small-close", "stripes-small-spread", "striped-tiny",
+}
+ENP.OVERLAY_STRIPE_NAMES = {
+	["striped-v2"] = "Striped", ["striped-wide-v2"] = "Striped Wide", ["stripes-medium"] = "Stripes Medium",
+	["stripes-small-close"] = "Stripes Small Close", ["stripes-small-spread"] = "Stripes Small Spread",
+	["striped-tiny"] = "Striped Tiny",
+}
+
+function P.OverlayTexPath(key)
+	if not key or key == "none" then
+		return nil
+	end
+	if ENP.OVERLAY_STRIPE_KEYS[key] then
+		return P.MEDIA .. key
+	end
+	return P.TexturePath(key)
+end
+
+function ENP.OverlayTextureItems()
+	local items = { { name = "None", value = "none" } }
+	for _, key in ipairs(ENP.OVERLAY_STRIPE_ORDER) do
+		items[#items + 1] = { name = ENP.OVERLAY_STRIPE_NAMES[key], value = key }
+	end
+	for _, it in ipairs(ENP.TextureItems()) do
+		if it.value ~= "none" then
+			items[#items + 1] = it
+		end
+	end
+	return items
+end
+
+-- Absorb overlay textures (retail ns.NP_ABSORB_STYLE_TEX / ALPHA).
+ENP.ABSORB_STYLE_TEX = {
+	blizzard = P.MEDIA .. "shields\\blizzard",
+	striped = P.MEDIA .. "shields\\striped3",
+	clean = P.WHITE,
+	pixelsShield = P.MEDIA .. "shields\\pixels-shield",
+	pixelsShieldEdge = P.MEDIA .. "shields\\pixels-shield-edge",
+	pixelsShieldFill = P.MEDIA .. "shields\\pixels-shield-fill",
+}
+ENP.ABSORB_STYLE_ALPHA = { blizzard = 0.8, striped = 0.8, clean = 0.3 }
+
+-------------------------------------------------------------------------------
+--  Target arrows (retail ns.TARGET_ARROW_STYLES: w = drawn width at height
+--  16, scale 1)
+-------------------------------------------------------------------------------
+ENP.TARGET_ARROW_DIR = P.MEDIA .. "Arrows\\"
+ENP.TARGET_ARROW_STYLES = {
+	simple    = { l = "arrow_left",      r = "arrow_right",      w = 11, label = "Simple Arrows" },
+	double    = { l = "arrow_leftx2",    r = "arrow_rightx2",    w = 22, label = "Double Arrows" },
+	barbed    = { l = "barbed-left",     r = "barbed-right",     w = 28, label = "Barbed" },
+	bracket   = { l = "bracket-left",    r = "bracket-right",    w = 22, label = "Bracket" },
+	celestial = { l = "celestial-left",  r = "celestial-right",  w = 28, label = "Celestial" },
+	classic   = { l = "classic-left",    r = "classic-right",    w = 22, label = "Classic" },
+	crystal   = { l = "crystal-left",    r = "crystal-right",    w = 22, label = "Crystal" },
+	curved    = { l = "curved-left",     r = "curved-right",     w = 22, label = "Curved" },
+	demon     = { l = "demon-left",      r = "demon-right",      w = 28, label = "Demon" },
+	diamond   = { l = "diamond-left",    r = "diamond-right",    w = 28, label = "Diamond" },
+	feathered = { l = "feathered-left",  r = "feathered-right",  w = 22, label = "Feathered" },
+	halo      = { l = "halo-left",       r = "halo-right",       w = 22, label = "Halo" },
+	holyspear = { l = "holy-spear-left", r = "holy-spear-right", w = 28, label = "Holy Spear" },
+	rune      = { l = "rune-left",       r = "rune-right",       w = 22, label = "Rune" },
+	split     = { l = "split-left",      r = "split-right",      w = 22, label = "Split" },
+	winged    = { l = "winged-left",     r = "winged-right",     w = 28, label = "Winged" },
+}
+ENP.TARGET_ARROW_ORDER = {
+	"simple", "double", "winged", "feathered", "split", "celestial", "rune", "demon",
+	"halo", "curved", "barbed", "holyspear", "bracket", "diamond", "crystal", "classic",
+}
+
+function P.ArrowStyle()
+	local p = P.Profile()
+	local key = p.targetArrowStyle or (p.targetArrowDouble and "double")
+	return ENP.TARGET_ARROW_STYLES[key] or ENP.TARGET_ARROW_STYLES.simple
+end
+
+local _, PLAYER_CLASS = UnitClass("player")
+P.PLAYER_CLASS = PLAYER_CLASS
+
+function P.ArrowColor()
+	local p = P.Profile()
+	if p.targetArrowClassColor then
+		local cc = RAID_CLASS_COLORS and ((EllesmereUI.GetClassColor and RAID_CLASS_COLORS[PLAYER_CLASS] and EllesmereUI.GetClassColor(PLAYER_CLASS)) or RAID_CLASS_COLORS[PLAYER_CLASS])
+		if cc then
+			return cc.r, cc.g, cc.b
+		end
+		return 1, 1, 1
+	end
+	local c = p.targetArrowColor
+	if c then
+		return c.r or 1, c.g or 1, c.b or 1
+	end
+	return 1, 1, 1
+end
+
+-------------------------------------------------------------------------------
+--  Target / hover effect switches (retail Layout.lua getters: each toggle
+--  reads its own key, else derives from targetGlowStyle)
+-------------------------------------------------------------------------------
+function P.TargetGlowEUI()
+	local p = P.Profile()
+	if p.targetGlowEllesmereUI ~= nil then return p.targetGlowEllesmereUI end
+	local style = p.targetGlowStyle or defaults.targetGlowStyle
+	return style == "ellesmereui" or style == "vibrant"
+end
+function P.TargetGlowBorderColor()
+	local p = P.Profile()
+	if p.targetGlowBorderColor ~= nil then return p.targetGlowBorderColor end
+	return (p.targetGlowStyle or defaults.targetGlowStyle) == "vibrant"
+end
+function P.TargetGlowHighlight()
+	return P.Profile().targetGlowHighlight == true
+end
+function P.TargetGlowBorderSize()
+	return P.Profile().targetGlowBorderSize == true
+end
+function P.HoverGlowEUI() return P.Profile().hoverGlowEllesmereUI == true end
+function P.HoverGlowBorderColor() return P.Profile().hoverGlowBorderColor == true end
+function P.HoverGlowBorderSize() return P.Profile().hoverGlowBorderSize == true end
+function P.HoverGlowHighlight()
+	local v = P.Profile().hoverGlowHighlight
+	if v ~= nil then return v == true end
+	return true
+end
+
+-------------------------------------------------------------------------------
+--  Sizes (retail Layout.lua getters)
+-------------------------------------------------------------------------------
+function P.HealthW() return BAR_W + (P.Get("healthBarWidth") or 0) end
+function P.HealthH() return P.Get("healthBarHeight") or 17 end
+function P.CastH() return P.Get("castBarHeight") or 17 end
+function P.FriendlyW() return P.Get("friendlyHealthBarWidth") or 150 end
+function P.FriendlyH() return P.Get("friendlyHealthBarHeight") or 17 end
+
+-- Slot size / offsets of a Core Positions slot (top, left, right, topleft,
+-- topright, bottom).
+function P.SlotSize(slot)
+	return P.Get(slot .. "SlotSize") or 24
+end
+function P.SlotOffsets(slot)
+	return P.Get(slot .. "SlotXOffset") or 0, P.Get(slot .. "SlotYOffset") or 0
+end
+
+-------------------------------------------------------------------------------
+--  Interrupt of the player (retail EllesmereUI_Kick.lua with the Mists
+--  spells). Retail colors: kick ready = the normal cast color, kick on
+--  cooldown = "interruptReady" (the "Interrupt on CD" swatch).
+-------------------------------------------------------------------------------
+local KICKS = {
+	DEATHKNIGHT = { 47528 }, WARRIOR = { 6552 }, SHAMAN = { 57994 }, ROGUE = { 1766 },
+	PRIEST = { 15487 }, PALADIN = { 96231 }, MONK = { 116705 }, MAGE = { 2139 },
+	HUNTER = { 147362, 34490 }, DRUID = { 80964, 80965, 106839, 78675 },
+	WARLOCK = { 19647, 119910, 103135, 132409, 115781 },
+}
+local kickSpell, kickIsPet
+
+function P.RefreshKick()
+	kickSpell, kickIsPet = nil, nil
+	local list = KICKS[PLAYER_CLASS]
+	if not list then return end
+	for _, id in ipairs(list) do
+		if IsSpellKnown(id, true) then
+			kickSpell, kickIsPet = id, true
+		elseif IsSpellKnown(id) and not kickIsPet then
+			kickSpell = id
+		end
+	end
+end
+
+function P.KickSpell()
+	return kickSpell
+end
+
+-- Seconds until the interrupt is ready (0 = ready, nil = no interrupt).
+function P.KickRemaining()
+	if not kickSpell then return nil end
+	local start, duration, enabled = GetSpellCooldown(kickSpell)
+	if not start or enabled == 0 then return nil end
+	if start == 0 or duration <= 1.5 then return 0 end
+	local left = start + duration - GetTime()
+	return left > 0 and left or 0
+end
+
+-------------------------------------------------------------------------------
+--  Execute window (Execute Pulse Glow): health fraction below which the
+--  player's execute works. Mists: Execute, Hammer of Wrath, Kill Shot,
+--  Shadow Word: Death, Drain Soul / Shadowburn, Soul Reaper. Specs without an
+--  execute switch the glow off (retail rule).
+-------------------------------------------------------------------------------
+local EXEC = {
+	WARRIOR = { 0.20, 0.20, 0.20 },
+	PALADIN = { 0.20, 0.20, 0.20 },
+	HUNTER = { 0.20, 0.20, 0.20 },
+	PRIEST = { 0.20, 0.20, 0.20 },
+	WARLOCK = { 0.20, nil, 0.20 },
+	DEATHKNIGHT = { 0.35, 0.35, 0.35 },
+}
+local execThreshold
+
+function P.RefreshExecute()
+	local list = EXEC[PLAYER_CLASS]
+	local spec = GetSpecialization and GetSpecialization()
+	execThreshold = list and spec and list[spec] or nil
+end
+
+function P.ExecuteThreshold()
+	return execThreshold
+end
+
+-------------------------------------------------------------------------------
+--  Role (threat colors): tank spec or a raid tank assignment
+-------------------------------------------------------------------------------
+-- 5.4.8 has no spec yet at PLAYER_LOGIN (talents arrive with
+-- PLAYER_TALENT_UPDATE): an unknown spec stays nil and is asked again.
+local isTank = nil
+function P.RefreshRole()
+	local spec = GetSpecialization and GetSpecialization()
+	local role = spec and GetSpecializationRole and GetSpecializationRole(spec)
+	if role then
+		isTank = role == "TANK"
+	elseif UnitGroupRolesAssigned and UnitGroupRolesAssigned("player") == "TANK" then
+		isTank = true
+	else
+		isTank = nil
+	end
+end
+function P.IsTank()
+	if isTank == nil then P.RefreshRole() end
+	return isTank or false
+end
+
+
+

@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, EllesmereUI._unlockEnv) -- 5.4.8 port: retail APIs from EUI_UnlockMode_Compat.lua
 -------------------------------------------------------------------------------
 --  EUI_UnlockMode_Tools.lua
 --  Unlock Mode tools: accent color, grid overlay, alignment guides, snap,
@@ -71,7 +71,7 @@ local function CreateGrid(parent)
                 end
                 self._lines[idx] = tex
             end
-            tex:SetColorTexture(ar, ag, ab, baseA)
+            tex:SetTexture(ar, ag, ab, baseA)
             tex._baseAlpha = baseA
             tex._isWhite = false
             tex._isVert = isVert
@@ -111,7 +111,7 @@ local function CreateGrid(parent)
                 end
                 self._lines[idx] = tex
             end
-            tex:SetColorTexture(ar, ag, ab, centerA)
+            tex:SetTexture(ar, ag, ab, centerA)
             tex._baseAlpha = centerA
             tex._isWhite = false
             tex._isVert = (axis == "V")
@@ -142,7 +142,7 @@ local function CreateGrid(parent)
                 end
                 self._lines[idx] = tex
             end
-            tex:SetColorTexture(1, 1, 1, CROSS_ALPHA)
+            tex:SetTexture(1, 1, 1, CROSS_ALPHA)
             tex._baseAlpha = CROSS_ALPHA
             tex._isWhite = true
             tex._isVert = (axis == "V")
@@ -177,7 +177,7 @@ local function CreateGrid(parent)
     local LIGHT_DIAMETER = LIGHT_RADIUS * 2
     local LIGHT_BOOST    = 0.55
     local NUM_SEGS       = 5
-    local FLASH_PATH = "Interface\\AddOns\\EllesmereUI\\media\\unlock-flash.png"
+    local FLASH_PATH = "Interface\\AddOns\\EllesmereUI\\media\\unlock-flash"
 
     -- Ambient glow texture (soft circle behind lines)
     local flashTex = UM.gridFrame:CreateTexture(nil, "BACKGROUND", nil, -8)
@@ -264,9 +264,9 @@ local function CreateGrid(parent)
                                     glowIdx = glowIdx + 1
                                     local g = GetGlow(glowIdx)
                                     if isW then
-                                        g:SetColorTexture(1, 1, 1, alpha)
+                                        g:SetTexture(1, 1, 1, alpha)
                                     else
-                                        g:SetColorTexture(cachedAR, cachedAG, cachedAB, alpha)
+                                        g:SetTexture(cachedAR, cachedAG, cachedAB, alpha)
                                     end
                                     g:ClearAllPoints()
                                     g:SetSize(1, segEnd - segY)
@@ -293,9 +293,9 @@ local function CreateGrid(parent)
                                     glowIdx = glowIdx + 1
                                     local g = GetGlow(glowIdx)
                                     if isW then
-                                        g:SetColorTexture(1, 1, 1, alpha)
+                                        g:SetTexture(1, 1, 1, alpha)
                                     else
-                                        g:SetColorTexture(cachedAR, cachedAG, cachedAB, alpha)
+                                        g:SetTexture(cachedAR, cachedAG, cachedAB, alpha)
                                     end
                                     g:ClearAllPoints()
                                     g:SetSize(segEnd - segX, 1)
@@ -326,7 +326,7 @@ local activeGuides = {}
 local function GetGuide(idx)
     if guidePool[idx] then return guidePool[idx] end
     local tex = UM.unlockFrame:CreateTexture(nil, "OVERLAY", nil, 6)
-    tex:SetColorTexture(1, 1, 1, 1)
+    tex:SetTexture(1, 1, 1, 1)
     guidePool[idx] = tex
     return tex
 end
@@ -353,7 +353,7 @@ local function ClearSnapHighlight()
         if m._snapBrd then m._snapBrd:SetColor(1, 1, 1, 0) end
         -- Restore normal overlay brightness
         if UM.darkOverlaysEnabled and m._bg then
-            m._bg:SetColorTexture(m._bgR or 0.075, m._bgG or 0.113, m._bgB or 0.141, 0.95)
+            m._bg:SetTexture(m._bgR or 0.075, m._bgG or 0.113, m._bgB or 0.141, 0.95)
         end
     end
     snapHighlightKey = nil
@@ -371,7 +371,7 @@ local function ShowSnapHighlight(targetKey)
         local old = movers[snapHighlightKey]
         if old._snapBrd then old._snapBrd:SetColor(1, 1, 1, 0) end
         if UM.darkOverlaysEnabled and old._bg then
-            old._bg:SetColorTexture(old._bgR or 0.075, old._bgG or 0.113, old._bgB or 0.141, 0.95)
+            old._bg:SetTexture(old._bgR or 0.075, old._bgG or 0.113, old._bgB or 0.141, 0.95)
         end
     end
     local m = movers[targetKey]
@@ -384,7 +384,7 @@ local function ShowSnapHighlight(targetKey)
     GetOrCreateSnapBorder(m)
     -- Brighten the mover's base color
     if UM.darkOverlaysEnabled and m._bg then
-        m._bg:SetColorTexture((m._bgR or 0.075) * 1.4, (m._bgG or 0.113) * 1.4, (m._bgB or 0.141) * 1.4, 0.95)
+        m._bg:SetTexture((m._bgR or 0.075) * 1.4, (m._bgG or 0.113) * 1.4, (m._bgB or 0.141) * 1.4, 0.95)
     end
     if not snapHighlightAnim then
         snapHighlightAnim = CreateFrame("Frame")
@@ -437,7 +437,7 @@ local function ShowAlignmentGuides(dragKey)
     if lastSnapInfo.snapXPos then
         guideIdx = guideIdx + 1
         local g = GetGuide(guideIdx)
-        g:SetColorTexture(ar, ag, ab, 0.5)
+        g:SetTexture(ar, ag, ab, 0.5)
         g:ClearAllPoints()
         g:SetSize(onePx, screenH)
         g:SetPoint("BOTTOM", UIParent, "BOTTOMLEFT", lastSnapInfo.snapXPos, 0)
@@ -447,7 +447,7 @@ local function ShowAlignmentGuides(dragKey)
     if lastSnapInfo.snapYPos then
         guideIdx = guideIdx + 1
         local g = GetGuide(guideIdx)
-        g:SetColorTexture(ar, ag, ab, 0.5)
+        g:SetTexture(ar, ag, ab, 0.5)
         g:ClearAllPoints()
         g:SetSize(screenW, onePx)
         g:SetPoint("LEFT", UIParent, "BOTTOMLEFT", 0, lastSnapInfo.snapYPos)
@@ -627,7 +627,7 @@ local function SetSelectionHighlight(m, on)
         if not m._selHl then
             local hl = m:CreateTexture(nil, "ARTWORK")
             hl:SetAllPoints()
-            hl:SetColorTexture(1, 1, 1, 1)
+            hl:SetTexture(1, 1, 1, 1)
             m._selHl = hl
         end
         m._selHl:SetAlpha(0.10)
@@ -724,14 +724,14 @@ EllesmereUI._DeselectSelectedMover = DeselectMover
 local function ApplyDarkOverlays()
     for _, m in pairs(movers) do
         if UM.darkOverlaysEnabled then
-            m._bg:SetColorTexture(m._bgR or 0.075, m._bgG or 0.113, m._bgB or 0.141, 0.95)
+            m._bg:SetTexture(m._bgR or 0.075, m._bgG or 0.113, m._bgB or 0.141, 0.95)
             if m._label then m._label:SetAlpha(1); m._label:Show() end
             if m._subtitle then m._subtitle:SetAlpha(1); m._subtitle:Show() end
             if m._coordFS then m._coordFS:SetAlpha(1) end
             -- Action row is hover-only now, don't show it here
             if not m._dragging then m:SetAlpha(1) end
         else
-            m._bg:SetColorTexture(0, 0, 0, 0)
+            m._bg:SetTexture(0, 0, 0, 0)
             if m._label then m._label:Hide() end
             if m._subtitle then m._subtitle:Hide() end
             -- When coords-always-on is active, show coords for all movers; otherwise hide
@@ -1009,7 +1009,7 @@ local function SetupArrowKeyFrame()
     if UM.arrowKeyFrame then return end
     UM.arrowKeyFrame = CreateFrame("Frame", nil, UIParent)
     UM.arrowKeyFrame:SetFrameStrata("FULLSCREEN_DIALOG")
-    UM.arrowKeyFrame:SetFrameLevel(500)
+    UM.arrowKeyFrame:SetFrameLevel(10) -- 5.4.8: frame levels stop at 128
     UM.arrowKeyFrame:EnableKeyboard(true)
     UM.arrowKeyFrame:SetPropagateKeyboardInput(true)
     UM.arrowKeyFrame:Hide()
@@ -1135,7 +1135,7 @@ end
 -- Called after all movers are created and synced.
 local function SortMoverFrameLevels()
     if not UM.unlockFrame then return end
-    local BASE = UM.unlockFrame:GetFrameLevel() + 20
+    local BASE = UM.unlockFrame:GetFrameLevel() + 5 -- 5.4.8: frame levels stop at 128 (retail +20)
     local sorted = {}
     for key, m in pairs(movers) do
         local area = (m:GetWidth() or 100) * (m:GetHeight() or 100)
@@ -1157,7 +1157,9 @@ end
 --  bags, encounter bar). Not draggable. Hover shows accent-colored "Move via Blizz
 --  Edit Mode" text with the same animation as regular mover links; clicking closes unlock mode and opens Blizzard's Edit Mode.
 -------------------------------------------------------------------------------
-local BLIZZ_OWNED_OVERLAY_DEFS = {
+-- 5.4.8 port: no Blizzard Edit Mode, so no Blizzard-owned overlays (the retail
+-- list is kept below, unused: "{} or" picks the empty one).
+local BLIZZ_OWNED_OVERLAY_DEFS = {} or {
     -- Chat is NOT here anymore: it is a REAL unlock element registered by
     -- EllesmereUIChat (position genesis-captured from Edit Mode's last spot,
     -- then enforced against Edit Mode via the chat module's anchor guard).
@@ -1184,7 +1186,7 @@ local function CreateBlizzOwnedOverlay(def, parent)
     -- Background: same as regular movers
     local bg = ov:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
-    bg:SetColorTexture(0.103, 0.095, 0.088, 0.95)
+    bg:SetTexture(0.103, 0.095, 0.088, 0.95)
     -- Border: accent at idle, white on hover
     local brd = EllesmereUI.MakeBorder(ov, ar, ag, ab, 0.6)
     ov._brd = brd

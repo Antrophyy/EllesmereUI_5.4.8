@@ -1,822 +1,890 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
---  EllesmereUIQoL_BattleRes.lua
---  Runtime for the BattleRes icon. Polls GetSpellCharges(20484) and shows
---  the shared raid brez pool (charges + recharge timer) as a single icon.
+--  EllesmereUIQoL_BattleRes.lua (5.4.8 port of the retail BattleRes icon)
+--
+--  Retail polls the shared brez charge pool (GetSpellCharges(20484)). Mists
+--  has no pool: a raid boss allows a fixed number of combat resurrections per
+--  attempt (10-player 1, 25-player and LFR 3) and every caster has a 10 min
+--  cooldown. So the icon is driven by the combat log instead:
+--    * Count = brez left this attempt (limit - accepted brez). In a
+--      Challenge Mode (no limit) it is the number of brez casters ready now.
+--    * Timer = time until the next brez caster in the group is ready, shown
+--      only while none is ready and brez are still left.
+--  A brez counts when the target is alive again (accepting it), like the
+--  server counts it. The combat log misses players in another phase or out
+--  of range, so the count comes from group members going dead -> alive
+--  during the boss (raid death state reaches us in every phase); the log
+--  and EUI addon messages ("EUIBR") only tell who cast it and what was free
+--  (Reincarnation). Cooldowns of 5 min+ reset after a raid boss (5.4.8).
+--  Same keys, look and Unlock Mode element as retail. No masks in 5.4.8, so
+--  the shapes are None and Cropped only.
 -------------------------------------------------------------------------------
+local addonName = ...
+local ns = EllesmereUI
 
-local BREZ_SPELL_ID = 20484  -- Rebirth -- canonical shared brez pool spell ID
+local floor, max, min, format = math.floor, math.max, math.min, string.format
+local band = bit.band
+local GetTime = GetTime
 
-local SHAPE_MASKS = EllesmereUI.SHAPE_MASKS
-local SHAPE_BORDERS = EllesmereUI.SHAPE_BORDERS
+local BREZ_ICON_SPELL = 20484  -- Rebirth
+local BREZ_COOLDOWN = 600
 
--- Sits under EllesmereUIQoLDB.profile.battleRes so we don't clobber the
--- existing cursor / QoL feature data that already lives in that SavedVariable.
-local defaults = {
-    profile = {
-        battleRes = {
-            enabled        = true,
-            visibility     = "MPLUS_AND_RAID",  -- MPLUS_AND_RAID | MPLUS | RAID | NEVER
-            displayMode    = "icon",  -- icon | text ("2 | 4:14" line)
-            iconSize       = 40,
-            iconZoom       = 11,   -- percent
-            shape          = "none",
-            borderSize     = "thin",  -- none / thin / normal / heavy / strong
-            borderColor    = { r = 0, g = 0, b = 0, a = 1 },
-            borderUseClass = false,
-            durationSize   = 12,
-            durationOffsetX = 0,
-            durationOffsetY = 0,
-            countSize      = 11,
-            countOffsetX   = 0,
-            countOffsetY   = 0,
-            desaturateNoCharges = true,  -- grey the icon at 0 charges (icon display only)
-            textSize       = 14,
-            textCountColor = { r = 1, g = 1, b = 1 },
-            textTimerColor = { r = 1, g = 1, b = 1 },
-            font           = "__global",  -- key into the shared font registry
-            outlineMode    = "__global",  -- __global | none (shadow) | outline | thick
-            pos            = nil,  -- { centerX, centerY } stored after first move
-        },
-        -- Bloodlust Tracker: additive sibling of battleRes. Stores ONLY its own keys
-        -- here (enable, visibility, position). Appearance keys are left out on purpose
-        -- so the runtime/options proxy-read through to the current battleRes values
-        -- until the user overrides a setting on the tracker (the same "starts
-        -- identical, can diverge" model used for raid/party frames). This keeps
-        -- existing battleRes settings completely untouched for current users.
-        bloodlust = {
-            enabled    = true,
-            visibility = "NEVER",  -- MPLUS_AND_RAID | MPLUS | RAID | NEVER
-            pos        = nil,      -- { centerX, centerY } stored after first move
-            -- Show Sated / Show Ready: independent toggles. Own keys, never proxied to
-            -- battleRes (which has no ready state). Sated on / Ready off = the
-            -- pre-existing behaviour (countdown only, hidden once it expires).
-            showSated    = true,
-            showReady    = false,
-            readySize    = 12,
-            readyColor   = { r = 1, g = 1, b = 1 },
-            readyOffsetX = 0,
-            readyOffsetY = 0,
-            desaturateSated = true,  -- own key, independent of battleRes.desaturateNoCharges
-        },
-    },
+-- Combat resurrection spells (ExRT 5.4.8 cooldown list): every one is a
+-- 10 min cooldown that uses one brez of the raid when it is accepted.
+local BREZ_SPELLS = {
+	[20484] = true,   -- Rebirth (Druid)
+	[61999] = true,   -- Raise Ally (Death Knight)
+	[20707] = true,   -- Soulstone (Warlock; can be cast on a dead player)
+	[126393] = true,  -- Eternal Guardian (Hunter quilen pet)
 }
+-- Using a Soulstone on yourself (the release prompt button).
+local SOULSTONE_SELF_RES = 95750
+-- Shaman Reincarnation (the self res itself): does not use a raid brez.
+local REINCARNATION = 21169
+local COMM_PREFIX = "EUIBR"
+-- Eternal Guardian is a pet spell: its cooldown does not reset after a boss.
+local NO_ENCOUNTER_RESET = { [126393] = true }
+-- Classes that always carry a brez (hunters only after a quilen was seen).
+local BREZ_CLASSES = { DRUID = true, DEATHKNIGHT = true, WARLOCK = true }
 
-local addon = {}
-addon.db = nil
-local function P()
-    return addon.db and addon.db.profile and addon.db.profile.battleRes
+-- Difficulties whose long cooldowns reset when the boss ends (ExRT list).
+local RESET_DIFFICULTY = { [3] = true, [4] = true, [5] = true, [6] = true, [7] = true, [14] = true }
+local CHALLENGE_DIFFICULTY = 8
+
+local GROUP_AFFILIATION = 0x00000007  -- COMBATLOG_OBJECT_AFFILIATION_MINE / PARTY / RAID
+
+local function Defaults()
+	return {
+		enabled        = true,
+		visibility     = "MPLUS_AND_RAID",  -- MPLUS_AND_RAID | MPLUS | RAID | NEVER (MPLUS = Challenge Mode)
+		displayMode    = "icon",  -- icon | text ("2 | 4:14" line)
+		iconSize       = 40,
+		iconZoom       = 11,   -- percent
+		shape          = "none",  -- none | cropped
+		borderSize     = "thin",  -- none / thin / normal / heavy / strong
+		borderColor    = { r = 0, g = 0, b = 0, a = 1 },
+		borderUseClass = false,
+		durationSize   = 12,
+		durationOffsetX = 0,
+		durationOffsetY = 0,
+		countSize      = 11,
+		countOffsetX   = 0,
+		countOffsetY   = 0,
+		desaturateNoCharges = true,
+		textSize       = 14,
+		textCountColor = { r = 1, g = 1, b = 1 },
+		textTimerColor = { r = 1, g = 1, b = 1 },
+		font           = "__global",
+		outlineMode    = "__global",  -- __global | none (shadow) | outline | thick
+		-- pos = { centerX, centerY } after the first move
+	}
 end
+ns.BattleResDefaults = Defaults
 
-local frame, iconTex, borderTex, durationFS, countFS, cooldownFrame, textFS
+-- Lives in EllesmereUIQoLDB.battleRes (retail: EllesmereUIQoLDB.profile.battleRes).
+-- Re-seeded after the QoL reset wipes the table.
+local function P()
+	local q = ns.GetQoLDB and ns.GetQoLDB()
+	if type(q) ~= "table" then return nil end
+	local t = q.battleRes
+	if type(t) ~= "table" then
+		t = {}
+		q.battleRes = t
+	end
+	if t._seeded ~= 1 then
+		ns.CopyDefaults(Defaults(), t)
+		t._seeded = 1
+	end
+	return t
+end
+ns.GetBattleResDB = P
 
--- Options-page live preview: forces the icon on screen for as long as the owning
--- page is. Real charge data is used whenever the brez pool reports any; outside
--- a raid or key it reports none, so PollCharges falls back to the stand-in below
--- rather than previewing an icon with no count and no timer.
-local _previewOwner
-local function _previewActive()
-    return _previewOwner ~= nil and _previewOwner:IsVisible() and true or false
+local frame, iconTex, durationFS, countFS, cooldownFrame, textFS, border
+
+-- Settings page preview: forces the icon on screen while the page is shown.
+local previewOwner
+local function PreviewActive()
+	return previewOwner ~= nil and previewOwner:IsVisible() and true or false
 end
 
 local function IsTextMode()
-    local p = P()
-    return (p and p.displayMode) == "text"
+	local p = P()
+	return (p and p.displayMode) == "text"
 end
 
 -------------------------------------------------------------------------------
---  Font resolution -- mirrors the Chat module's font / outline settings:
---  "__global" follows the EUI global font defaults, a named key resolves
---  through the shared font registry, and outline overrides stay slug-gated.
+--  Fonts: the text display follows Font / Font Outline; the icon texts keep
+--  the module font with a crisp outline (retail house style).
 -------------------------------------------------------------------------------
+local FONT_KEY = "qol"
+
 local function GetBrezFont()
-    local p = P()
-    local key = (p and p.font) or "__global"
-    if key ~= "__global" and EllesmereUI and EllesmereUI.ResolveFontName then
-        local path = EllesmereUI.ResolveFontName(key)
-        if path then return path end
-    end
-    return (EllesmereUI.GetFontPath("extras")) or STANDARD_TEXT_FONT
+	local p = P()
+	local key = (p and p.font) or "__global"
+	if key ~= "__global" and ns.ResolveFontName then
+		local path = ns.ResolveFontName(key)
+		if path then return path end
+	end
+	return (ns.GetFontPath and ns.GetFontPath(FONT_KEY)) or STANDARD_TEXT_FONT
 end
 
 local function GetBrezOutline()
-    local p = P()
-    local mode = (p and p.outlineMode) or "__global"
-    if mode == "outline" then return (EllesmereUI.SlugFlag("OUTLINE, SLUG")) or "OUTLINE, SLUG" end
-    if mode == "thick" then return (EllesmereUI.SlugFlag("THICKOUTLINE, SLUG")) or "THICKOUTLINE, SLUG" end
-    if mode == "none" then return "" end
-    return (EllesmereUI.GetFontOutlineFlag("qol"))
-        or (EllesmereUI.SlugFlag("OUTLINE, SLUG")) or "OUTLINE, SLUG"
+	local p = P()
+	local mode = (p and p.outlineMode) or "__global"
+	if mode == "outline" then return "OUTLINE" end
+	if mode == "thick" then return "THICKOUTLINE" end
+	if mode == "none" then return "" end
+	return (ns.GetFontOutlineFlag and ns.GetFontOutlineFlag(FONT_KEY)) or "OUTLINE"
 end
 
--- ONLY the text display ("2 | 4:14") routes through this; the icon's
--- duration / count texts keep the fixed house style via SetBrezIconFont
--- below. Empty flags = Drop Shadow mode, primed via FontObject (instance
--- shadow setters do not render).
+local function SetFontSafe(fs, path, size, flags)
+	fs:SetFont(path, size, flags)
+	if not fs:GetFont() then
+		fs:SetFont(STANDARD_TEXT_FONT, size, flags)
+	end
+	if flags == "" then
+		fs:SetShadowOffset(1, -1)
+		fs:SetShadowColor(0, 0, 0, 1)
+	else
+		fs:SetShadowOffset(0, 0)
+	end
+end
+
 local function SetBrezFont(fs, size)
-    if not fs then return end
-    local flags = GetBrezOutline()
-    EllesmereUI.PrimeFontShadow(fs, flags == "")
-    fs:SetFont(GetBrezFont(), size, flags)
+	if fs then SetFontSafe(fs, GetBrezFont(), size, GetBrezOutline()) end
 end
 
--- Icon-mode duration / count texts: fixed module font + forced crisp
--- outline (slug-gated), untouched by the Font / Font Outline settings.
 local function SetBrezIconFont(fs, size)
-    if not fs then return end
-    fs:SetFont((EllesmereUI.GetFontPath("extras")) or STANDARD_TEXT_FONT, size, (EllesmereUI.SlugFlag("OUTLINE, SLUG")) or "OUTLINE, SLUG")
+	if fs then
+		SetFontSafe(fs, (ns.GetFontPath and ns.GetFontPath(FONT_KEY)) or STANDARD_TEXT_FONT, size, "OUTLINE")
+	end
 end
 
 -------------------------------------------------------------------------------
---  Shape application
+--  Icon look
 -------------------------------------------------------------------------------
 local BORDER_PX = { none = 0, thin = 1, normal = 2, heavy = 3, strong = 4 }
+ns.BATTLERES_BORDER_PX = BORDER_PX
 
-local function _resolveBorderColor(p)
-    if p.borderUseClass then
-        local _, ct = UnitClass("player")
-        if ct and RAID_CLASS_COLORS[ct] then
-            return RAID_CLASS_COLORS[ct].r, RAID_CLASS_COLORS[ct].g, RAID_CLASS_COLORS[ct].b, 1
-        end
-    end
-    local c = p.borderColor
-    if c then return c.r or 0, c.g or 0, c.b or 0, c.a or 1 end
-    return 0, 0, 0, 1
+local function Snap(v)
+	local PP = ns.PP
+	if PP and PP.Snap then return PP.Snap(v) end
+	return v
 end
 
--- Snap a config-driven layout offset onto the pixel grid. The frame's own edges
--- and center are snapped already (ApplyShape / ApplyPosition), so snapping the
--- offset is what keeps the child anchored to it on the grid too.
-local function _snapOff(v)
-    local PP = EllesmereUI and EllesmereUI.PP
-    if PP and PP.Snap then return PP.Snap(v) end
-    return v
+local function ResolveBorderColor(p)
+	if p.borderUseClass then
+		local _, ct = UnitClass("player")
+		local cc = ct and RAID_CLASS_COLORS[ct]
+		if cc then return cc.r, cc.g, cc.b, 1 end
+	end
+	local c = p.borderColor
+	if c then return c.r or 0, c.g or 0, c.b or 0, c.a or 1 end
+	return 0, 0, 0, 1
 end
 
 local function ApplyShape()
-    if not frame then return end
-    local p = P()
-    if not p then return end
+	local p = P()
+	if not frame or not p then return end
+	local shape = (p.shape == "cropped") and "cropped" or "none"
+	local size = p.iconSize or 40
+	local fw, fh = size, size
+	if shape == "cropped" then fh = floor(size * 0.80 + 0.5) end
+	frame:SetSize(Snap(fw), Snap(fh))
 
-    local PP = EllesmereUI and EllesmereUI.PP
-    local shape = p.shape or "none"
-    local bs = BORDER_PX[p.borderSize or "thin"] or 1
+	SetBrezIconFont(durationFS, p.durationSize or 12)
+	durationFS:ClearAllPoints()
+	durationFS:SetPoint("CENTER", frame, "CENTER", Snap(p.durationOffsetX or 0), Snap(p.durationOffsetY or 0))
+	SetBrezIconFont(countFS, p.countSize or 11)
+	countFS:ClearAllPoints()
+	countFS:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", Snap(-2 + (p.countOffsetX or 0)), Snap(2 + (p.countOffsetY or 0)))
 
-    -- Frame sizing: square by default; for "cropped" the height is 80% of width
-    -- (mirrors Action Bars line 2263: btnH = btnH * 0.80).
-    local size = p.iconSize or 40
-    local fw, fh = size, size
-    if shape == "cropped" then fh = math.floor(size * 0.80 + 0.5) end
-    if PP and PP.Snap then fw, fh = PP.Snap(fw), PP.Snap(fh) end
-    frame:SetSize(fw, fh)
-    iconTex:ClearAllPoints()
-    iconTex:SetAllPoints(frame)
+	local z = (p.iconZoom or 11) / 100
+	if shape == "cropped" then
+		iconTex:SetTexCoord(z, 1 - z, z + 0.10, 1 - z - 0.10)
+	else
+		iconTex:SetTexCoord(z, 1 - z, z, 1 - z)
+	end
 
-    -- Cooldown swirl: covers the icon area.
-    if cooldownFrame then
-        cooldownFrame:ClearAllPoints()
-        cooldownFrame:SetAllPoints(frame)
-    end
-
-    -- Duration text (centered) and count text (bottom-right) -- positioned for
-    -- every shape since the early-return below would otherwise skip them.
-    SetBrezIconFont(durationFS, p.durationSize or 12)
-    durationFS:ClearAllPoints()
-    durationFS:SetPoint("CENTER", frame, "CENTER",
-        _snapOff(p.durationOffsetX or 0), _snapOff(p.durationOffsetY or 0))
-
-    SetBrezIconFont(countFS, p.countSize or 11)
-    countFS:ClearAllPoints()
-    countFS:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT",
-        _snapOff(-2 + (p.countOffsetX or 0)), _snapOff(2 + (p.countOffsetY or 0)))
-
-    -----------------------------------------------------------------------
-    --  BASE CASE: "none" or "cropped" -- plain texture, no mask
-    -----------------------------------------------------------------------
-    if shape == "none" or shape == "cropped" then
-        if iconTex._mask then
-            -- Remove the mask from the cooldown swipe and reset its
-            -- swipe texture BEFORE we nil out the mask reference.
-            -- Otherwise the swipe stays cropped to the previous shape.
-            if cooldownFrame and not cooldownFrame:IsForbidden() then
-                pcall(cooldownFrame.RemoveMaskTexture, cooldownFrame, iconTex._mask)
-                if cooldownFrame.SetSwipeTexture then
-                    pcall(cooldownFrame.SetSwipeTexture, cooldownFrame, "")
-                end
-            end
-            iconTex:RemoveMaskTexture(iconTex._mask)
-            iconTex._mask:SetTexture(nil)
-            iconTex._mask:ClearAllPoints()
-            iconTex._mask:SetSize(0.001, 0.001)
-            iconTex._mask:Hide()
-            iconTex._mask = nil
-        end
-        borderTex:Hide()  -- shape-border atlas is for custom shapes only
-
-        local z = (p.iconZoom or 11) / 100
-        if shape == "cropped" then
-            iconTex:SetTexCoord(z, 1 - z, z + 0.10, 1 - z - 0.10)
-        elseif z > 0 then
-            iconTex:SetTexCoord(z, 1 - z, z, 1 - z)
-        else
-            iconTex:SetTexCoord(0, 1, 0, 1)
-        end
-
-        -- Pixel-perfect border via PP.CreateBorder (canonical EUI pattern).
-        if PP then
-            if not PP.GetBorders(frame) then PP.CreateBorder(frame, 0, 0, 0, 1, 1, "OVERLAY", 2) end
-            if bs > 0 then
-                local r, g, b, a = _resolveBorderColor(p)
-                PP.UpdateBorder(frame, bs, r, g, b, a)
-                PP.ShowBorder(frame)
-            else
-                PP.HideBorder(frame)
-            end
-        end
-        return
-    end
-
-    -----------------------------------------------------------------------
-    --  CUSTOM SHAPE: apply mask + shape-matching border overlay
-    -----------------------------------------------------------------------
-    if PP then PP.HideBorder(frame) end
-
-    local maskPath = SHAPE_MASKS[shape]
-    if maskPath then
-        if not iconTex._mask then
-            iconTex._mask = frame:CreateMaskTexture()
-            iconTex._mask:SetAllPoints(iconTex)
-            iconTex:AddMaskTexture(iconTex._mask)
-        end
-        iconTex._mask:SetTexture(maskPath, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-        iconTex._mask:Show()
-        iconTex:SetTexCoord(0, 1, 0, 1)
-        -- Crop the cooldown swipe to the same shape (matches action bar
-        -- behavior). Adds the icon's mask to the cooldown frame and uses
-        -- the mask path as the swipe texture so the spinning swipe
-        -- follows the custom outline rather than a square.
-        if cooldownFrame and not cooldownFrame:IsForbidden() then
-            pcall(cooldownFrame.AddMaskTexture, cooldownFrame, iconTex._mask)
-            if cooldownFrame.SetSwipeTexture then
-                pcall(cooldownFrame.SetSwipeTexture, cooldownFrame, maskPath)
-            end
-        end
-    elseif cooldownFrame and not cooldownFrame:IsForbidden() then
-        -- Default shape: remove any prior mask + restore default swipe.
-        if iconTex._mask then
-            pcall(cooldownFrame.RemoveMaskTexture, cooldownFrame, iconTex._mask)
-        end
-        if cooldownFrame.SetSwipeTexture then
-            pcall(cooldownFrame.SetSwipeTexture, cooldownFrame, "")
-        end
-    end
-
-    local borderPath = SHAPE_BORDERS[shape]
-    if borderPath and bs > 0 then
-        borderTex:SetTexture(borderPath)
-        borderTex:ClearAllPoints()
-        local bsp = _snapOff(bs)
-        borderTex:SetPoint("TOPLEFT", frame, "TOPLEFT", -bsp, bsp)
-        borderTex:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", bsp, -bsp)
-        local r, g, b, a = _resolveBorderColor(p)
-        borderTex:SetVertexColor(r, g, b, a)
-        borderTex:Show()
-    else
-        borderTex:Hide()
-    end
-
+	local PP = ns.PP
+	local bs = BORDER_PX[p.borderSize or "thin"] or 1
+	if PP and PP.CreateBorder then
+		if not border then
+			border = PP.CreateBorder(frame, 0, 0, 0, 1, 1, "OVERLAY", 2)
+			border:SetFrameLevel(cooldownFrame:GetFrameLevel() + 1)
+		end
+		if bs > 0 then
+			PP.SetBorderSize(frame, bs)
+			PP.SetBorderColor(frame, ResolveBorderColor(p))
+			border:Show()
+		else
+			border:Hide()
+		end
+	end
 end
 
 -------------------------------------------------------------------------------
---  Text display -- "2 | 4:14" (charges, then time until the next charge).
---  Alternative to the icon, toggled via displayMode; shares the same frame,
---  position, visibility, and unlock element.
+--  Text display "2 | 4:14"
 -------------------------------------------------------------------------------
-local _cntPfx, _timPfx = EllesmereUI.COLOR_CODES.WHITE, EllesmereUI.COLOR_CODES.WHITE
-local _txtCount, _txtTime, _txtZero
-
-local function _colorPrefix(c)
-    return EllesmereUI.HexColor((c and c.r) or 1, (c and c.g) or 1, (c and c.b) or 1)
+local function HexColor(c)
+	return format("|cff%02x%02x%02x", floor(((c and c.r) or 1) * 255 + 0.5),
+		floor(((c and c.g) or 1) * 255 + 0.5), floor(((c and c.b) or 1) * 255 + 0.5))
 end
 
--- Compose the line only when a part actually changed (once per second while
--- recharging). The separator pipe is escaped as || for the renderer; the
--- count goes red at 0 charges, matching the icon display's count text.
-local function _setTextDisplay(countStr, timeStr, isZero)
-    if not textFS then return end
-    if countStr == _txtCount and timeStr == _txtTime and isZero == _txtZero then return end
-    _txtCount, _txtTime, _txtZero = countStr, timeStr, isZero
-    local cpfx = isZero and "|cffff3333" or _cntPfx
-    if timeStr ~= "" then
-        textFS:SetFormattedText("%s%s|r |cffa6a6a6|||r %s%s|r", cpfx, countStr, _timPfx, timeStr)
-    else
-        textFS:SetFormattedText("%s%s|r", cpfx, countStr)
-    end
+local cntPfx, timPfx = "|cffffffff", "|cffffffff"
+local txtCount, txtTime, txtZero
+
+local function SetTextDisplay(countStr, timeStr, isZero)
+	if not textFS then return end
+	if countStr == txtCount and timeStr == txtTime and isZero == txtZero then return end
+	txtCount, txtTime, txtZero = countStr, timeStr, isZero
+	local cpfx = isZero and "|cffff3333" or cntPfx
+	if timeStr ~= "" then
+		textFS:SetFormattedText("%s%s|r |cffa6a6a6|||r %s%s|r", cpfx, countStr, timPfx, timeStr)
+	else
+		textFS:SetFormattedText("%s%s|r", cpfx, countStr)
+	end
 end
 
--- Font, colors, and the frame's nominal box (read by the unlock mover).
--- Runs on settings changes only. While hidden the measurement uses a
--- placeholder string; live polling overwrites it the moment the tracker
--- shows (UpdateVisibility polls immediately on Show).
 local function ApplyText()
-    local p = P()
-    if not p or not textFS then return end
-    _cntPfx = _colorPrefix(p.textCountColor)
-    _timPfx = _colorPrefix(p.textTimerColor)
-    SetBrezFont(textFS, p.textSize or 14)
-    -- Drop the dedupe caches so the next compose re-renders with new colors
-    -- (the ticker repaints within half a second while shown).
-    _txtCount, _txtTime, _txtZero = nil, nil, nil
-    if not frame:IsShown() then
-        _setTextDisplay("2", "4:14", false)
-    end
-    local w = textFS:GetStringWidth() or 0
-    local h = textFS:GetStringHeight() or 0
-    if w < 1 then w = (p.textSize or 14) * 4 end
-    if h < 1 then h = p.textSize or 14 end
-    local tw, th = math.ceil(w) + 4, math.ceil(h) + 2
-    local PPt = EllesmereUI and EllesmereUI.PP
-    if PPt and PPt.Snap then tw, th = PPt.Snap(tw), PPt.Snap(th) end
-    frame:SetSize(tw, th)
+	local p = P()
+	if not p or not textFS then return end
+	cntPfx = HexColor(p.textCountColor)
+	timPfx = HexColor(p.textTimerColor)
+	SetBrezFont(textFS, p.textSize or 14)
+	txtCount, txtTime, txtZero = nil, nil, nil
+	if not frame:IsShown() then
+		SetTextDisplay("2", "4:14", false)
+	end
+	local w = textFS:GetStringWidth() or 0
+	local h = textFS:GetStringHeight() or 0
+	if w < 1 then w = (p.textSize or 14) * 4 end
+	if h < 1 then h = p.textSize or 14 end
+	frame:SetSize(Snap(math.ceil(w) + 4), Snap(math.ceil(h) + 2))
 end
 
 -------------------------------------------------------------------------------
 --  Position
 -------------------------------------------------------------------------------
 local function ApplyPosition()
-    if not frame then return end
-    local p = P()
-    if not p then return end
-    frame:ClearAllPoints()
-    local pos = p.pos
-    local cx = (pos and pos.centerX) or 0
-    local cy = (pos and pos.centerY) or 200
-    local PPp = EllesmereUI and EllesmereUI.PP
-    if PPp and PPp.SnapCenterForDim then
-        cx = PPp.SnapCenterForDim(cx, frame:GetWidth())
-        cy = PPp.SnapCenterForDim(cy, frame:GetHeight())
-    end
-    frame:SetPoint("CENTER", UIParent, "CENTER", cx, cy)
+	if not frame then return end
+	-- While Unlock Mode is open its mover owns the spot; an unlock anchor after.
+	if ns._unlockActive and frame:GetNumPoints() > 0 then return end
+	local p = P()
+	if not p then return end
+	frame:ClearAllPoints()
+	local pos = p.pos
+	local cx = (pos and pos.centerX) or 0
+	local cy = (pos and pos.centerY) or 200
+	local PP = ns.PP
+	if PP and PP.SnapCenterForDim then
+		cx = PP.SnapCenterForDim(cx, frame:GetWidth())
+		cy = PP.SnapCenterForDim(cy, frame:GetHeight())
+	end
+	frame:SetPoint("CENTER", UIParent, "CENTER", cx, cy)
+	if not ns._unlockActive and ns.IsUnlockAnchored and ns.IsUnlockAnchored("EUI_BattleRes") and ns.ReapplyOwnAnchor then
+		ns.ReapplyOwnAnchor("EUI_BattleRes")
+	end
 end
 
 -------------------------------------------------------------------------------
---  Visibility -- driven by encounter / keystone events, not polling.
+--  Brez tracking (combat log)
 -------------------------------------------------------------------------------
-local _state = {
-    inEncounter     = false,
-    encounterIsRaid = false,
-    inChallenge     = false,
+local state = {
+	inEncounter = false,
+	limit = nil,       -- brez allowed this attempt (nil = no limit)
+	used = 0,          -- accepted brez this attempt
+	inChallenge = false,
 }
+local pending = {}     -- [targetGUID] = time a brez was seen on the dead player
+local selfRes = {}     -- [guid] = time of a Reincarnation (free self res)
+local deadState = {}   -- [guid] = "dead" | "ghost": group members dead this attempt
+local readyAt = {}     -- [casterGUID] = time the caster's brez is ready again
+local resetOnEnd = {}  -- [casterGUID] = true if that cooldown resets after a boss
+local knownCasters = {} -- [casterGUID] = true: seen casting a brez (quilen hunters)
 
--- Keystone/encounter state writers, shared with the Bloodlust tracker through
--- ns (this file loads first). Each icon passes its own state table.
-local ns = select(2, ...)
-
-local function _activeKeystoneLevel()
-    -- IsChallengeModeActive only returns true when the timer is running,
-    -- not just from having a keystone in bags inside a dungeon.
-    if not C_ChallengeMode then return nil end
-    if not C_ChallengeMode.IsChallengeModeActive or not C_ChallengeMode.IsChallengeModeActive() then
-        return nil
-    end
-    if C_ChallengeMode.GetActiveKeystoneInfo then
-        local lvl = C_ChallengeMode.GetActiveKeystoneInfo()
-        return (lvl and lvl > 0) and lvl or nil
-    end
-    return nil
+local function InstanceInfo()
+	local _, instanceType, difficulty, _, maxPlayers = GetInstanceInfo()
+	return instanceType, difficulty or 0, maxPlayers or 0
 end
 
--- Re-read encounter and keystone state directly (zone-in, or events re-registered).
-function ns.RefreshInstanceState(st)
-    st.inEncounter = IsEncounterInProgress() or false
-    if st.inEncounter then
-        local _, instanceType = GetInstanceInfo()
-        st.encounterIsRaid = (instanceType == "raid")
-    else
-        st.encounterIsRaid = false
-    end
-    st.inChallenge = _activeKeystoneLevel() ~= nil
+local function LimitFor(groupSize)
+	local instanceType, difficulty, maxPlayers = InstanceInfo()
+	if instanceType ~= "raid" then return nil end
+	local size = (groupSize and groupSize > 0) and groupSize or maxPlayers
+	if difficulty == 3 or difficulty == 5 then return 1 end
+	if difficulty == 4 or difficulty == 6 or difficulty == 7 then return 3 end
+	-- Flex and anything else: by group size.
+	if size > 0 and size <= 10 then return 1 end
+	return 3
 end
 
--- Mirrors EllesmereUIMythicTimer's keystone events plus ENCOUNTER_START/END
--- for raid bosses. Other events are ignored.
-function ns.ApplyInstanceEvent(st, event)
-    if event == "ENCOUNTER_START" then
-        st.inEncounter = true
-        local _, instanceType = GetInstanceInfo()
-        st.encounterIsRaid = (instanceType == "raid")
-    elseif event == "ENCOUNTER_END" then
-        st.inEncounter = false
-        st.encounterIsRaid = false
-    elseif event == "CHALLENGE_MODE_START" or event == "WORLD_STATE_TIMER_START" then
-        st.inChallenge = _activeKeystoneLevel() ~= nil
-    elseif event == "CHALLENGE_MODE_COMPLETED"
-        or event == "CHALLENGE_MODE_RESET"
-        or event == "WORLD_STATE_TIMER_STOP" then
-        st.inChallenge = false
-    elseif event == "PLAYER_ENTERING_WORLD" then
-        ns.RefreshInstanceState(st)
-    end
+local function RefreshInstanceState()
+	local instanceType, difficulty = InstanceInfo()
+	state.inChallenge = (instanceType == "party" and difficulty == CHALLENGE_DIFFICULTY)
+	local busy = IsEncounterInProgress and IsEncounterInProgress() or false
+	if busy and not state.inEncounter then
+		-- Reload or join mid fight: earlier brez of this attempt are unknown.
+		state.inEncounter = true
+		state.limit = LimitFor()
+		state.used = 0
+	elseif not busy and state.inEncounter then
+		state.inEncounter = false
+		state.encounterID = nil
+	end
 end
 
-local function ShouldShow()
-    local p = P()
-    if not p or not p.enabled then return false end
-    local v = p.visibility or "MPLUS_AND_RAID"
-    if v == "NEVER" then return false end
-    -- Options preview: forced on screen while the page is up, skipping the instance
-    -- and M+/raid gates below -- the point is to configure it from anywhere.
-    if _previewActive() then return true end
+local function StartEncounter(encounterID, groupSize)
+	-- Some bosses send extra ENCOUNTER_START (id 0) mid fight, e.g. at each
+	-- new Spirit King. Same attempt: keep the brez already used.
+	if state.inEncounter and (encounterID == 0 or encounterID == state.encounterID) then
+		return
+	end
+	state.inEncounter = true
+	state.encounterID = encounterID
+	state.limit = LimitFor(groupSize)
+	state.used = 0
+	wipe(pending); wipe(selfRes); wipe(deadState)
+end
 
-    -- Hard gate: must be in a party or raid instance. Prevents any stuck state from
-    -- showing the icon in town/open world. Unlock mode relies on the overlay mover for
-    -- positioning feedback, so we never force-show the real icon here -- it would
-    -- persist past an "exit without saving" since DoClose doesn't re-run visibility.
-    local _, instanceType = GetInstanceInfo()
-    if instanceType ~= "party" and instanceType ~= "raid" then return false end
+local function EndEncounter()
+	state.inEncounter = false
+	state.encounterID = nil
+	state.used = 0
+	wipe(pending); wipe(selfRes); wipe(deadState)
+	local _, difficulty = InstanceInfo()
+	if RESET_DIFFICULTY[difficulty] then
+		for guid in pairs(readyAt) do
+			if resetOnEnd[guid] then
+				readyAt[guid] = nil
+			end
+		end
+	end
+end
 
-    local wantMPlus = (v == "MPLUS_AND_RAID" or v == "MPLUS")
-    local wantRaid  = (v == "MPLUS_AND_RAID" or v == "RAID")
-    if wantMPlus and _state.inChallenge then return true end
-    if wantRaid and _state.inEncounter and _state.encounterIsRaid then return true end
-    return false
+local function ForEachGroupUnit(fn)
+	if IsInRaid() then
+		for i = 1, GetNumGroupMembers() do fn("raid" .. i) end
+	else
+		fn("player")
+		for i = 1, GetNumSubgroupMembers() do fn("party" .. i) end
+	end
+end
+
+-- Dead -> alive during the boss = one brez used, except:
+--   * Reincarnation (seen in the log or sent by the shaman),
+--   * a shaman with no brez seen on them (may be an unseen Reincarnation),
+--   * a released ghost with no brez seen (spirit healer / corpse run).
+-- Works in other phases: raid death state does not need the combat log.
+local scanNow
+local function ScanDeathUnit(unit)
+	local guid = UnitGUID(unit)
+	if not guid or not UnitIsConnected(unit) then return end
+	if UnitIsDeadOrGhost(unit) and not (UnitIsFeignDeath and UnitIsFeignDeath(unit)) then
+		deadState[guid] = UnitIsGhost(unit) and "ghost" or "dead"
+		return
+	end
+	local was = deadState[guid]
+	if not was then return end
+	deadState[guid] = nil
+	local brezAt, freeAt = pending[guid], selfRes[guid]
+	pending[guid], selfRes[guid] = nil, nil
+	if freeAt and scanNow - freeAt <= 10 then return end
+	local brez = brezAt and scanNow - brezAt <= 65
+	if not brez then
+		if was == "ghost" then return end
+		local _, class = UnitClass(unit)
+		if class == "SHAMAN" then return end
+	end
+	state.used = state.used + 1
+end
+
+local function ScanDeaths(now)
+	if not state.inEncounter then return end
+	scanNow = now
+	ForEachGroupUnit(ScanDeathUnit)
+end
+
+-- Ready brez casters now, and the time until the next one is ready.
+local readyCount, nextReady, nextStart
+local function ScanCasters(unit)
+	local guid = UnitGUID(unit)
+	if not guid then return end
+	local _, class = UnitClass(unit)
+	local hasBrez = BREZ_CLASSES[class] or knownCasters[guid]
+	if not hasBrez then return end
+	local t = readyAt[guid]
+	local now = GetTime()
+	if t and t > now then
+		if not nextReady or t < nextReady then
+			nextReady, nextStart = t, t - BREZ_COOLDOWN
+		end
+	elseif UnitIsConnected(unit) and not UnitIsDeadOrGhost(unit) then
+		readyCount = readyCount + 1
+	end
+end
+
+local function CasterStatus()
+	readyCount, nextReady, nextStart = 0, nil, nil
+	ForEachGroupUnit(ScanCasters)
+	return readyCount, nextReady, nextStart
+end
+
+-- One brez event, from the combat log or an EUI addon message. Only notes
+-- who cast what; ScanDeaths does the counting.
+local function NoteBrez(spellId, srcGUID, dstGUID, isCast)
+	if not srcGUID then return end
+	local now = GetTime()
+	if spellId == REINCARNATION then
+		selfRes[srcGUID] = now
+		return
+	end
+	if spellId == SOULSTONE_SELF_RES then
+		pending[srcGUID] = now
+		return
+	end
+	if not BREZ_SPELLS[spellId] then return end
+	if isCast or not readyAt[srcGUID] or readyAt[srcGUID] < now then
+		readyAt[srcGUID] = now + BREZ_COOLDOWN
+		resetOnEnd[srcGUID] = not NO_ENCOUNTER_RESET[spellId]
+		knownCasters[srcGUID] = true
+	end
+	if dstGUID and state.inEncounter then
+		pending[dstGUID] = now
+	end
+end
+
+local function CommChannel()
+	if IsInGroup(LE_PARTY_CATEGORY_INSTANCE) and IsInInstance() then return "INSTANCE_CHAT" end
+	if IsInRaid() then return "RAID" end
+	if IsInGroup() then return "PARTY" end
+	return nil
+end
+
+-- Brez events we are part of go to the group, so EUI users in another
+-- phase still learn the caster's cooldown and who was brezzed.
+local function SendBrez(spellId, srcGUID, dstGUID, isCast)
+	local channel = CommChannel()
+	if not channel then return end
+	SendAddonMessage(COMM_PREFIX, format("%d:%s:%s:%d", spellId, srcGUID, dstGUID or "", isCast and 1 or 0), channel)
+end
+
+local function OnComm(prefix, msg, _, sender)
+	if prefix ~= COMM_PREFIX or not msg then return end
+	if sender and sender:match("^[^%-]+") == UnitName("player") then return end
+	local spellId, srcGUID, dstGUID, isCast = msg:match("^(%d+):([^:]+):([^:]*):(%d)$")
+	spellId = tonumber(spellId)
+	if not spellId then return end
+	NoteBrez(spellId, srcGUID, dstGUID ~= "" and dstGUID or nil, isCast == "1")
+end
+
+local function OnCombatLog(...)
+	local _, subEvent, _, srcGUID, _, srcFlags, _, dstGUID, _, _, _, spellId = ...
+	if subEvent ~= "SPELL_CAST_SUCCESS" and subEvent ~= "SPELL_RESURRECT" then return end
+	if not srcFlags or band(srcFlags, GROUP_AFFILIATION) == 0 then return end
+	if not (BREZ_SPELLS[spellId] or spellId == SOULSTONE_SELF_RES or spellId == REINCARNATION) then return end
+	if dstGUID == "" or dstGUID == "0x0000000000000000" then dstGUID = nil end
+	local isCast = subEvent == "SPELL_CAST_SUCCESS"
+	NoteBrez(spellId, srcGUID, dstGUID, isCast)
+	local me = UnitGUID("player")
+	if srcGUID == me or dstGUID == me then
+		SendBrez(spellId, srcGUID, dstGUID, isCast)
+	end
 end
 
 -------------------------------------------------------------------------------
---  Polling
+--  Visibility
+-------------------------------------------------------------------------------
+local function ShouldShow()
+	local p = P()
+	if not p or not p.enabled then return false end
+	local v = p.visibility or "MPLUS_AND_RAID"
+	if v == "NEVER" then return false end
+	if PreviewActive() then return true end
+	local instanceType = InstanceInfo()
+	if instanceType ~= "party" and instanceType ~= "raid" then return false end
+	local wantChallenge = (v == "MPLUS_AND_RAID" or v == "MPLUS")
+	local wantRaid = (v == "MPLUS_AND_RAID" or v == "RAID")
+	if wantChallenge and state.inChallenge then return true end
+	if wantRaid and state.inEncounter and instanceType == "raid" then return true end
+	return false
+end
+
+-------------------------------------------------------------------------------
+--  Polling (only while shown)
 -------------------------------------------------------------------------------
 local function FormatTime(s)
-    if not s or s <= 0 then return "" end
-    local m = math.floor(s / 60)
-    local sec = math.floor(s % 60)
-    return string.format("%d:%02d", m, sec)
+	if not s or s <= 0 then return "" end
+	return format("%d:%02d", floor(s / 60), floor(s % 60))
 end
--- Shared with the Bloodlust tracker (identical display contract; this file
--- loads first).
-ns.FormatTime = FormatTime
+ns.FormatTime = ns.FormatTime or FormatTime
 
--- WoW Forever has no shared battle res charge pool, so the indicator does not
--- exist there: the shared helpers above stay defined, and nothing below runs
--- (no DB, frame, events, unlock mover or _G._EUI_BattleRes_* hooks), even when
--- a saved or imported profile has it enabled. Every reader of those hooks
--- nil-guards, and the options section and Fonts rows are not built there.
-if EllesmereUI.IS_FOREVER then return end
-
-local _lastCountText, _lastDurText, _lastCountColor
-local function _setCount(s, isZero)
-    if s ~= _lastCountText then
-        countFS:SetText(s)
-        _lastCountText = s
-    end
-    local key = isZero and "zero" or "ok"
-    if key ~= _lastCountColor then
-        if isZero then countFS:SetTextColor(1, 0.2, 0.2, 1)
-        else           countFS:SetTextColor(1, 1, 1, 1) end
-        _lastCountColor = key
-    end
+local lastCountText, lastDurText, lastCountColor
+local function SetCount(s, isZero)
+	if s ~= lastCountText then
+		countFS:SetText(s)
+		lastCountText = s
+	end
+	local key = isZero and "zero" or "ok"
+	if key ~= lastCountColor then
+		if isZero then countFS:SetTextColor(1, 0.2, 0.2, 1)
+		else countFS:SetTextColor(1, 1, 1, 1) end
+		lastCountColor = key
+	end
 end
-local function _setDur(s)
-    if s ~= _lastDurText then
-        durationFS:SetText(s)
-        _lastDurText = s
-    end
+local function SetDur(s)
+	if s ~= lastDurText then
+		durationFS:SetText(s)
+		lastDurText = s
+	end
 end
-local _lastDesat = false
-local function _setDesat(want)
-    want = want and true or false
-    if want ~= _lastDesat then
-        iconTex:SetDesaturated(want)
-        _lastDesat = want
-    end
+local lastDesat = false
+local function SetDesat(want)
+	want = want and true or false
+	if want ~= lastDesat then
+		iconTex:SetDesaturated(want)
+		lastDesat = want
+	end
 end
 
--- Options preview stand-in. The shared brez pool only reports charges inside a
--- raid or key, and BREZ_SPELL_ID is Rebirth, so for most characters in most
--- places GetSpellCharges returns nothing and the preview would be a bare icon --
--- exactly the two texts the Count and Duration options tune. Same placeholder
--- count ApplyText measures with, plus a looping countdown.
-local _previewExpiry = 0
-local function _showPreviewCharges()
-    if _previewExpiry <= GetTime() then
-        -- Once per cycle: re-setting the SAME values each poll is idempotent, but
-        -- re-setting new ones would restart the swipe animation twice a second.
-        _previewExpiry = GetTime() + 90
-        if cooldownFrame then cooldownFrame:SetCooldown(GetTime(), 90) end
-    end
-    local timeText = FormatTime(_previewExpiry - GetTime())
-    if IsTextMode() then
-        _setTextDisplay("2", timeText, false)
-        return
-    end
-    _setCount("2", false)
-    _setDur(timeText)
-    _setDesat(false)
+-- Cooldown swipe: set only when the start changes (re-setting restarts it).
+local swipeStart, swipeDur
+local function SetSwipe(start, dur)
+	if not cooldownFrame then return end
+	if start == swipeStart and dur == swipeDur then return end
+	swipeStart, swipeDur = start, dur
+	if start and dur then
+		cooldownFrame:SetCooldown(start, dur)
+		cooldownFrame:Show()
+	else
+		cooldownFrame:SetCooldown(0, 0)
+	end
+end
+
+-- Preview stand-in outside a raid boss / Challenge Mode (same as retail).
+local previewExpiry = 0
+local function ShowPreviewCharges()
+	local now = GetTime()
+	if previewExpiry <= now then
+		previewExpiry = now + 90
+	end
+	local timeText = FormatTime(previewExpiry - now)
+	if IsTextMode() then
+		SetTextDisplay("2", timeText, false)
+		return
+	end
+	SetSwipe(previewExpiry - 90, 90)
+	SetCount("2", false)
+	SetDur(timeText)
+	SetDesat(false)
 end
 
 local function PollCharges()
-    if not frame then return end
-    local textMode = IsTextMode()
-    local info = C_Spell and C_Spell.GetSpellCharges and C_Spell.GetSpellCharges(BREZ_SPELL_ID)
-    if not info or not info.maxCharges then
-        if _previewActive() then return _showPreviewCharges() end
-        if textMode then
-            _setTextDisplay("", "", false)
-        else
-            _setCount("", false); _setDur(""); _setDesat(false)
-        end
-        return
-    end
-    local charges, maxCharges = info.currentCharges, info.maxCharges
-    local start, dur = info.cooldownStartTime, info.cooldownDuration
-    local recharging = charges < maxCharges and start and dur and dur > 0
-    local timeText = ""
-    if recharging then
-        local remaining = (start + dur) - GetTime()
-        timeText = remaining > 0 and FormatTime(remaining) or ""
-    end
+	if not frame then return end
+	local now = GetTime()
+	RefreshInstanceState()
+	ScanDeaths(now)
+	local live = (state.inEncounter and state.limit) or state.inChallenge
+	if not live then
+		if PreviewActive() then return ShowPreviewCharges() end
+		if IsTextMode() then
+			SetTextDisplay("", "", false)
+		else
+			SetCount("", false); SetDur(""); SetDesat(false); SetSwipe(nil)
+		end
+		return
+	end
 
-    if textMode then
-        _setTextDisplay(tostring(charges), timeText, charges <= 0)
-        return
-    end
+	local ready, nextAt, start = CasterStatus()
+	local charges
+	if state.inEncounter and state.limit then
+		charges = max(0, state.limit - state.used)
+	else
+		charges = ready
+	end
+	-- Timer: no caster ready yet, but brez are still allowed.
+	local waiting = ready == 0 and nextAt and (charges > 0 or not state.limit or not state.inEncounter)
+	local timeText = waiting and FormatTime(nextAt - now) or ""
+	local zero = charges <= 0
 
-    _setCount(tostring(charges), charges <= 0)
-    _setDur(timeText)
-    local p = P()
-    _setDesat(p and p.desaturateNoCharges ~= false and charges <= 0)
-    if cooldownFrame then
-        if recharging then
-            cooldownFrame:SetCooldown(start, dur)
-        else
-            cooldownFrame:Clear()
-        end
-    end
+	if IsTextMode() then
+		SetTextDisplay(tostring(charges), timeText, zero)
+		return
+	end
+	SetCount(tostring(charges), zero)
+	SetDur(timeText)
+	local p = P()
+	SetDesat(p and p.desaturateNoCharges ~= false and zero)
+	if waiting then
+		SetSwipe(start, BREZ_COOLDOWN)
+	else
+		SetSwipe(nil)
+	end
 end
 
--- Ticker only runs while the icon is actually visible.
-local _ticker
+local ticker = CreateFrame("Frame")
+local tickerOn, tickerAcc = false, 0
+local function TickerUpdate(_, elapsed)
+	tickerAcc = tickerAcc + elapsed
+	if tickerAcc >= 0.5 then
+		tickerAcc = 0
+		PollCharges()
+	end
+end
+local function StartTicker()
+	if tickerOn then return end
+	tickerOn, tickerAcc = true, 0
+	ticker:SetScript("OnUpdate", TickerUpdate)
+end
+local function StopTicker()
+	if not tickerOn then return end
+	tickerOn = false
+	ticker:SetScript("OnUpdate", nil)
+end
+
 local function UpdateVisibility()
-    if not frame then return end
-    if ShouldShow() then
-        if not frame:IsShown() then frame:Show() end
-        if not _ticker then
-            _ticker = C_Timer.NewTicker(0.5, PollCharges)
-        end
-        PollCharges()
-    else
-        if frame:IsShown() then frame:Hide() end
-        if _ticker then _ticker:Cancel(); _ticker = nil end
-        -- Preview just ended: drop the stand-in swipe and texts so no later path
-        -- can surface them as if they were real charge data.
-        if _previewExpiry ~= 0 and not _previewActive() then
-            _previewExpiry = 0
-            if cooldownFrame then cooldownFrame:Clear() end
-            if IsTextMode() then
-                _setTextDisplay("", "", false)
-            else
-                _setCount("", false); _setDur("")
-            end
-        end
-    end
+	if not frame then return end
+	RefreshInstanceState()
+	if ShouldShow() then
+		if not frame:IsShown() then frame:Show() end
+		StartTicker()
+		PollCharges()
+	else
+		if frame:IsShown() then frame:Hide() end
+		StopTicker()
+		if previewExpiry ~= 0 and not PreviewActive() then
+			previewExpiry = 0
+			SetSwipe(nil)
+			if IsTextMode() then
+				SetTextDisplay("", "", false)
+			else
+				SetCount("", false); SetDur("")
+			end
+		end
+	end
 end
-_G._EUI_BattleRes_UpdateVisibility = UpdateVisibility
+ns.BattleResUpdateVisibility = UpdateVisibility
 
--- The options page hands us its frame on build; _previewActive() takes it from there.
-function _G._EUI_BattleRes_SetPreviewOwner(f)
-    _previewOwner = f
-    _previewExpiry = 0  -- every visit starts a fresh stand-in countdown
-    UpdateVisibility()
+-- The settings page hands over its frame; the preview runs while it is visible.
+function ns.BattleResSetPreviewOwner(f)
+	previewOwner = f
+	previewExpiry = 0
+	UpdateVisibility()
 end
 
 -------------------------------------------------------------------------------
---  Frame creation
+--  Frame
 -------------------------------------------------------------------------------
 local function CreateBrezFrame()
-    if frame then return frame end
-    frame = CreateFrame("Frame", "EllesmereUIBattleResIcon", UIParent)
-    frame:SetFrameStrata("MEDIUM")
-    frame:SetSize(40, 40)
-    frame:Hide()
+	if frame then return frame end
+	frame = CreateFrame("Frame", "EllesmereUIBattleResIcon", UIParent)
+	frame:SetFrameStrata("MEDIUM")
+	frame:SetSize(40, 40)
+	frame:Hide()
 
-    iconTex = frame:CreateTexture(nil, "ARTWORK")
-    iconTex:SetAllPoints(frame)
-    local brezIcon
-    if C_Spell and C_Spell.GetSpellTexture then
-        brezIcon = C_Spell.GetSpellTexture(BREZ_SPELL_ID)
-    end
-    iconTex:SetTexture(brezIcon or 136080)
-    iconTex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	iconTex = frame:CreateTexture(nil, "ARTWORK")
+	iconTex:SetAllPoints(frame)
+	local _, _, brezIcon = GetSpellInfo(BREZ_ICON_SPELL)
+	iconTex:SetTexture(brezIcon or "Interface\\Icons\\Spell_Nature_Reincarnation")
+	iconTex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 
-    borderTex = frame:CreateTexture(nil, "OVERLAY")
-    borderTex:Hide()
+	cooldownFrame = CreateFrame("Cooldown", nil, frame, "CooldownFrameTemplate")
+	cooldownFrame:SetAllPoints(frame)
+	cooldownFrame.noCooldownCount = true  -- OmniCC & co.: we draw our own timer
+	cooldownFrame.noOCC = true
+	cooldownFrame:SetFrameLevel(frame:GetFrameLevel() + 1)
 
-    cooldownFrame = CreateFrame("Cooldown", nil, frame, "CooldownFrameTemplate")
-    cooldownFrame:SetAllPoints(frame)
-    cooldownFrame:SetDrawEdge(false)
-    cooldownFrame:SetHideCountdownNumbers(true)  -- we render our own duration text
-    cooldownFrame:SetFrameLevel(frame:GetFrameLevel() + 1)
+	-- Texts sit above the swipe (the cooldown frame hides itself when done).
+	local textHolder = CreateFrame("Frame", nil, frame)
+	textHolder:SetAllPoints(frame)
+	textHolder:SetFrameLevel(frame:GetFrameLevel() + 3)
+	frame.textHolder = textHolder
 
-    durationFS = cooldownFrame:CreateFontString(nil, "OVERLAY")
-    SetBrezIconFont(durationFS, 14)
-    durationFS:SetText("")
+	durationFS = textHolder:CreateFontString(nil, "OVERLAY")
+	SetBrezIconFont(durationFS, 14)
+	durationFS:SetText("")
 
-    countFS = cooldownFrame:CreateFontString(nil, "OVERLAY")
-    SetBrezIconFont(countFS, 12)
-    countFS:SetText("")
+	countFS = textHolder:CreateFontString(nil, "OVERLAY")
+	SetBrezIconFont(countFS, 12)
+	countFS:SetText("")
 
-    -- Text display ("2 | 4:14"): centered on the frame, shown instead of the
-    -- icon elements when displayMode is "text". A default font is required
-    -- before any SetText ("Font not set" error otherwise); ApplyText re-applies
-    -- the configured size on top of it.
-    textFS = frame:CreateFontString(nil, "OVERLAY")
-    SetBrezFont(textFS, 14)
-    textFS:SetPoint("CENTER", frame, "CENTER", 0, 0)
-    textFS:SetText("")
-    textFS:Hide()
-
-    return frame
+	textFS = frame:CreateFontString(nil, "OVERLAY")
+	SetBrezFont(textFS, 14)
+	textFS:SetPoint("CENTER", frame, "CENTER", 0, 0)
+	textFS:SetText("")
+	textFS:Hide()
+	return frame
 end
 
 -------------------------------------------------------------------------------
---  Apply (settings entry point)
+--  Events
 -------------------------------------------------------------------------------
-local _syncEventRegistration  -- defined in the event section below
+local eventFrame = CreateFrame("Frame")
+local eventsRegistered = false
+
+local function SyncEventRegistration()
+	local p = P()
+	local want = (p and p.enabled and (p.visibility or "MPLUS_AND_RAID") ~= "NEVER") and true or false
+	if want == eventsRegistered then return end
+	eventsRegistered = want
+	if want then
+		eventFrame:RegisterEvent("ENCOUNTER_START")
+		eventFrame:RegisterEvent("ENCOUNTER_END")
+		eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+		eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+		eventFrame:RegisterEvent("WORLD_STATE_TIMER_START")
+		eventFrame:RegisterEvent("WORLD_STATE_TIMER_STOP")
+		eventFrame:RegisterEvent("CHALLENGE_MODE_COMPLETED")
+		eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+		eventFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+		eventFrame:RegisterEvent("CHAT_MSG_ADDON")
+		if RegisterAddonMessagePrefix then RegisterAddonMessagePrefix(COMM_PREFIX) end
+		RefreshInstanceState()
+	else
+		eventFrame:UnregisterAllEvents()
+		state.inEncounter = false
+		state.encounterID = nil
+		wipe(pending); wipe(selfRes); wipe(deadState)
+	end
+end
+
+eventFrame:SetScript("OnEvent", function(_, event, ...)
+	if event == "COMBAT_LOG_EVENT_UNFILTERED" then
+		OnCombatLog(...)
+		return
+	elseif event == "CHAT_MSG_ADDON" then
+		OnComm(...)
+		return
+	elseif event == "ENCOUNTER_START" then
+		local encounterID, _, _, groupSize = ...
+		StartEncounter(encounterID or 0, groupSize)
+	elseif event == "ENCOUNTER_END" then
+		-- A stray ENCOUNTER_END (id 0) can come next to the real one; only
+		-- the real one ends the attempt.
+		local encounterID = ... or 0
+		if encounterID ~= 0 or not state.encounterID or state.encounterID == 0 then
+			EndEncounter()
+		end
+	elseif event == "PLAYER_REGEN_ENABLED" then
+		-- Fallback for a missed ENCOUNTER_END (wipe while out of range, etc.).
+		if state.inEncounter and not (IsEncounterInProgress and IsEncounterInProgress()) then
+			EndEncounter()
+		end
+	end
+	UpdateVisibility()
+end)
+
+-------------------------------------------------------------------------------
+--  Apply (every settings change)
+-------------------------------------------------------------------------------
 local function Apply()
-    if not addon.db then return end
-    if not frame then CreateBrezFrame() end
-    if IsTextMode() then
-        -- Text display: hide every icon element (duration/count texts are
-        -- children of the cooldown frame, so they hide with it).
-        iconTex:Hide()
-        borderTex:Hide()
-        if cooldownFrame then cooldownFrame:Clear(); cooldownFrame:Hide() end
-        local PP = EllesmereUI and EllesmereUI.PP
-        if PP and PP.GetBorders and PP.GetBorders(frame) then PP.HideBorder(frame) end
-        textFS:Show()
-        ApplyText()
-    else
-        textFS:Hide()
-        iconTex:Show()
-        if cooldownFrame then cooldownFrame:Show() end
-        ApplyShape()
-    end
-    ApplyPosition()
-    _syncEventRegistration()
-    UpdateVisibility()
+	if not P() then return end
+	if not frame then CreateBrezFrame() end
+	if IsTextMode() then
+		iconTex:Hide()
+		cooldownFrame:Hide()
+		frame.textHolder:Hide()
+		if border then border:Hide() end
+		swipeStart, swipeDur = nil, nil
+		textFS:Show()
+		ApplyText()
+	else
+		textFS:Hide()
+		iconTex:Show()
+		frame.textHolder:Show()
+		ApplyShape()
+	end
+	ApplyPosition()
+	SyncEventRegistration()
+	UpdateVisibility()
 end
-_G._EUI_BattleRes_Apply = Apply
+ns.BattleResApply = Apply
 
--- QoL Reset: the Battle Res and Bloodlust slices back to their defaults (both
--- live in this file's defaults table).
-function _G._EUI_BattleRes_Reset()
-    local prof = addon.db and addon.db.profile
-    if not prof then return end
-    prof.battleRes, prof.bloodlust = {}, {}
-    EllesmereUI.Lite.DeepMergeDefaults(prof, defaults.profile)
-    Apply()
-    if _G._EUI_Bloodlust_Apply then _G._EUI_Bloodlust_Apply() end
-end
+ns.applyHooks = ns.applyHooks or {}
+tinsert(ns.applyHooks, function()
+	if frame then Apply() end
+end)
 
 -------------------------------------------------------------------------------
---  Event handler (state writes live in ns.ApplyInstanceEvent above)
--------------------------------------------------------------------------------
-local _eventFrame
-local function OnEvent(_, event)
-    ns.ApplyInstanceEvent(_state, event)
-    UpdateVisibility()
-end
-
--- Events are registered only while the icon can ever show (enabled and
--- visibility not NEVER) and unregistered when it cannot, so a disabled
--- tracker costs nothing on boss pulls / key starts. On (re-)registration the
--- encounter/keystone state is re-read directly, so enabling mid-fight or
--- mid-key still catches up on events missed while unregistered.
-local _eventsRegistered = false
-_syncEventRegistration = function()
-    local p = P()
-    local want = (p and p.enabled and (p.visibility or "MPLUS_AND_RAID") ~= "NEVER") and true or false
-    if want == _eventsRegistered then return end
-    _eventsRegistered = want
-    if want then
-        if not _eventFrame then
-            _eventFrame = CreateFrame("Frame")
-            _eventFrame:SetScript("OnEvent", OnEvent)
-        end
-        _eventFrame:RegisterEvent("ENCOUNTER_START")
-        _eventFrame:RegisterEvent("ENCOUNTER_END")
-        _eventFrame:RegisterEvent("CHALLENGE_MODE_START")
-        _eventFrame:RegisterEvent("CHALLENGE_MODE_COMPLETED")
-        _eventFrame:RegisterEvent("CHALLENGE_MODE_RESET")
-        _eventFrame:RegisterEvent("WORLD_STATE_TIMER_START")
-        _eventFrame:RegisterEvent("WORLD_STATE_TIMER_STOP")
-        _eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-        ns.RefreshInstanceState(_state)
-    else
-        if _eventFrame then _eventFrame:UnregisterAllEvents() end
-    end
-end
-
--------------------------------------------------------------------------------
---  Unlock mode registration
+--  Unlock Mode
 -------------------------------------------------------------------------------
 local function RegisterUnlock()
-    if not EllesmereUI or not EllesmereUI.RegisterUnlockElements then return end
-    local MK = EllesmereUI.MakeUnlockElement
-    if not MK then return end
-    local loadPos, clearPos = ns.CenterPosFns(P)
-
-    EllesmereUI:RegisterUnlockElements({
-        MK({
-            key   = "EUI_BattleRes",
-            label = "Brez",
-            group = "Quality of Life",
-            order = 600,
-            noAnchorTarget = true,  -- icon size changes; nothing should be anchored to it
-            isHidden = function()
-                local p = P()
-                return not p or not p.enabled or (p.visibility == "NEVER")
-            end,
-            getFrame = function()
-                if not frame then CreateBrezFrame() end
-                return frame
-            end,
-            getSize = function()
-                local p = P()
-                if p and p.displayMode == "text" then
-                    -- Text display: the frame is sized to the measured text
-                    -- box by ApplyText, so report that instead of iconSize.
-                    if not frame then CreateBrezFrame() end
-                    local w, h = frame:GetWidth(), frame:GetHeight()
-                    if w and w > 0 then return w, h end
-                end
-                local s = (p and p.iconSize) or 40
-                return s, s
-            end,
-            linkedDimensions = true,  -- always square; one slider drives both
-            setWidth = function(_, w)
-                local p = P(); if not p then return end
-                if p.displayMode == "text" then
-                    -- Text display: the box width is measured from the rendered string
-                    -- (ApplyText), never an input. Writing it into textSize turned the
-                    -- unlock Cancel round-trip (getSize -> setWidth) into a 40-point font.
-                    return
-                end
-                local PPb = EllesmereUI and EllesmereUI.PP
-                p.iconSize = math.max(16, PPb and PPb.Snap(w) or math.floor(w + 0.5))
-                Apply()
-                if EllesmereUI._unlockActive and EllesmereUI.RepositionBarToMover then
-                    EllesmereUI.RepositionBarToMover("EUI_BattleRes")
-                end
-            end,
-            setHeight = function(_, h)
-                local p = P(); if not p then return end
-                if p.displayMode == "text" then
-                    -- Text display: getSize reports the measured box, so a height equal
-                    -- to the current one is the unlock round-trip (Cancel feeds the open
-                    -- snapshot back) and leaves textSize alone; a different height is a
-                    -- real resize, mapped back through ApplyText's box padding.
-                    if frame and math.abs(h - frame:GetHeight()) < 0.5 then return end
-                    p.textSize = math.max(8, math.min(40, math.floor(h + 0.5) - 2))
-                else
-                    local PPb = EllesmereUI and EllesmereUI.PP
-                    p.iconSize = math.max(16, PPb and PPb.Snap(h) or math.floor(h + 0.5))
-                end
-                Apply()
-                if EllesmereUI._unlockActive and EllesmereUI.RepositionBarToMover then
-                    EllesmereUI.RepositionBarToMover("EUI_BattleRes")
-                end
-            end,
-            savePos = function(_, point, relPoint, x, y)
-                -- Unlock mode hands over CENTER/CENTER coords; on Cancel the frame
-                -- still sits at the dragged spot, so never read the live position.
-                local p = P(); if not p then return end
-                p.pos = { centerX = x, centerY = y }
-            end,
-            loadPos = loadPos,
-            clearPos = clearPos,
-            applyPos = function()
-                ApplyPosition()
-            end,
-        }),
-    })
+	if not ns.RegisterUnlockElements or not ns.MakeUnlockElement then return end
+	local function Resized()
+		Apply()
+		if ns._unlockActive and ns.RepositionBarToMover then
+			ns.RepositionBarToMover("EUI_BattleRes")
+		end
+	end
+	ns:RegisterUnlockElements({
+		ns.MakeUnlockElement({
+			key = "EUI_BattleRes",
+			label = "Brez",
+			group = "Quality of Life",
+			order = 600,
+			noAnchorTarget = true,
+			isHidden = function()
+				local p = P()
+				return not p or not p.enabled or p.visibility == "NEVER"
+			end,
+			getFrame = function()
+				if not frame then CreateBrezFrame() end
+				return frame
+			end,
+			getSize = function()
+				local p = P()
+				if p and p.displayMode == "text" and frame then
+					local w, h = frame:GetWidth(), frame:GetHeight()
+					if w and w > 0 then return w, h end
+				end
+				local s = (p and p.iconSize) or 40
+				return s, s
+			end,
+			linkedDimensions = true,
+			setWidth = function(_, w)
+				local p = P()
+				if not p or p.displayMode == "text" then return end
+				p.iconSize = max(16, floor(Snap(w) + 0.5))
+				Resized()
+			end,
+			setHeight = function(_, h)
+				local p = P()
+				if not p then return end
+				if p.displayMode == "text" then
+					if frame and math.abs(h - frame:GetHeight()) < 0.5 then return end
+					p.textSize = max(8, min(40, floor(h + 0.5) - 2))
+				else
+					p.iconSize = max(16, floor(Snap(h) + 0.5))
+				end
+				Resized()
+			end,
+			savePos = function(_, point, relPoint, x, y)
+				local p = P()
+				if p then p.pos = { centerX = x, centerY = y } end
+			end,
+			loadPos = function()
+				local p = P()
+				if p and p.pos then
+					return { point = "CENTER", relPoint = "CENTER", x = p.pos.centerX, y = p.pos.centerY }
+				end
+				return nil
+			end,
+			clearPos = function()
+				local p = P()
+				if p then p.pos = nil end
+			end,
+			applyPos = function() ApplyPosition() end,
+		}),
+	}, addonName)
 end
-_G._EUI_BattleRes_RegisterUnlock = RegisterUnlock
+RegisterUnlock()
 
 -------------------------------------------------------------------------------
---  Init
+--  Init (the QoL saved table exists after its ADDON_LOADED)
 -------------------------------------------------------------------------------
 local boot = CreateFrame("Frame")
 boot:RegisterEvent("PLAYER_LOGIN")
 boot:SetScript("OnEvent", function(self)
-    self:UnregisterAllEvents()
-    if not EllesmereUI or not EllesmereUI.Lite or not EllesmereUI.Lite.NewDB then
-        return
-    end
-    addon.db = EllesmereUI.Lite.NewDB("EllesmereUIQoLDB", defaults, true)
-    _G._EUI_BattleRes_DB = function() return addon.db end
-    CreateBrezFrame()
-    -- Apply registers events (gated on enabled + visibility) and refreshes
-    -- encounter/keystone state as part of _syncEventRegistration
-    Apply()
-    RegisterUnlock()
+	self:UnregisterAllEvents()
+	CreateBrezFrame()
+	Apply()
 end)

@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIDataBars_Compat.lua
 -- Blocks\Currency.lua
 -- Currency block factory.
 

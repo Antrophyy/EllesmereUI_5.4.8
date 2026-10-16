@@ -1,944 +1,1027 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
---  EllesmereUIQuickdraw.lua  --  hold-to-open action palette for EllesmereUI
+--  EllesmereUIQuickdraw.lua (5.4.8 port of retail EllesmereUI Quickdraw)
 --
---  Hold a keybind -> a set of slots appears. Choose one, release the key to
---  fire it. Releasing without having chosen cancels, and so does ESCAPE, which
---  every layout answers to for as long as it is open.
+--  Hold a key to open a menu of actions around the cursor; point (Arc, Grid)
+--  or scroll (Fan) to choose, release to fire. Same saved keys as retail
+--  (EllesmereUIQuickdrawDB = retail profile.addons.EllesmereUIQuickdraw).
 --
---  One palette of actions, drawn and steered three ways:
+--  This file: settings, action menus ("palettes") and their entries
+--  ("slots"), what each entry fires, its icon / name / cooldown, the lists the
+--  settings page offers, key bindings and boot.
+--  EUI_Quickdraw_View.lua draws the menu, EUI_Quickdraw_Secure.lua makes it
+--  fire in combat (secure buttons + restricted snippets).
 --
---    ARC     entries spread over `arcSpan` degrees, steered by the ANGLE from
---            the centre. The sectors are unbounded in depth, so the gesture is
---            a flick rather than a click. A span of 360 is the whole turn.
---    FAN     a strip running along one axis, horizontal or vertical by
---            `fanOrientation`. Scroll-steered it cycles a compressed window
---            past a fixed centre; pointer-steered it is a GRID one entry deep.
---    GRID    every entry at a fixed cell, the nearest one zoomed.
---
---  The layouts differ in INPUT MODEL -- angle, scroll-cycle, pointer-nearest --
---  which is why they are separate rather than parameters of one another. The
---  span is the exception: it is a parameter of the angular model, so the full
---  turn the module opened life as is simply the arc's 360-degree case.
---
---  Each palette owns one hidden SecureActionButtonTemplate button; the palette's
---  keybind is routed to it with SetOverrideBindingClick -- along with every
---  modifier combination of that key nothing else holds, so a modifier pressed
---  or let go during the hold still reaches the button (see "Modifier variants
---  of a palette's key") -- and it is registered for "AnyDown","AnyUp":
---
---    key DOWN -> our PreClick opens the palette; a secure snippet wrapped around
---                OnClick clears "type", so the press itself fires nothing
---    key UP   -> the snippet works out which entry the cursor is on and writes
---                that slot's action attributes, the secure handler performs the
---                cast, and our PostClick closes the palette
---
---  The choosing has to happen inside the snippet because an addon may not write
---  attributes to a protected frame during combat -- see the Secure activation
---  section for the blocked-action this design was built around. Only the
---  angular layouts are steered in the snippet so far; the others still commit
---  from Lua and therefore only fire out of combat.
---
---  Protected calls in this module, all of them deferred to
---  PLAYER_REGEN_ENABLED when in combat: the override-binding updates, and
---  PushPalette's writes of a palette's contents onto the secure buttons.
+--  5.4.8 changes:
+--    * Mounts are companions (GetCompanionInfo("MOUNT")); a mount entry casts
+--      its summon spell by name. Random / last mount use CallCompanion.
+--    * Battle pets: C_PetJournal.SummonPetByGUID (MoP pet journal).
+--    * "Outfits" (retail transmog outfits) -> Equipment Sets (/equipset).
+--    * Specializations -> the two talent specs (SetActiveSpecGroup).
+--    * World markers: 5 on 5.4.8 (square, triangle, diamond, cross, star).
+--    * Raid target markers are set with SetRaidTarget (not protected here).
+--    * No toys, pings, interface panels, profession entries.
+--    * Nests: Arc keeps nested menus as an outer arc; Grid and Fan show the
+--      nested menu's entries in place of the nest entry.
 -------------------------------------------------------------------------------
-local ADDON_NAME, ns = ...
-local EQD = EllesmereUI.Lite.NewAddon(ADDON_NAME)
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
-EllesmereUI._ModuleNS[ADDON_NAME] = select(2, ...)  -- LOD options files read this module ns via the registry
+local addonName = ...
+local ns = EllesmereUI
 
--- The live palette's frame. CreateLiveView fills it in, and this is the one
--- part of it that is not made there.
---
--- The engine bills a script handler's whole call tree to the addon whose
--- execution context called CreateFrame for the frame that carries the handler.
--- CreateLiveView is reached from OnEnable, which runs under the parent's
--- lifecycle dispatch, so a frame made there is stamped EllesmereUI for the
--- session. This frame carries OnPaletteUpdate. Made there, every frame of
--- steering and hit testing an open palette does was billed to the parent addon
--- instead of to this one, which hid the cost of the module that causes it. The
--- main chunk runs as this addon, so the frame is stamped correctly here.
---
--- The event frame in EllesmereUI_Lite.lua is created eagerly for this reason.
-local liveFrame = CreateFrame("Frame", "EUIQuickdrawFrame", UIParent)
-liveFrame:Hide()
+local QD = {}
+ns.Quickdraw = QD
+QD.addonName = addonName
 
--- Upvalues
-local min, max = math.min, math.max
-local pi = math.pi
-local tonumber, type, select = tonumber, type, select
+local type, pairs, ipairs, tonumber, tostring = type, pairs, ipairs, tonumber, tostring
 local tinsert, tremove = table.insert, table.remove
+local min, max, floor = math.min, math.max, math.floor
 
-local TWO_PI = pi * 2
 local QUESTION_MARK = "Interface\\Icons\\INV_Misc_QuestionMark"
+QD.QUESTION_MARK = QUESTION_MARK
 
--- Palette / slot limits. MAX_PALETTES must match the number of <Binding>
--- entries in Bindings.xml: every palette can carry a key of its own, so no
--- palette is ever reachable only by being nested inside another one. A key is
--- what builds a palette's secure button, so the ones left unbound cost nothing.
-local MAX_PALETTES = 16
+QD.MAX_PALETTES = 16      -- = <Binding> entries in Bindings.xml
+QD.MAX_SLOTS = 20
+QD.MAX_CHILDREN = 8
+QD.BINDING_PREFIX = "EUI_RADIAL"   -- retail binding name, kept for good
+QD.FONT_KEY = "quickdraw"
 
--- Entries one menu may hold. Twelve was what a ring of the SETTING'S OWN
--- radius could seat without its entries touching -- at the shipped 100 and a
--- 50-unit pitch, the thirteenth overlaps its neighbour. That is no longer the
--- constraint: Menu Radius is a minimum now and the ring grows with the count
--- (see PaletteView:Geom), so the cap answers to how many entries a person can
--- still aim at rather than to how many fit. Twenty, which is where a full
--- circle gives each entry 18 degrees.
-local MAX_SLOTS = 20
-
--- Entries a nested palette contributes through a HALO, which is eight fixed
--- positions around a cell (see HALO_DIRS) and so cannot seat a ninth child
--- without a second ring it has no room for. This is a real limit of that one
--- shape, not a readability judgement.
---
--- The arc used to share it and no longer does: an arc claim RINGS its children
--- and spills into further rings as they crowd (see ChildGeom and
--- MAX_CHILD_ROWS), so its ground grows with the count exactly as the palette's
--- own ring does. It seats a nested palette whole, like every other layout.
--- See NestChildCap, which is where the per-layout answer lives.
-local MAX_CHILDREN = 8
-
--- How many concentric rings a nested arc's children may spill into before a
--- crowded claim just packs its last ring tighter than one child pitch. More
--- children than the span cap can hold are answered by adding a ring one child
--- pitch further out (see ChildGeom), not by pushing the existing ring out to
--- some unbounded radius. The cap keeps that answer
--- bounded on both sides: the live view and the snippet only ever carry
--- MAX_CHILD_ROWS worth of ring attributes, so a claim that would need a fifth
--- ring degrades by crowding the fourth instead of drifting the two out of
--- step with each other.
-local MAX_CHILD_ROWS = 4
-
--- How many rect gates a single claim's REGION may be built from. One box
--- (HALO, whose ring already sits close enough round its parent that the old
--- bounding box was the true shape), three for a nest that sits in one piece
--- off one side of the block (the parent's own cell, the nest's own tight box,
--- and a corridor one child cell wide connecting them), and five for a lane
--- with the block to itself: the parent's cell plus one box per side of the
--- block its run reached, and a full run can wrap onto all four. One
--- box across the lot instead would swallow the block's own corner ground --
--- see PerimeterNest, the "Arming gates" section and RunReach.
---
--- Fourteen is what a lane sharing the block with OTHER claims comes to. Each of
--- those has its own cell taken out of this claim's coverage (see ParentHoles),
--- which splits the side it falls on into at most a slab clear of it and one
--- interval reaching back to the parent -- the pieces past it are dropped, being
--- ground this claim cannot be armed on anyway.
---
--- Derived by running .tools/quickdraw-nest over every block layout at
--- MAX_SLOTS: 500,308 arrangements -- 2 to 20 entries, every arrangement of up
--- to four nesting ones (thinned evenly past 120 per shape), 1 to 16 children
--- each, auto and pinned columns, both nest styles. Fourteen covers all but 258
--- of them; the worst single claim in the sweep comes to eighteen, and spending
--- four more gates and eight more wrapped scripts on every claim to catch that
--- last 0.05 per cent is not the trade. Past the budget the tail is dropped,
--- child-bearing pieces being written first, so a claim that does overflow loses
--- ground between its entries rather than a child.
---
--- Re-run that sweep if MAX_SLOTS, MAX_CHILDREN or any nest geometry moves --
--- this number is an OUTPUT of the nest shapes, not a choice.
-local REGION_MAX = 14
-
--- How many drawn positions the scroll strip's arming lattice may span each
--- side of its centre: the widest each-side window the "Visible Icons" slider
--- can ask for ((9 - 1) / 2). One motion gate per position -- see
--- EnsureLatticeGates -- and the snippets loop it as __LATTICE_MAX__.
-local MAX_LATTICE = 4
-
--- The Nest Distance the profile ships with, named because the lane style
--- reads it as a baseline rather than as a distance: a lane hugs the block, and
--- what it takes off the slider is only whatever the user asked for BEYOND
--- this. Every other style measures its whole stand-off from the slider.
-local NEST_BAND_DEFAULT = 40
-
--- The binding ACTION name, and it keeps the module's first name for good. WoW
--- stores a keybind against this string, so renaming it would unbind every
--- palette every user has set. The name is never shown: BINDING_NAME_<action>
--- (set in OnInitialize) is what the Keybindings page reads.
-local BINDING_PREFIX = "EUI_RADIAL"
-
--- DIALOG is also the options window's strata (EllesmereUI.lua:7126), which is
--- fine: the palette only exists on screen while a key is held.
-local LIVE_STRATA = "DIALOG"
+-- Key binding page texts (retail OnInitialize).
+_G.BINDING_HEADER_EUI_RADIAL = "EllesmereUI Quickdraw"
+for i = 1, QD.MAX_PALETTES do
+	_G["BINDING_NAME_" .. QD.BINDING_PREFIX .. i] = "Open Action Menu " .. i
+end
 
 -------------------------------------------------------------------------------
---  Database
---
---  Everything under DB_DEFAULTS.profile lives in the suite's central store, at
---  EllesmereUIDB.profiles[<name>].addons.EllesmereUIQuickdraw (see
---  EllesmereUI.Lite.NewDB). That placement is the whole profile integration:
---  the data follows whichever profile the character resolves to, a profile
---  swap or import repoints db.profile and reaches _EQD_Apply through
---  RefreshAllAddons (EllesmereUI_Profiles.lua:1433), and profile export and
---  import carry the table because the module is listed in ADDON_DB_MAP
---  (EllesmereUI_Profiles.lua:83). A new setting only needs a default here to
---  be per-profile and exportable -- there is nothing else to register.
---
---  Two kinds of state must NOT be added under profile: per-character or
---  account-wide state (keybinds, for example, stay in WoW's binding system),
---  and anything read outside db.profile through a cached reference (P() is
---  the accessor that stays correct across a swap). If the module ever grows
---  unlock-anchored elements, their key prefix must also be added to
---  KEY_PREFIX_FOLDER in EllesmereUI_Profiles.lua.
+--  Defaults (retail DB_DEFAULTS.profile)
 -------------------------------------------------------------------------------
-local DB_DEFAULTS = {
-    profile = {
-        -- Off until the user asks for it: a palette needs a key bound to it
-        -- before it can do anything, so shipping it on would only cost a
-        -- session that never wanted it.
-        enabled     = false,
-
-        -- Placement. posX/posY are a UIParent-LOGICAL delta from UIParent's
-        -- center, i.e. independent of the palette's own scale -- the same
-        -- convention MythicTimer's standalonePos uses
-        -- (EllesmereUIMythicTimer.lua:2651). PositionPalette divides by scale at
-        -- apply time, because SetPoint offsets live in the frame's own scaled
-        -- space; without that, changing Scale would also move the palette.
-        centerMode  = "CURSOR",      -- CURSOR | SCREEN
-        posX        = 0,
-        posY        = 0,
-
-        -- Layout. ARC steers with the cursor's angle; FAN is a coverflow
-        -- strip scrubbed with the mouse wheel, which keeps working while the
-        -- right button is held to steer the camera and the cursor is therefore
-        -- frozen. Orientation is a property of the strip, not a layout of its
-        -- own: the two axes differ only in which way the entries run.
-        layout          = "ARC",  -- ARC | FAN | GRID
-        fanOrientation  = "HORIZONTAL",  -- HORIZONTAL | VERTICAL
-        gridAutoColumns = true,      -- near-square, sized to what the palette holds
-        gridColumns     = 4,         -- used only when gridAutoColumns is off
-
-        -- Arc. 360 is a full turn. Anything less fans the entries across a
-        -- sector centred on arcRotation (0 = straight up, growing clockwise),
-        -- which keeps a palette clear of a screen edge and gives a nested palette
-        -- somewhere to open that does not cover its parent.
-        arcSpan     = 360,           -- degrees, 30..360
-        arcRotation = 0,             -- degrees, direction the arc is centred on
-
-        -- Nesting. A slot of kind "palette" opens another palette's entries one
-        -- level further out, on ground reached through the parent entry itself
-        -- -- see ChildGeom.
-        -- A clear GAP between the parent's icon and its children, not a
-        -- centre-to-centre radius: measured centre to centre it has to cover
-        -- both icons' halves before it separates anything at all, and at any
-        -- ordinary icon size the two rings came out touching.
-        nestBand     = NEST_BAND_DEFAULT,
-        nestScale    = 0.8,      -- child icon size, against the palette's own
-        -- Which side of a block layout the nested entries hang off is FIXED
-        -- at above/right (NestMetrics). Only the equidistant ties ever
-        -- consulted it -- everywhere else the side NEAREST the parent cell
-        -- wins -- and it stopped being a setting; a nestSide key left in
-        -- stored profiles is never read.
-        -- Where a GRID puts a nest. A strip ignores this: one row or column has
-        -- no interior to lay a lane or halo into, so it always builds a small
-        -- block of its own, centred on the parent and broken out across the
-        -- strip.
-        --   PERIMETER  a lane hugging the block, centred on the point of it
-        --              nearest the parent and wrapping the corners when long
-        --   HALO       the eight positions around the parent, block faded behind
-        -- A retired POPOUT value -- the nested palette as a detached block --
-        -- reads as PERIMETER; see NestMetrics.
-        gridNestStyle    = "PERIMETER",
-        -- How far along the arc a nest may spread. NONE stops at the midpoint
-        -- with the next NEST either side, MIDPOINT spends the whole span cap
-        -- whatever is out there; both may cross the plain entries in between.
-        arcChildOverflow = "NONE",   -- NONE | MIDPOINT
-        arcChildMaxSpan  = 90,       -- degrees, the widest a child arc may grow
-
-        -- Geometry. The dead zone -- the arc's central cancel circle -- is
-        -- FIXED at 24 (PaletteView:Geom): it stopped being a setting, and a
-        -- deadZone key left in a stored profile is simply never read.
-        radius      = 100,
-        iconSize    = 40,
-        scale       = 1.0,
-
-        -- Fan geometry. The proximity SELECTION EFFECTS are HARDCODED OFF
-        -- (their settings were removed pending the user's own animation
-        -- pass): entries draw at flat size and full alpha everywhere, and
-        -- the strip spaces itself at full pitch -- FalloffRatios and
-        -- SelectedZoom are the two switches. falloff / fanScaleDecay /
-        -- fanAlphaDecay / fanMinScale / fanMinAlpha / selectedZoom keys left
-        -- in stored profiles are never read.
-        -- Entries drawn each side of the centre. The "Visible Icons" slider
-        -- shows the whole strip instead -- the odd total, window * 2 + 1 --
-        -- and converts both ways, so this stays the number every window,
-        -- hover and snippet test is written in.
-        fanVisible    = 2,
-        fanGap        = 10,
-        -- The settle -- how long the strip takes to slide to a scrolled-to
-        -- entry -- is FIXED at 0.1s in AdvanceFan (the Settle Time setting
-        -- was removed); a fanAnimTime key left in stored profiles is never
-        -- read.
-        fanInvert     = false,       -- flip which way a scroll tick travels
-
-        -- Steering is FIXED: a fan is always wheel-steered (the Steering
-        -- setting was removed), with the hover channel below on top. The
-        -- pointer-fan machinery stays dormant behind IsHoverFan; a fanInput
-        -- key left in stored profiles is never read.
-
-        -- The scroll strip's hover channel ("Select Action with Mouse"):
-        -- pointing at a drawn entry makes IT the one a release fires, the
-        -- wheel's entry standing wherever the pointer is not. The wheel keeps
-        -- scrolling either way.
-        fanMouseSelect = true,
-
-        -- Flick-ahead (the arc drawn only after a moment's hold, so a fast
-        -- gesture never summons a menu) is FIXED in FlickAlpha now -- it
-        -- stopped being a setting, and flick* keys left in stored profiles
-        -- are never read.
-
-        -- Appearance. Hub art is HARDCODED (the logo settings were removed):
-        -- the arc draws the logo at 40, full alpha (see Layout). hubIcon*
-        -- keys left in stored profiles are never read.
-
-        -- The caption ("Show Action Text Label"): the selected action's NAME
-        -- beside the selection, one switch for every layout -- it took over
-        -- the fan's own Show Action Text. Off by default: the icons read as
-        -- a palette on their own, and the tooltip already names whatever is
-        -- selected.
-        showActionText = false,
-        -- Per-slot labels are FIXED off, the arc's connector needle FIXED
-        -- on, and the palette-name-and-keybind rest caption is simply gone
-        -- (the Show Slot Labels, Show Direction Needle and Show Center Text
-        -- settings were removed); showLabels, showNeedle, showHubText and
-        -- fanShowText keys left in stored profiles are never read.
-        showCooldowns = true,
-        -- Tint an entry that would do nothing right now: red out of range,
-        -- blue short of the resource, gray and desaturated for anything else
-        -- the game refuses. The same three cues an action button gives.
-        showUsability = true,
-        -- Drop entries this character cannot use AT ALL -- another class's
-        -- specializations and spells, macros it does not have -- from the
-        -- drawn menu entirely, so one shared menu fits every character.
-        -- Off draws them as the gray placeholders they always were.
-        hideUnusable = true,
-        -- The dark plate behind each entry's icon is FIXED at 0.65 opacity,
-        -- 0.9 selected/armed (ApplySlotVisual): it stopped being a setting,
-        -- and a bgAlpha key left in stored profiles is never read.
-        -- ACCENT by default: selectColorCustom flips to the stored custom
-        -- color below, and useClassColor -- the Class Color swatch --
-        -- overrides both while it is on.
-        selectColorCustom = false,
-        selectColor   = { 0.047, 0.824, 0.624 },  -- the custom swatch's start
-        useClassColor = false,
-
-        -- Toggle Menu Open, per palette. Off keeps the model the module was
-        -- built on: hold the key, release to fire. On latches the menu up when
-        -- the key is let go, and the Select key below is what chooses an entry.
-        --
-        -- A palette latches only when there IS a Select key -- see SNIPPET_PRE.
-        -- One with the switch on and no key set behaves exactly as it did
-        -- before, which is the only sane reading of "you have not finished
-        -- setting this up yet": the alternative is a menu that opens and cannot
-        -- be answered.
-        toggleMode = false,
-        -- Toggle World Markers, per palette. On, a world marker entry answers
-        -- for its own marker in both directions: place it if it is not down,
-        -- pick it up if it is. Off places every press, which moves the marker
-        -- to wherever the cursor is now.
-        --
-        -- On by default. The raid manager offers both halves -- left click
-        -- places, right click picks up
-        -- (Mainline/Blizzard_CompactRaidFrameManager.lua:1058-1067) -- and a
-        -- menu entry has one press to spend rather than two mouse buttons, so
-        -- alternating is how it reaches the same pair.
-        --
-        -- The clear-all entry is unaffected, and so are the cycling entries.
-        -- See the worldmarker branch of ResolveAction for why.
-        worldMarkerToggle = true,
-        -- The placed-marker corner pip on live menus (see MarkerPip). On by
-        -- default: it is what tells a toggled entry's press apart -- place or
-        -- pick up -- before it is pressed.
-        worldMarkerPip = true,
-        -- The key that fires the hovered entry of a latched menu, as a binding
-        -- chord. One key for every palette. Claimed as an override binding for
-        -- exactly as long as a menu is up and handed straight back on close, so
-        -- it keeps whatever it normally does the rest of the time -- which is
-        -- what makes a plain mouse button a reasonable thing to put here.
-        --
-        -- Empty rather than nil: a nil in a defaults table is not merged, so
-        -- there would be no key to write to.
-        confirmKey = "",
-
-        -- The key that backs OUT of an open menu without firing anything.
-        -- ESCAPE always does this and is not configurable; this is a second
-        -- key for it, and the reason it exists is that the hand holding the
-        -- menu key is nowhere near ESCAPE. A plain mouse button is the point
-        -- -- right-click is the one people reach for -- and, like the Select
-        -- key, it is claimed only for as long as a menu is up. Empty for the
-        -- same reason as confirmKey.
-        cancelKey = "",
-
-        paletteCount   = 1,
-        -- palette.slots is a DENSE, ORDERED array: the palette auto-sizes to what the
-        -- user has actually assigned, so three actions means three big entries
-        -- rather than three icons and five dead gaps. Order is the entry order,
-        -- clockwise from 12 o'clock, and is what the editor reorders.
-        palettes = {
-            [1] = { name = "Action Menu 1", slots = {} },
-        },
-    },
+local DEFAULTS = {
+	enabled = false,
+	centerMode = "CURSOR",      -- CURSOR | SCREEN
+	posX = 0,
+	posY = 0,
+	layout = "ARC",             -- ARC | FAN | GRID
+	fanOrientation = "HORIZONTAL",
+	gridAutoColumns = true,
+	gridColumns = 4,
+	arcSpan = 360,
+	arcRotation = 0,
+	nestBand = 40,
+	nestScale = 0.8,
+	gridNestStyle = "PERIMETER",
+	arcChildOverflow = "NONE",
+	arcChildMaxSpan = 90,
+	radius = 100,
+	iconSize = 40,
+	scale = 1.0,
+	fanVisible = 2,
+	fanGap = 10,
+	fanInvert = false,
+	fanMouseSelect = true,
+	showActionText = false,
+	showCooldowns = true,
+	showUsability = true,
+	hideUnusable = true,
+	selectColorCustom = false,
+	selectColor = { 0.047, 0.824, 0.624 },
+	useClassColor = false,
+	toggleMode = false,
+	worldMarkerToggle = true,
+	worldMarkerPip = true,
+	confirmKey = "",
+	cancelKey = "",
+	paletteCount = 1,
 }
-ns.DB_DEFAULTS = DB_DEFAULTS
+QD.DEFAULTS = DEFAULTS
 
--- The name a palette carries until the user types one of their own. It is also
--- what an emptied name box reverts to, and the only name the legacy rename
--- below may replace, so all three read it from here.
-local function AutoPaletteName(index)
-    return "Action Menu " .. index
+-- Per menu appearance (retail APPEARANCE_KEYS): palette.appearance[key]
+-- overrides the profile value.
+local APPEARANCE_KEYS = {
+	layout = true, fanOrientation = true,
+	centerMode = true, posX = true, posY = true, scale = true,
+	gridAutoColumns = true, gridColumns = true,
+	arcSpan = true, arcRotation = true,
+	fanVisible = true, fanGap = true, fanInvert = true, fanMouseSelect = true,
+	radius = true, iconSize = true,
+	nestBand = true, nestScale = true, gridNestStyle = true,
+	arcChildOverflow = true, arcChildMaxSpan = true,
+	showCooldowns = true, showUsability = true, showActionText = true,
+	hideUnusable = true,
+	selectColorCustom = true, selectColor = true, useClassColor = true,
+	toggleMode = true, worldMarkerToggle = true, worldMarkerPip = true,
+}
+QD.APPEARANCE_KEYS = APPEARANCE_KEYS
+
+local function CopyTable(t)
+	if type(t) ~= "table" then return t end
+	local out = {}
+	for k, v in pairs(t) do out[k] = CopyTable(v) end
+	return out
 end
-ns.AutoPaletteName = AutoPaletteName
-
--- Names the module has outgrown, converted in place. The defaults have already
--- been merged in by the time this runs, so each of these takes the old value
--- wholesale rather than merging it: whatever the defaults seeded under the new
--- name is a fresh empty, never something to keep. Clearing the old key is what
--- makes a second run a no-op.
-local function MigrateNames(p)
-    -- The horizontal and vertical strips were once two layouts. They differed
-    -- only in which axis they ran along, so they are one layout with an
-    -- orientation now.
-    if p.layout == "FAN_H" or p.layout == "FAN_V" then
-        p.fanOrientation = p.layout == "FAN_V" and "VERTICAL" or "HORIZONTAL"
-        p.layout = "FAN"
-    end
-
-    -- RADIAL was what the arc was called while a full circle was the only thing
-    -- it could draw. The layout is unchanged; only the word for it is.
-    if p.layout == "RADIAL" then p.layout = "ARC" end
-
-    -- A set of actions was a "ring" for the same reason, and stopped being one
-    -- the moment it could be drawn as a strip or a grid.
-    if p.rings then p.palettes, p.rings = p.rings, nil end
-    if p.ringCount then p.paletteCount, p.ringCount = p.ringCount, nil end
-    -- Auto-generated names only. A palette the user has named keeps its name.
-    for i, palette in pairs(p.palettes or {}) do
-        if palette.name == "Ring " .. i then palette.name = AutoPaletteName(i) end
-        if palette.name == "Palette " .. i then palette.name = AutoPaletteName(i) end
-        -- A nested entry used to be handed a COPY of the palette's name when it
-        -- was created, which then went stale the moment that palette was
-        -- renamed. SlotDisplay reads the palette's own name whenever the entry
-        -- carries none, so the copy is simply dropped.
-        for _, slot in pairs(palette.slots or {}) do
-            if slot.kind == "palette" then slot.name = nil end
-            -- Toys dragged in from the Collections/Toy Box frame before
-            -- SlotFromCursor reclassified them landed here as kind="item",
-            -- which runs SlotUsability through C_Item.IsUsableItem -- always
-            -- "unusable" for a toy -- instead of the toy path, which leaves
-            -- them untinted. Same fix, applied to what was already saved.
-            if slot.kind == "item" and type(slot.id) == "number"
-               and PlayerHasToy(slot.id) then
-                slot.kind = "toy"
-            end
-        end
-    end
-end
+QD.CopyTable = CopyTable
 
 local db
 
--- Every profile is converted on FIRST TOUCH rather than once at load. Switching
--- profile repoints db.profile at a different table without reloading the UI
--- (EllesmereUI_Profiles.lua:745), and a per-spec profile is resolved only after
--- OnInitialize has run -- so migrating "the profile that was active at load"
--- would leave both of those unconverted, reading the default-seeded empty
--- palette while the user's own sat under the old key. Worse, the next login
--- would then migrate over the top of whatever they had edited in the meantime.
---
--- Weak keys: the memo must not keep a profile table alive after the profile
--- itself is deleted.
-local migrated = setmetatable({}, { __mode = "k" })
+-- The settings root (EllesmereUIQuickdrawDB), defaults filled in.
 local function P()
-    local p = db and db.profile
-    if p and not migrated[p] then
-        migrated[p] = true
-        MigrateNames(p)
-    end
-    return p
+	if not db or db ~= _G.EllesmereUIQuickdrawDB then
+		db = ns.ModuleDB("EllesmereUIQuickdrawDB")
+	end
+	for k, v in pairs(DEFAULTS) do
+		if db[k] == nil then db[k] = CopyTable(v) end
+	end
+	if type(db.palettes) ~= "table" then db.palettes = {} end
+	if type(db.palettes[1]) ~= "table" then db.palettes[1] = {} end
+	-- retail renames (MigrateNames)
+	if db.layout == "FAN_H" or db.layout == "FAN_V" then
+		db.fanOrientation = db.layout == "FAN_V" and "VERTICAL" or "HORIZONTAL"
+		db.layout = "FAN"
+	elseif db.layout == "RADIAL" then
+		db.layout = "ARC"
+	end
+	return db
 end
--- Exported so the options page reads the profile through the same accessor
--- rather than reaching into db.profile itself, which would skip the migration
--- above on whichever side happened to touch a switched-in profile first.
-ns.Profile = P
+QD.P = P
 
--- Does a blob hold anything a user actually arranged? Only the profile that is
--- ALREADY LIVE needs asking: the login pass runs before the defaults are merged
--- and can simply test the destination for emptiness, while a live destination
--- always holds the whole defaults table and would never read as empty.
-local function HasPalettes(blob)
-    local palettes = type(blob) == "table" and blob.palettes
-    if type(palettes) ~= "table" then return false end
-    for _, palette in pairs(palettes) do
-        if type(palette) == "table" and type(palette.slots) == "table"
-            and next(palette.slots) ~= nil then
-            return true
-        end
-    end
-    return false
+function QD.AutoPaletteName(index)
+	return "Action Menu " .. index
 end
 
--- One profile's move off the pre-rename keys. See MigrateLegacySV for what the
--- renames were and why current data wins.
---
--- The keys the module's central-store blob has lived under before, NEWEST
--- first: the first key holding real palettes wins, and every legacy key is
--- dropped either way, which is what makes a second pass a no-op.
---
--- live is the table the module is already reading through, passed only for the
--- profile that is active right now: the blob is poured INTO it rather than the
--- key repointed, because a swap would strand db.profile and every other holder
--- of that reference on the table they were handed.
-local LEGACY_ADDON_KEYS = { "EllesmereUIActionPalette", "EllesmereUIRadialWheel" }
-
-local function MigrateLegacyProfile(prof, live)
-    local addons = type(prof) == "table" and prof.addons
-    if type(addons) ~= "table" then return end
-    for _, key in ipairs(LEGACY_ADDON_KEYS) do
-        local legacy = addons[key]
-        if type(legacy) == "table" then
-            if live then
-                if HasPalettes(legacy) and not HasPalettes(live) then
-                    wipe(live)
-                    for k, v in pairs(legacy) do live[k] = v end
-                    EllesmereUI.Lite.DeepMergeDefaults(live, DB_DEFAULTS.profile)
-                    -- Converted by the next P(), like any switched-in profile:
-                    -- what was just poured in may carry pre-rename field names.
-                    migrated[live] = nil
-                end
-            else
-                local dest = addons.EllesmereUIQuickdraw
-                if type(dest) ~= "table" or next(dest) == nil then
-                    addons.EllesmereUIQuickdraw = legacy
-                end
-            end
-        end
-        addons[key] = nil
-    end
+-- A palette, created on demand, slots made dense (retail EnsurePalette).
+function QD.EnsurePalette(index)
+	local p = P()
+	if not index or index < 1 or index > QD.MAX_PALETTES then return nil end
+	local palette = p.palettes[index]
+	if type(palette) ~= "table" then
+		palette = {}
+		p.palettes[index] = palette
+	end
+	if type(palette.name) ~= "string" or palette.name == "" then
+		palette.name = QD.AutoPaletteName(index)
+	end
+	if type(palette.slots) ~= "table" then palette.slots = {} end
+	local dense, n = {}, 0
+	for i = 1, QD.MAX_SLOTS do
+		local slot = palette.slots[i]
+		if type(slot) == "table" and slot.kind then
+			n = n + 1
+			dense[n] = slot
+		end
+	end
+	palette.slots = dense
+	palette.slotCount = nil
+	return palette
 end
 
--- The same move for the profile in use, so a profile STRING imported from a
--- pre-rename build heals when it is applied rather than at the next login.
-local function MigrateActiveProfile()
-    local live = db and db.profile
-    if not live then return end
-    local profiles = EllesmereUIDB and EllesmereUIDB.profiles
-    local prof = profiles and db._profileName and profiles[db._profileName]
-    MigrateLegacyProfile(prof, live)
+function QD.PaletteCount()
+	local p = P()
+	return max(1, min(QD.MAX_PALETTES, tonumber(p.paletteCount) or 1))
 end
 
--- Palettes past the first are created on demand: the defaults table only seeds
--- palette 1, so DeepMergeDefaults never has to know how many the user wants.
-local function EnsurePalette(index)
-    local p = P()
-    -- nil is an answer, not an error: ChildIndex hands one back for a
-    -- nested-palette slot whose palette number is missing or out of range, and
-    -- its callers pass it straight through on their way to the question-mark
-    -- fallback. Comparing it would take the paint of the whole containing
-    -- palette down with it.
-    if not p or not index or index < 1 or index > MAX_PALETTES then return nil end
-    if not p.palettes then p.palettes = {} end
-    local palette = p.palettes[index]
-    if not palette then
-        palette = { name = AutoPaletteName(index), slots = {} }
-        p.palettes[index] = palette
-    end
-    if type(palette.slots) ~= "table" then palette.slots = {} end
-
-    -- Self-healing compaction. The array must have no holes for #slots to be
-    -- meaningful, and a hole is exactly what a cleared slot used to leave
-    -- behind under the old fixed-slot-count model. Also enforces MAX_SLOTS.
-    -- A fresh array on every call, on purpose: UsableSlots' memo can hold the
-    -- array it last saw, and an edit made through this one never reaches it,
-    -- so the drawn menu keeps matching the pushed actions until the next push
-    -- (which combat defers).
-    local dense, n = {}, 0
-    for i = 1, MAX_SLOTS do
-        local slot = palette.slots[i]
-        if slot and slot.kind then
-            n = n + 1
-            dense[n] = slot
-        end
-    end
-    palette.slots = dense
-    palette.slotCount = nil   -- retired: the count is now derived from #slots
-    return palette
+-- Appearance value of a palette (retail PA / ACfg).
+function QD.ACfg(index, key)
+	local p = P()
+	local palette = index and p.palettes[index]
+	if type(palette) == "table" and APPEARANCE_KEYS[key] and type(palette.appearance) == "table" then
+		local v = palette.appearance[key]
+		if v ~= nil then return v end
+	end
+	local v = p[key]
+	if v == nil then v = DEFAULTS[key] end
+	return v
 end
-ns.EnsurePalette = EnsurePalette
 
--- A palette as it already stands, with no compaction and nothing created. For
--- the READERS on a steering path: EnsurePalette allocates a slot array and
--- writes it back into the profile on every call, which is the wrong thing to do
--- once per cursor movement. A palette that has never been ensured has no
--- entries to hand back anyway, and every write site still goes through
--- EnsurePalette, so what this reads is always compact by the time it exists.
-local function ReadPalette(index)
-    local p = P()
-    if not p or not index or index < 1 or index > MAX_PALETTES then return nil end
-    local palette = p.palettes and p.palettes[index]
-    if type(palette) ~= "table" then return nil end
-    if type(palette.slots) ~= "table" then return nil end
-    return palette
+function QD.ASet(index, key, value)
+	local palette = QD.EnsurePalette(index)
+	if not palette then return end
+	palette.appearance = palette.appearance or {}
+	palette.appearance[key] = value
+end
+
+-- A read-only view of one palette's appearance (for the view / secure code).
+function QD.PA(index)
+	return setmetatable({}, { __index = function(_, key) return QD.ACfg(index, key) end })
+end
+
+function QD.AddSlot(palette, slot)
+	if not palette or not slot then return nil end
+	if #palette.slots >= QD.MAX_SLOTS then return nil end
+	palette.slots[#palette.slots + 1] = slot
+	return #palette.slots
+end
+
+function QD.RemoveSlot(palette, index)
+	if not palette or not palette.slots[index] then return false end
+	tremove(palette.slots, index)
+	return true
+end
+
+function QD.MoveSlot(palette, from, to)
+	if not palette then return false end
+	local n = #palette.slots
+	if from == to or from < 1 or from > n or to < 1 or to > n then return false end
+	tinsert(palette.slots, to, tremove(palette.slots, from))
+	return true
+end
+
+-- The palette a "palette" (nest) slot opens.
+function QD.ChildIndex(slot)
+	if type(slot) ~= "table" or slot.kind ~= "palette" then return nil end
+	local idx = tonumber(slot.palette)
+	if not idx or idx < 1 or idx > QD.MAX_PALETTES then return nil end
+	return idx
 end
 
 -------------------------------------------------------------------------------
---  Per-palette appearance
---
---  EVERY setting is a palette's own: its shape and place (layout, where it
---  opens, its sizes), its nesting geometry, and its look (colors, cooldowns,
---  the caption). The options page's "Apply All Settings From" dropdown is the
---  bridge between menus -- it copies one menu's effective values onto another
---  wholesale.
---
---  Every one of these is an OVERRIDE, not a value: a palette that has never
---  been given one reads the profile's, which is what makes this change invisible
---  to a profile written before it existed. That is also the whole of the
---  saved-variables migration -- there is nothing to move, because the old flat
---  keys are exactly the fallback the new ones fall back to.
---
---  Stored under palette.appearance rather than flat on the palette. A palette
---  already carries name, icon and slots, and a flat store would put profile
---  keys in the same namespace as those -- fine for today's key set and a trap
---  for the first profile key ever named "icon".
+--  Specs (retail "Assign to Spec": palette.specs = { [specID] = true })
 -------------------------------------------------------------------------------
-local APPEARANCE_KEYS = {
-    layout = true, fanOrientation = true,
-    centerMode = true, posX = true, posY = true, scale = true,
-    gridAutoColumns = true, gridColumns = true,
-    arcSpan = true, arcRotation = true,
-    fanVisible = true, fanGap = true, fanInvert = true,
-    fanMouseSelect = true,
-    radius = true, iconSize = true,
-    nestBand = true, nestScale = true, gridNestStyle = true,
-    arcChildOverflow = true, arcChildMaxSpan = true,
-    showCooldowns = true, showUsability = true, showActionText = true,
-    hideUnusable = true,
-    selectColorCustom = true, selectColor = true, useClassColor = true,
-    -- Per palette on purpose: a marker ring wants the flick it has always had,
-    -- while a mount menu is worth latching open and pointing at. The Select key
-    -- the latched one answers to is NOT here -- it is one profile key, so the
-    -- gesture means the same thing whichever menu is up.
-    toggleMode = true,
-    -- Per palette for the same reason: a pull-timer menu that drops the eight
-    -- markers in one pass wants each press to place, and a menu kept open to
-    -- tidy them up afterwards wants each press to answer for its own marker.
-    worldMarkerToggle = true,
-    worldMarkerPip = true,
+function QD.ClassSpecs()
+	local out = {}
+	local n = GetNumSpecializations and GetNumSpecializations() or 0
+	for i = 1, n do
+		local id, name, _, icon = GetSpecializationInfo(i)
+		if id then out[#out + 1] = { id = id, name = name, icon = icon, index = i } end
+	end
+	return out
+end
+
+local function CurrentSpecID()
+	local i = GetSpecialization and GetSpecialization()
+	if not i then return nil end
+	return (GetSpecializationInfo(i))
+end
+QD.CurrentSpecID = CurrentSpecID
+
+function QD.PaletteSpecs(index)
+	local palette = P().palettes[index]
+	local specs = type(palette) == "table" and palette.specs
+	if type(specs) ~= "table" or next(specs) == nil then return nil end
+	return specs
+end
+
+-- Does this palette load for the current spec? A spec set made only of other
+-- classes' specs (a shared profile) also loads: none of them can apply here.
+function QD.PaletteActive(index)
+	local specs = QD.PaletteSpecs(index)
+	if not specs then return true end
+	local cur = CurrentSpecID()
+	if cur and specs[cur] then return true end
+	local mine = false
+	for _, s in ipairs(QD.ClassSpecs()) do
+		if specs[s.id] then mine = true end
+	end
+	return not mine
+end
+
+-------------------------------------------------------------------------------
+--  Entries: what each kind fires, shows and needs
+-------------------------------------------------------------------------------
+-- World markers: retail stores the raid icon position (1 star .. 8 skull).
+-- 5.4.8 has five world markers (1 blue square, 2 green triangle,
+-- 3 purple diamond, 4 red cross, 5 yellow star).
+local WORLD_MARKER_ENGINE = { [1] = 5, [3] = 3, [4] = 2, [6] = 1, [7] = 4 }
+QD.WORLD_MARKER_ENGINE = WORLD_MARKER_ENGINE
+QD.WORLD_MARKER_ORDER = { 6, 4, 3, 7, 1 }
+local MARKER_NAMES = { "Star", "Circle", "Diamond", "Triangle", "Moon", "Square", "Cross", "Skull" }
+QD.MARKER_NAMES = MARKER_NAMES
+
+local function MarkerIcon(id)
+	return "Interface\\TargetingFrame\\UI-RaidTargetingIcon_" .. id
+end
+local CLEAR_ICON = "Interface\\Buttons\\UI-GroupLoot-Pass-Up"
+
+-- Battle res first (in combat), then the normal resurrection (retail Rez).
+local REZ = {
+	DRUID = { 20484, 50769 },
+	DEATHKNIGHT = { 61999 },
+	WARLOCK = { 20707 },
+	PALADIN = { nil, 7328 },
+	PRIEST = { nil, 2006 },
+	SHAMAN = { nil, 2008 },
+	MONK = { nil, 115178 },
 }
-ns.APPEARANCE_KEYS = APPEARANCE_KEYS
 
--- One READ-ONLY view per palette, with that palette's overrides in front of
--- the profile. Handing this back as `p` is what let the whole renderer stay
--- written as `p.layout`: the fallback lives in one metatable instead of at
--- sixty call sites, none of which could have been left out safely.
---
--- Keyed by the palette TABLE rather than by its index: deleting a palette
--- shifts every palette above it down one, and switching profile replaces the
--- lot. An override belongs to the palette, and so does its view.
---
--- Never pruned, and not bounded by MAX_PALETTES either: deleting a palette and
--- adding one leaves the deleted table in here, alive, for the rest of the
--- session. Each entry is one empty table and one metatable, and palettes are
--- added and deleted by hand on a settings page, so the ceiling is what a person
--- can be bothered to click.
-local appearanceViews = {}
-
-local function PA(paletteIndex)
-    local p = P()
-    if not p then return nil end
-    -- Straight off p.palettes, NOT through EnsurePalette: this runs several
-    -- times per frame on every steered layout, and EnsurePalette rebuilds the
-    -- slot array to compact it. A palette that has never been ensured has no
-    -- overrides to read anyway, so the profile is the whole answer.
-    local palette = paletteIndex and p.palettes and p.palettes[paletteIndex]
-    if type(palette) ~= "table" then return p end
-
-    local view = appearanceViews[palette]
-    if not view then
-        view = setmetatable({}, {
-            __index = function(_, key)
-                if APPEARANCE_KEYS[key] then
-                    local v = palette.appearance and palette.appearance[key]
-                    if v ~= nil then return v end
-                end
-                -- P() rather than a captured profile: a palette table outlives
-                -- nothing, but reading through the accessor keeps the migration
-                -- on first touch running for whichever profile is current.
-                local prof = P()
-                return prof and prof[key]
-            end,
-            -- Nothing writes through this, and a write that slipped in would
-            -- land on the view and be invisible to the saved variables.
-            __newindex = function() error("Quickdraw appearance view is read-only", 2) end,
-        })
-        appearanceViews[palette] = view
-    end
-    return view
-end
-ns.PaletteProfile = PA
-
--- Ordered mutations. All three keep the array dense so #slots stays the
--- authoritative entry count.
-function ns.AddSlot(palette, slot)
-    if not palette or not slot then return nil end
-    if #palette.slots >= MAX_SLOTS then return nil end
-    palette.slots[#palette.slots + 1] = slot
-    return #palette.slots
+local function SpellName(id)
+	id = tonumber(id)
+	return id and (GetSpellInfo(id)) or nil
 end
 
-function ns.RemoveSlot(palette, index)
-    if not palette or not palette.slots[index] then return false end
-    tremove(palette.slots, index)
-    return true
+local function RezSpells()
+	local _, class = UnitClass("player")
+	local t = class and REZ[class]
+	if not t then return nil end
+	local brez = t[1] and IsSpellKnown(t[1]) and SpellName(t[1]) or nil
+	local rez = t[2] and SpellName(t[2]) or nil
+	if t[2] and not IsSpellKnown(t[2]) then rez = nil end
+	return brez, rez, t
 end
 
--- Move, not swap: dragging an icon between two others should insert it there
--- and shuffle the rest along, which is what a reorder is.
-function ns.MoveSlot(palette, from, to)
-    if not palette then return false end
-    local n = #palette.slots
-    if from == to or from < 1 or from > n or to < 1 or to > n then return false end
-    tinsert(palette.slots, to, tremove(palette.slots, from))
-    return true
+local function RezMacroText()
+	local brez, rez = RezSpells()
+	if brez and rez and brez ~= rez then
+		return "/cast [combat] " .. brez .. "; " .. rez
+	end
+	if brez or rez then return "/cast " .. (brez or rez) end
+	return nil
 end
 
--- How many palettes EXIST. Each of them has a <Binding> entry of its own, so
--- this is also the range every loop that claims a key or pushes actions runs
--- over -- a palette can be opened by a key, nested inside another palette, or
--- both.
-local function PaletteCount()
-    local p = P()
-    return min(MAX_PALETTES, max(1, (p and p.paletteCount) or 1))
+-- Known mounts by summon spell (GetCompanionInfo("MOUNT", i)).
+local function MountIndex(spellID)
+	local n = GetNumCompanions and GetNumCompanions("MOUNT") or 0
+	for i = 1, n do
+		local _, _, sid = GetCompanionInfo("MOUNT", i)
+		if sid == spellID then return i end
+	end
+	return nil
 end
-ns.PaletteCount = PaletteCount
+QD.MountIndex = MountIndex
+
+local function PetInfo(guid)
+	if type(guid) ~= "string" or not (C_PetJournal and C_PetJournal.GetPetInfoByPetID) then return nil end
+	local ok, speciesID, customName, _, _, _, _, _, name, icon = pcall(C_PetJournal.GetPetInfoByPetID, guid)
+	if not ok or not speciesID then return nil end
+	return customName or name, icon
+end
+
+local function EquipSetIcon(name)
+	if type(name) ~= "string" or not GetEquipmentSetInfoByName then return nil end
+	local icon = GetEquipmentSetInfoByName(name)
+	if type(icon) == "string" and not icon:find("\\") then
+		icon = "Interface\\Icons\\" .. icon
+	end
+	return icon
+end
+
+local function SpecByID(id)
+	id = tonumber(id)
+	for _, s in ipairs(QD.ClassSpecs()) do
+		if s.id == id then return s end
+	end
+	return nil
+end
+
+-- The spec group holding a spec (MoP: two talent specs).
+local function SpecGroupFor(slot)
+	local id = tonumber(slot.id)
+	if not id then return nil end
+	local groups = GetNumSpecGroups and GetNumSpecGroups() or 1
+	for g = 1, groups do
+		local i = GetSpecialization(false, false, g)
+		if i and GetSpecializationInfo(i) == id then return g end
+	end
+	return nil
+end
+
+-- Can this character use the entry at all? (retail SlotUsable)
+function QD.SlotUsable(slot)
+	local k = slot and slot.kind
+	if k == "spell" then
+		local id = tonumber(slot.id)
+		return id and (IsSpellKnown(id) or IsSpellKnown(id, true)) and true or false
+	elseif k == "macro" then
+		return GetMacroInfo(slot.name or slot.id) ~= nil
+	elseif k == "mount" then
+		return MountIndex(tonumber(slot.spellID)) ~= nil
+	elseif k == "battlepet" then
+		return PetInfo(slot.guid) ~= nil
+	elseif k == "equipset" or k == "outfit" then
+		return EquipSetIcon(slot.name) ~= nil
+	elseif k == "spec" or k == "dynamicspec" then
+		return SpecGroupFor(slot) ~= nil
+	elseif k == "dynamicrez" then
+		return RezMacroText() ~= nil
+	elseif k == "worldmarker" then
+		local id = tonumber(slot.id)
+		return id == 0 or WORLD_MARKER_ENGINE[id] ~= nil
+	elseif k == "panel" or k == "dynamicprofession" then
+		return false   -- retail-only kinds
+	elseif k == "macrotext" then
+		return type(slot.macrotext) == "string" and not slot.macrotext:find("^/ping")
+	end
+	return true
+end
+
+-- Secure action of an entry: type, attribute key, value, extra.
+-- type "insecure" = fired by Lua after the click (QD.FireInsecure).
+-- Returns nil for entries that fire nothing (nests, unknown kinds).
+function QD.ResolveAction(slot, pa)
+	if type(slot) ~= "table" then return nil end
+	local k = slot.kind
+	if k == "spell" then
+		local name = SpellName(slot.id)
+		if not name then return nil end
+		return "spell", "spell", name
+	elseif k == "item" or k == "toy" then
+		local id = tonumber(slot.id)
+		if not id then return nil end
+		return "item", "item", "item:" .. id
+	elseif k == "macro" then
+		local nameOrIndex = slot.name or slot.id
+		if not nameOrIndex then return nil end
+		return "macro", "macro", nameOrIndex
+	elseif k == "macrotext" then
+		if type(slot.macrotext) ~= "string" or slot.macrotext == "" then return nil end
+		return "macro", "macrotext", slot.macrotext
+	elseif k == "mount" then
+		local name = SpellName(slot.spellID) or slot.name
+		if type(name) ~= "string" or name == "" then return nil end
+		return "spell", "spell", name
+	elseif k == "worldmarker" then
+		local id = tonumber(slot.id)
+		if id == 0 then return "worldmarker", "marker", 0, "clear" end
+		local engine = id and WORLD_MARKER_ENGINE[id]
+		if not engine then return nil end
+		if not pa or pa.worldMarkerToggle ~= false then
+			return "worldmarker", "marker", engine, "toggle"
+		end
+		return "worldmarker", "marker", engine, "set"
+	elseif k == "dynamicrez" then
+		local text = RezMacroText()
+		if not text then return nil end
+		return "macro", "macrotext", text
+	elseif k == "equipset" or k == "outfit" then
+		if type(slot.name) ~= "string" then return nil end
+		return "macro", "macrotext", "/equipset " .. slot.name
+	elseif k == "cycleworldmarker" then
+		return "cycle"
+	elseif k == "battlepet" or k == "spec" or k == "dynamicspec" or k == "randommount"
+		or k == "lastmount" or k == "raidtarget" or k == "clearmarkers" or k == "cycleraidtarget" then
+		return "insecure"
+	end
+	return nil
+end
+
+-- Steps of the cycling world marker (placed one after another).
+function QD.CycleWorldSteps()
+	local out = {}
+	for _, id in ipairs(QD.WORLD_MARKER_ORDER) do
+		out[#out + 1] = WORLD_MARKER_ENGINE[id]
+	end
+	return out
+end
+
+local raidCycle = 0
+local GROUP_UNITS = { "player", "target", "focus", "pet" }
+
+-- Entries with no secure action (retail FireInsecure).
+function QD.FireInsecure(slot)
+	if type(slot) ~= "table" then return end
+	local k = slot.kind
+	if k == "battlepet" then
+		if slot.guid and C_PetJournal and C_PetJournal.SummonPetByGUID then
+			C_PetJournal.SummonPetByGUID(slot.guid)
+		end
+	elseif k == "spec" or k == "dynamicspec" then
+		local g = SpecGroupFor(slot)
+		if g and GetActiveSpecGroup and GetActiveSpecGroup() ~= g then SetActiveSpecGroup(g) end
+	elseif k == "randommount" or k == "lastmount" then
+		if IsMounted() then Dismount() return end
+		local n = GetNumCompanions("MOUNT") or 0
+		if n < 1 then return end
+		local idx = k == "lastmount" and MountIndex(tonumber(P().lastMountSpell)) or nil
+		CallCompanion("MOUNT", idx or random(1, n))
+	elseif k == "raidtarget" then
+		local id = tonumber(slot.id)
+		if id and UnitExists("target") then
+			if id ~= 0 and GetRaidTargetIndex("target") == id then id = 0 end
+			SetRaidTarget("target", id)
+		end
+	elseif k == "cycleraidtarget" then
+		if UnitExists("target") then
+			raidCycle = raidCycle % 8 + 1
+			SetRaidTarget("target", raidCycle)
+		end
+	elseif k == "clearmarkers" then
+		local units = {}
+		for _, u in ipairs(GROUP_UNITS) do units[#units + 1] = u end
+		for i = 1, 4 do units[#units + 1] = "party" .. i end
+		for i = 1, 40 do units[#units + 1] = "raid" .. i end
+		for _, u in ipairs(units) do
+			if UnitExists(u) and GetRaidTargetIndex(u) then SetRaidTarget(u, 0) end
+		end
+	end
+end
+
+-- Icon of an entry.
+function QD.SlotIcon(slot)
+	if type(slot) ~= "table" then return QUESTION_MARK end
+	local k = slot.kind
+	local icon
+	if k == "spell" then
+		icon = GetSpellTexture(tonumber(slot.id) or 0)
+	elseif k == "item" or k == "toy" then
+		icon = GetItemIcon(tonumber(slot.id) or 0)
+	elseif k == "macro" then
+		local _, mIcon = GetMacroInfo(slot.name or slot.id or "")
+		icon = mIcon
+		if icon == QUESTION_MARK or icon == "INTERFACE\\ICONS\\INV_MISC_QUESTIONMARK" then
+			local spell = GetMacroSpell(slot.name or slot.id)
+			if spell then
+				icon = GetSpellTexture(spell) or icon
+			else
+				local _, link = GetMacroItem(slot.name or slot.id)
+				if link then icon = GetItemIcon(link) or icon end
+			end
+		end
+	elseif k == "mount" then
+		icon = GetSpellTexture(tonumber(slot.spellID) or 0)
+	elseif k == "battlepet" then
+		local _, pIcon = PetInfo(slot.guid)
+		icon = pIcon
+	elseif k == "equipset" or k == "outfit" then
+		icon = EquipSetIcon(slot.name)
+	elseif k == "spec" or k == "dynamicspec" then
+		local s = SpecByID(slot.id)
+		icon = s and s.icon
+	elseif k == "worldmarker" or k == "raidtarget" then
+		local id = tonumber(slot.id) or 0
+		icon = id == 0 and CLEAR_ICON or MarkerIcon(id)
+	elseif k == "clearmarkers" then
+		icon = CLEAR_ICON
+	elseif k == "cycleraidtarget" or k == "cycleworldmarker" then
+		icon = "Interface\\TargetingFrame\\UI-RaidTargetingIcons"
+	elseif k == "dynamicrez" then
+		local _, _, t = RezSpells()
+		icon = t and (t[1] and IsSpellKnown(t[1]) and GetSpellTexture(t[1]) or (t[2] and GetSpellTexture(t[2])))
+		icon = icon or "Interface\\Icons\\Spell_Holy_Resurrection"
+	elseif k == "randommount" or k == "lastmount" then
+		icon = "Interface\\Icons\\Ability_Mount_RidingHorse"
+	elseif k == "macrotext" then
+		icon = slot.icon
+	elseif k == "palette" then
+		local child = QD.ChildIndex(slot)
+		local pal = child and P().palettes[child]
+		icon = type(pal) == "table" and pal.icon or nil
+		if not icon and type(pal) == "table" and type(pal.slots) == "table" then
+			local first = pal.slots[1]
+			if first and first.kind ~= "palette" then icon = QD.SlotIcon(first) end
+		end
+		icon = icon or "Interface\\Icons\\INV_Misc_Book_09"
+	end
+	if type(icon) == "number" or type(icon) == "string" then return icon end
+	if type(slot.icon) == "string" or type(slot.icon) == "number" then return slot.icon end
+	return QUESTION_MARK
+end
+
+-- Name of an entry.
+function QD.SlotName(slot)
+	if type(slot) ~= "table" then return "" end
+	local k = slot.kind
+	if k == "spell" then
+		return SpellName(slot.id) or ("Spell " .. tostring(slot.id))
+	elseif k == "item" or k == "toy" then
+		return (GetItemInfo(tonumber(slot.id) or 0)) or slot.name or ("Item " .. tostring(slot.id))
+	elseif k == "macro" then
+		return (GetMacroInfo(slot.name or slot.id or "")) or slot.name or "Macro"
+	elseif k == "mount" then
+		return SpellName(slot.spellID) or slot.name or "Mount"
+	elseif k == "battlepet" then
+		return (PetInfo(slot.guid)) or slot.name or "Battle Pet"
+	elseif k == "equipset" or k == "outfit" then
+		return slot.name or "Equipment Set"
+	elseif k == "spec" or k == "dynamicspec" then
+		local s = SpecByID(slot.id)
+		return s and s.name or "Specialization"
+	elseif k == "worldmarker" then
+		local id = tonumber(slot.id) or 0
+		if id == 0 then return "Clear World Markers" end
+		return (MARKER_NAMES[id] or "?") .. " World Marker"
+	elseif k == "raidtarget" then
+		local id = tonumber(slot.id) or 0
+		if id == 0 then return "Clear Target Marker" end
+		return (MARKER_NAMES[id] or "?") .. " Target Marker"
+	elseif k == "clearmarkers" then
+		return "Clear All Target Markers"
+	elseif k == "cycleraidtarget" then
+		return "Cycle Target Markers"
+	elseif k == "cycleworldmarker" then
+		return "Cycle World Markers"
+	elseif k == "dynamicrez" then
+		return "Resurrect"
+	elseif k == "randommount" then
+		return "Random Mount"
+	elseif k == "lastmount" then
+		return "Last Used Mount"
+	elseif k == "macrotext" then
+		return slot.name or slot.macrotext or "Custom Macro"
+	elseif k == "palette" then
+		local child = QD.ChildIndex(slot)
+		local pal = child and P().palettes[child]
+		return (type(pal) == "table" and pal.name) or (child and QD.AutoPaletteName(child)) or "Action Menu"
+	end
+	return tostring(k)
+end
+
+-- Cooldown start, duration of an entry (nil = none).
+function QD.SlotCooldown(slot)
+	local k = slot and slot.kind
+	if k == "spell" or k == "mount" then
+		local name = SpellName(k == "spell" and slot.id or slot.spellID)
+		if name then return GetSpellCooldown(name) end
+	elseif k == "item" or k == "toy" then
+		return GetItemCooldown(tonumber(slot.id) or 0)
+	end
+	return nil
+end
+
+-- Usable right now? (Dim Unusable Actions)
+function QD.SlotUsableNow(slot)
+	local k = slot and slot.kind
+	if k == "spell" then
+		local name = SpellName(slot.id)
+		return not name or (IsUsableSpell(name)) and true or false
+	elseif k == "item" or k == "toy" then
+		local id = tonumber(slot.id) or 0
+		return (IsUsableItem(id)) and true or false
+	end
+	return true
+end
+
+-- Is a world marker placed? (Show Placed-Marker Pips)
+function QD.SlotMarkerPlaced(slot)
+	if not slot or slot.kind ~= "worldmarker" then return false end
+	local engine = WORLD_MARKER_ENGINE[tonumber(slot.id) or -1]
+	return engine and IsRaidMarkerActive and IsRaidMarkerActive(engine) and true or false
+end
+
+-- The entries this character shows (retail UsableSlots): a view, the saved
+-- slots keep everything for other characters.
+function QD.UsableSlots(index)
+	local palette = QD.EnsurePalette(index)
+	if not palette then return {} end
+	local hide = QD.ACfg(index, "hideUnusable") ~= false
+	local out = {}
+	for _, slot in ipairs(palette.slots) do
+		local keep
+		if slot.kind == "palette" then
+			local child = QD.ChildIndex(slot)
+			keep = child and child ~= index and child <= QD.PaletteCount() and QD.PaletteActive(child)
+		else
+			keep = not hide or QD.SlotUsable(slot)
+		end
+		if keep then out[#out + 1] = slot end
+	end
+	return out
+end
+
+-- Entries of a nested palette (one level, capped at MAX_CHILDREN).
+function QD.ChildSlots(child)
+	local out = {}
+	for _, slot in ipairs(QD.UsableSlots(child)) do
+		if slot.kind ~= "palette" then
+			out[#out + 1] = slot
+			if #out >= QD.MAX_CHILDREN then break end
+		end
+	end
+	return out
+end
+
+-- Entry from what is on the cursor (retail SlotFromCursor).
+function QD.SlotFromCursor()
+	local cursorType, a, b, c = GetCursorInfo()
+	if cursorType == "spell" then
+		-- a = spellbook slot, b = book type, c = spellID (5.4.8)
+		local id = tonumber(c)
+		if not id and a and b then
+			local _, sid = GetSpellBookItemInfo(a, b)
+			id = sid
+		end
+		if id then return { kind = "spell", id = id } end
+	elseif cursorType == "item" then
+		return { kind = "item", id = tonumber(a) }
+	elseif cursorType == "macro" then
+		local name = GetMacroInfo(a)
+		if name then return { kind = "macro", id = a, name = name } end
+	elseif cursorType == "companion" then
+		-- a = index, b = "MOUNT" / "CRITTER"
+		if b == "MOUNT" then
+			local _, name, spellID = GetCompanionInfo("MOUNT", a)
+			if spellID then return { kind = "mount", spellID = spellID, name = name } end
+		end
+	elseif cursorType == "battlepet" then
+		return { kind = "battlepet", guid = a }
+	elseif cursorType == "equipmentset" then
+		return { kind = "equipset", name = a }
+	end
+	return nil
+end
 
 -------------------------------------------------------------------------------
---  Nesting
---
---  A slot of kind "palette" names another palette by index. The palette it
---  names is an ordinary one -- it may carry a keybind as well, or exist purely
---  to be nested.
---
---  ONE level. A claim's ground is measured from the parent entry it hangs off,
---  and a nested entry has no ground of its own for a further claim to be
---  measured from: a palette slot INSIDE a nested palette is drawn but fires
---  nothing.
---
---  A CLAIM's cells only answer at all once the cursor has gone through the
---  claim's own parent entry first, and stop answering once it leaves the
---  claim's ground -- see ArmedClaim, EnsureGates and the two gate frames every
---  claim gets. That is PATH-dependent, so the final cursor position alone is
---  no longer the whole answer: which claim, if any, is armed is state the
---  secure sandbox has to carry across the hold, which is what the gates are
---  for.
+--  Lists for the settings page ("Add Entry" menus)
 -------------------------------------------------------------------------------
-
--- The palette a slot opens, or nil for a slot that fires an action.
-local function ChildIndex(slot)
-    if not slot or slot.kind ~= "palette" then return nil end
-    local idx = tonumber(slot.palette)
-    if not idx or idx < 1 or idx > MAX_PALETTES then return nil end
-    return idx
-end
-ns.ChildIndex = ChildIndex
-
--- Assigned with the usability filter in EUI_Quickdraw_Actions.lua (it needs
--- SpecIndexFor; see SetUsableSlots); ChildSlots reads through it so a nested
--- menu contributes only what this character can use, under the nested
--- palette's OWN setting.
-local UsableSlots
-
--- The reachable entries of a nested palette. Capped rather than refused, so a
--- palette that is also bound to a key keeps all twelve of its slots when it is
--- opened directly and offers what its parent's layout can seat when it is
--- nested -- the caller says how many via cap, and MAX_CHILDREN is the floor
--- every layout can manage. See NestChildCap.
-local function ChildSlots(paletteIndex, cap)
-    local palette = paletteIndex and EnsurePalette(paletteIndex)
-    if not palette then return nil end
-    local slots = UsableSlots(palette, PA(paletteIndex))
-    local out = {}
-    for i = 1, min(cap or MAX_CHILDREN, #slots) do
-        out[i] = slots[i]
-    end
-    return out, palette
-end
-ns.ChildSlots = ChildSlots
-
--- How many entries a nested palette may contribute on palette `parentIndex`,
--- read off the stored profile -- what the editor's tooltip answers with, and
--- what the live views answer too, their layout following the same profile.
---
--- Every layout but one seats a nested palette WHOLE. A lane runs along a
--- block's perimeter, a strip's row spreads as wide as it needs to, and an arc
--- claim rings its children and adds a ring as they crowd -- all three have
--- ground of their own to grow into. The halo does not: it is eight fixed
--- positions around one cell, and there is no ninth to put a child in.
-local function NestChildCap(parentIndex)
-    local p = PA(parentIndex)
-    local layout = (p and p.layout) or "ARC"
-    if layout == "GRID" and p and p.gridNestStyle == "HALO" then
-        return MAX_CHILDREN
-    end
-    return MAX_SLOTS
-end
-ns.NestChildCap = NestChildCap
-
--- May `child` be nested inside `parent`? No for a palette inside itself, and no
--- for any chain that would close a loop -- A holding B holding A. Checked when
--- the slot is CREATED rather than when it is walked: a stored cycle would send
--- every push and every draw of that palette round until the client gave out.
-function ns.CanNest(parentIndex, childIndex)
-    if not parentIndex or not childIndex then return false end
-    if parentIndex == childIndex then return false end
-
-    -- Walk down from the candidate child. Reaching the parent means the parent
-    -- already sits somewhere below it, so nesting it would close the loop. The
-    -- seen set also bounds the walk over data that is ALREADY cyclic, which a
-    -- profile edited by hand or carried over from an older build may be.
-    local seen, stack = { [childIndex] = true }, { childIndex }
-    while #stack > 0 do
-        local idx = tremove(stack)
-        if idx == parentIndex then return false end
-        local palette = EnsurePalette(idx)
-        for i = 1, (palette and #palette.slots or 0) do
-            local c = ChildIndex(palette.slots[i])
-            if c and not seen[c] then
-                seen[c] = true
-                stack[#stack + 1] = c
-            end
-        end
-    end
-    return true
+local function Entry(slot)
+	return { slot = slot, name = QD.SlotName(slot), icon = QD.SlotIcon(slot) }
 end
 
--------------------------------------------------------------------------------
---  Spec assignment ("Assign to Spec") and shared keys
---
---  palette.specs is a set of retail spec IDs ({ [specID] = true }); none (nil
---  or empty) is every spec. A palette LOADS -- its key opens it, and it shows
---  where it is nested -- only while the player counts as one of its specs
---  (EllesmereUI.IsPlayerSpec: on WoW Forever any spec of the class).
---
---  palette.keyShare is the index of the palette whose key this one shares.
---  WoW's binding system holds one action per key, so a shared key stays on its
---  holder's EUI_RADIAL binding, and the override bindings send it to whichever
---  of the two loads (see KeyTarget in EUI_Quickdraw_Runtime.lua). The options
---  page makes a share only between palettes that can never load together.
--------------------------------------------------------------------------------
--- A palette's spec set, or nil for every spec.
-function ns.PaletteSpecs(index)
-    local p = P()
-    local palette = p and index and p.palettes and p.palettes[index]
-    local specs = type(palette) == "table" and palette.specs
-    if type(specs) ~= "table" or next(specs) == nil then return nil end
-    return specs
+function QD.SpellEntries()
+	local out, seen = {}, {}
+	local tabs = GetNumSpellTabs() or 0
+	for t = 1, tabs do
+		local _, _, offset, numSpells = GetSpellTabInfo(t)
+		for i = (offset or 0) + 1, (offset or 0) + (numSpells or 0) do
+			local kind, id = GetSpellBookItemInfo(i, "spell")
+			if kind == "SPELL" and id and not seen[id] and not IsPassiveSpell(i, "spell") then
+				seen[id] = true
+				out[#out + 1] = Entry({ kind = "spell", id = id })
+			end
+		end
+	end
+	return out
 end
 
-function ns.PaletteActive(index)
-    local specs = ns.PaletteSpecs(index)
-    if not specs then return true end
-    for id in pairs(specs) do
-        if EllesmereUI.IsPlayerSpec(id) then return true end
-    end
-    return false
+function QD.MountEntries()
+	local out = {}
+	out[#out + 1] = Entry({ kind = "randommount" })
+	out[#out + 1] = Entry({ kind = "lastmount" })
+	local list = {}
+	for i = 1, (GetNumCompanions("MOUNT") or 0) do
+		local _, name, spellID = GetCompanionInfo("MOUNT", i)
+		if spellID then list[#list + 1] = Entry({ kind = "mount", spellID = spellID, name = name }) end
+	end
+	table.sort(list, function(a, b) return tostring(a.name) < tostring(b.name) end)
+	for _, e in ipairs(list) do out[#out + 1] = e end
+	return out
 end
 
--- Can palettes a and b never load at the same time? Only when both name specs
--- and none could load both: on retail no spec in both sets, on WoW Forever no
--- class in both (the player counts as every spec of the class there).
-function ns.PalettesExclusive(a, b)
-    local sa, sb = ns.PaletteSpecs(a), ns.PaletteSpecs(b)
-    if not sa or not sb then return false end
-    if EllesmereUI.IS_FOREVER then
-        for ida in pairs(sa) do
-            local cls = EllesmereUI.SpecClassOf(ida)
-            if cls then
-                for idb in pairs(sb) do
-                    if EllesmereUI.SpecClassOf(idb) == cls then return false end
-                end
-            end
-        end
-        return true
-    end
-    for id in pairs(sa) do
-        if sb[id] then return false end
-    end
-    return true
+function QD.ItemEntries()
+	local out, seen = {}, {}
+	for slotID = 1, 19 do
+		local id = GetInventoryItemID("player", slotID)
+		if id and not seen[id] and GetItemSpell(id) then
+			seen[id] = true
+			out[#out + 1] = Entry({ kind = "item", id = id })
+		end
+	end
+	for bag = 0, 4 do
+		for s = 1, (GetContainerNumSlots(bag) or 0) do
+			local id = GetContainerItemID(bag, s)
+			if id and not seen[id] and GetItemSpell(id) then
+				seen[id] = true
+				out[#out + 1] = Entry({ kind = "item", id = id })
+			end
+		end
+	end
+	return out
 end
 
--- The palette whose key palette `index` shares, or nil for its own. A share
--- always names the key's holder, never another palette sharing it.
-function ns.ShareOwner(index)
-    local p = P()
-    local palettes = p and p.palettes
-    local palette = palettes and palettes[index]
-    local owner = type(palette) == "table" and tonumber(palette.keyShare)
-    if not owner or owner == index or owner < 1 or owner > PaletteCount() then return nil end
-    local held = palettes[owner]
-    if type(held) == "table" and held.keyShare ~= nil then return nil end
-    return owner
+function QD.MacroEntries()
+	local out = {}
+	local global, perChar = GetNumMacros()
+	local function add(i)
+		local name = GetMacroInfo(i)
+		if name then out[#out + 1] = Entry({ kind = "macro", id = i, name = name }) end
+	end
+	for i = 1, global or 0 do add(i) end
+	local first = (MAX_ACCOUNT_MACROS or 36) + 1
+	for i = first, first + (perChar or 0) - 1 do add(i) end
+	return out
 end
 
--- p is the palette view the caller draws from (self:P()) -- the color keys
--- are per-menu appearance. Falls back to the profile for a caller with none.
-local function SelectColor(p)
-    p = p or P()
-    if p and p.useClassColor then
-        local c = RAID_CLASS_COLORS and RAID_CLASS_COLORS[select(2, UnitClass("player"))]
-        if c then return c.r, c.g, c.b end
-    end
-    -- Accent unless a custom color has been chosen: the suite accent is the
-    -- default, resolved live so theme and accent changes carry straight
-    -- through.
-    if not (p and p.selectColorCustom) and EllesmereUI.ResolveActiveAccent then
-        return EllesmereUI.ResolveActiveAccent()
-    end
-    local sc = p and p.selectColor
-    if sc then return sc[1] or 1, sc[2] or 1, sc[3] or 1 end
-    return 0.047, 0.824, 0.624
+function QD.PetEntries()
+	local out = {}
+	if not (C_PetJournal and C_PetJournal.GetNumPets and C_PetJournal.GetPetInfoByIndex) then return out end
+	local ok, total = pcall(C_PetJournal.GetNumPets, false)
+	if not ok then ok, total = pcall(C_PetJournal.GetNumPets) end
+	for i = 1, (ok and tonumber(total) or 0) do
+		local ok2, petID, _, owned = pcall(C_PetJournal.GetPetInfoByIndex, i, false)
+		if ok2 and petID and owned then out[#out + 1] = Entry({ kind = "battlepet", guid = petID }) end
+	end
+	return out
 end
-ns.SelectColor = SelectColor
-ns.MAX_SLOTS = MAX_SLOTS
-ns.REGION_MAX = REGION_MAX
-ns.MAX_PALETTES = MAX_PALETTES
-ns.MAX_CHILDREN = MAX_CHILDREN
 
--- Main-chunk locals the EUI_Quickdraw_*.lua files re-import by name.
--- dbSetters and the three lists beside it: every file that reads one of
--- these keeps its own copy and adds a setter here; the one place that
--- assigns it writes through SetDB, SetLiveView, SetScrollCatcher or
--- SetCancelButton, which runs them all.
--- SetUsableSlots: EUI_Quickdraw_Actions.lua assigns the forward declaration.
--- broken: true while an EUI_Quickdraw_*.lua file loads; a file that fails
--- leaves it set, and the files behind it return at their first lines.
-ns._qdInternals = {
-    BINDING_PREFIX = BINDING_PREFIX, ChildIndex = ChildIndex, ChildSlots = ChildSlots,
-    DB_DEFAULTS = DB_DEFAULTS, EnsurePalette = EnsurePalette, EQD = EQD,
-    LIVE_STRATA = LIVE_STRATA, liveFrame = liveFrame, MAX_CHILD_ROWS = MAX_CHILD_ROWS,
-    MAX_CHILDREN = MAX_CHILDREN, MAX_LATTICE = MAX_LATTICE, MAX_PALETTES = MAX_PALETTES,
-    MAX_SLOTS = MAX_SLOTS, MigrateActiveProfile = MigrateActiveProfile,
-    MigrateLegacyProfile = MigrateLegacyProfile, NEST_BAND_DEFAULT = NEST_BAND_DEFAULT, P = P,
-    PA = PA, PaletteCount = PaletteCount, QUESTION_MARK = QUESTION_MARK,
-    ReadPalette = ReadPalette, REGION_MAX = REGION_MAX, SelectColor = SelectColor,
-    TWO_PI = TWO_PI,
-    dbSetters = { function(v) db = v end },
-    liveViewSetters = {},
-    scrollCatcherSetters = {},
-    cancelButtonSetters = {},
-    SetUsableSlots = function(f) UsableSlots = f end,
-    broken = false,
+function QD.EquipSetEntries()
+	local out = {}
+	for i = 1, (GetNumEquipmentSets and GetNumEquipmentSets() or 0) do
+		local name = GetEquipmentSetInfo(i)
+		if name then out[#out + 1] = Entry({ kind = "equipset", name = name }) end
+	end
+	return out
+end
+
+function QD.SpecEntries()
+	local out = {}
+	for _, s in ipairs(QD.ClassSpecs()) do
+		out[#out + 1] = Entry({ kind = "spec", id = s.id })
+	end
+	return out
+end
+
+function QD.TargetMarkerEntries()
+	local out = {}
+	for id = 1, 8 do out[#out + 1] = Entry({ kind = "raidtarget", id = id }) end
+	out[#out + 1] = Entry({ kind = "raidtarget", id = 0 })
+	out[#out + 1] = Entry({ kind = "cycleraidtarget" })
+	out[#out + 1] = Entry({ kind = "clearmarkers" })
+	return out
+end
+
+function QD.WorldMarkerEntries()
+	local out = {}
+	for _, id in ipairs(QD.WORLD_MARKER_ORDER) do out[#out + 1] = Entry({ kind = "worldmarker", id = id }) end
+	out[#out + 1] = Entry({ kind = "worldmarker", id = 0 })
+	out[#out + 1] = Entry({ kind = "cycleworldmarker" })
+	return out
+end
+
+-- Emotes (macro text entries).
+local EMOTES = {
+	{ "Dance", "/dance", "Interface\\Icons\\INV_Misc_Toy_07" },
+	{ "Wave", "/wave", "Interface\\Icons\\Ability_Warrior_RallyingCry" },
+	{ "Cheer", "/cheer", "Interface\\Icons\\Achievement_GuildPerk_EverybodysFriend" },
+	{ "Laugh", "/lol", "Interface\\Icons\\INV_Misc_Bomb_04" },
+	{ "Thank", "/thank", "Interface\\Icons\\INV_ValentinesCard02" },
+	{ "Bow", "/bow", "Interface\\Icons\\Ability_Warrior_BattleShout" },
+	{ "Sit", "/sit", "Interface\\Icons\\Spell_Nature_Sleep" },
+	{ "Sleep", "/sleep", "Interface\\Icons\\Spell_Nature_Sleep" },
+	{ "Kneel", "/kneel", "Interface\\Icons\\Spell_Holy_Restoration" },
+	{ "Roar", "/roar", "Interface\\Icons\\Ability_Druid_ChallangingRoar" },
+	{ "Flex", "/flex", "Interface\\Icons\\Ability_Warrior_Revenge" },
+	{ "Train", "/train", "Interface\\Icons\\INV_Misc_Toy_05" },
 }
--- Set<Name> hands a new value to every copy registered in <name>Setters.
-for setter, listName in pairs({ SetDB = "dbSetters", SetLiveView = "liveViewSetters",
-        SetScrollCatcher = "scrollCatcherSetters", SetCancelButton = "cancelButtonSetters" }) do
-    local list = ns._qdInternals[listName]
-    ns._qdInternals[setter] = function(v)
-        for i = 1, #list do list[i](v) end
-    end
+function QD.EmoteEntries()
+	local out = {}
+	for _, e in ipairs(EMOTES) do
+		out[#out + 1] = Entry({ kind = "macrotext", macrotext = e[2], name = e[1], icon = e[3] })
+	end
+	return out
 end
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._qdInternals, { __index = function(_, k)
-    error("ns._qdInternals has no entry " .. tostring(k), 2)
-end })
+
+function QD.OtherEntries()
+	local out = {}
+	if RezMacroText() then out[#out + 1] = Entry({ kind = "dynamicrez" }) end
+	return out
+end
+
+function QD.PaletteEntries(editing)
+	local out = {}
+	for i = 1, QD.PaletteCount() do
+		if i ~= editing then out[#out + 1] = Entry({ kind = "palette", palette = i }) end
+	end
+	return out
+end
+
+-------------------------------------------------------------------------------
+--  Key bindings (retail: WoW binding EUI_RADIAL<n>, routed to the menu's
+--  secure button by an override binding)
+-------------------------------------------------------------------------------
+function QD.GetKey(index)
+	return GetBindingKey(QD.BINDING_PREFIX .. index)
+end
+
+-- All menu keys as one string (to tell a real key change from our own
+-- override bindings firing UPDATE_BINDINGS).
+function QD.KeySignature()
+	local parts = {}
+	for i = 1, QD.MAX_PALETTES do
+		local k1, k2 = GetBindingKey(QD.BINDING_PREFIX .. i)
+		parts[#parts + 1] = tostring(k1) .. "," .. tostring(k2)
+	end
+	return table.concat(parts, ";")
+end
+
+function QD.SetKey(index, key)
+	if InCombatLockdown() then return false end
+	local action = QD.BINDING_PREFIX .. index
+	local k1, k2 = GetBindingKey(action)
+	if k1 then SetBinding(k1) end
+	if k2 then SetBinding(k2) end
+	if key and key ~= "" then SetBinding(key, action) end
+	SaveBindings(GetCurrentBindingSet())
+	if QD.Apply then QD.Apply() end
+	return true
+end
+
+-------------------------------------------------------------------------------
+--  Timers / combat queue (5.4.8 has no C_Timer)
+-------------------------------------------------------------------------------
+local afterCombat = {}
+local combatFrame = CreateFrame("Frame")
+combatFrame:SetScript("OnEvent", function(self)
+	self:UnregisterEvent("PLAYER_REGEN_ENABLED")
+	local list = afterCombat
+	afterCombat = {}
+	for _, fn in pairs(list) do
+		local ok, err = pcall(fn)
+		if not ok then geterrorhandler()(err) end
+	end
+end)
+
+-- Runs fn now, or once after combat (one pending call per key).
+function QD.AfterCombat(key, fn)
+	if not InCombatLockdown() then
+		fn()
+		return
+	end
+	afterCombat[key] = fn
+	combatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+end
+
+-------------------------------------------------------------------------------
+--  Retail profile import (EllesmereUI.ProfileRetail.CONVERT)
+-------------------------------------------------------------------------------
+local function ConvertRetail(blob, notes)
+	local out = CopyTable(type(blob) == "table" and blob or {})
+	out._seeded = 1
+	local dropped = 0
+	if type(out.palettes) == "table" then
+		for _, palette in pairs(out.palettes) do
+			if type(palette) == "table" and type(palette.slots) == "table" then
+				local keep = {}
+				for _, slot in ipairs(palette.slots) do
+					if type(slot) == "table" then
+						if slot.kind == "toy" then slot.kind = "item" end
+						if slot.kind == "mount" and slot.id and not slot.spellID then
+							dropped = dropped + 1
+						elseif slot.kind == "panel" or slot.kind == "dynamicprofession" then
+							dropped = dropped + 1
+						else
+							keep[#keep + 1] = slot
+						end
+					end
+				end
+				palette.slots = keep
+			end
+		end
+	end
+	if dropped > 0 and type(notes) == "table" then
+		notes[#notes + 1] = "Quickdraw: " .. dropped .. " entries have no 5.4.8 version and were left out."
+	end
+	return out
+end
+if ns.ProfileRetail and ns.ProfileRetail.CONVERT then
+	ns.ProfileRetail.CONVERT[addonName] = ConvertRetail
+end
+QD.ConvertRetail = ConvertRetail
+
+-- First login: the user's retail values (profile "Naowh": one empty action
+-- menu, module off = retail defaults).
+local function Seed(t)
+	t._seeded = 1
+end
+
+function QD.Reset()
+	local t = P()
+	wipe(t)
+	P()
+	Seed(t)
+	if QD.Apply then QD.Apply() end
+end
+
+-------------------------------------------------------------------------------
+--  Boot and events
+-------------------------------------------------------------------------------
+ns.applyHooks = ns.applyHooks or {}
+tinsert(ns.applyHooks, function()
+	if db and QD.Apply then QD.Apply() end
+end)
+
+local function TrackLastMount()
+	if not IsMounted() then return end
+	for i = 1, (GetNumCompanions("MOUNT") or 0) do
+		local _, _, spellID, _, summoned = GetCompanionInfo("MOUNT", i)
+		if summoned then P().lastMountSpell = spellID return end
+	end
+end
+
+local boot = CreateFrame("Frame")
+boot:RegisterEvent("ADDON_LOADED")
+boot:RegisterEvent("PLAYER_LOGIN")
+boot:SetScript("OnEvent", function(self, event, arg1)
+	if event == "ADDON_LOADED" then
+		if arg1 == addonName then
+			self:UnregisterEvent("ADDON_LOADED")
+			local t = P()
+			if t._seeded ~= 1 then Seed(t) end
+		end
+		return
+	end
+	if event == "PLAYER_LOGIN" then
+		for _, e in ipairs({ "UPDATE_BINDINGS", "SPELLS_CHANGED", "UPDATE_MACROS", "COMPANION_LEARNED",
+			"PLAYER_SPECIALIZATION_CHANGED", "ACTIVE_TALENT_GROUP_CHANGED", "EQUIPMENT_SETS_CHANGED",
+			"BAG_UPDATE_DELAYED", "PLAYER_ENTERING_WORLD", "COMPANION_UPDATE" }) do
+			self:RegisterEvent(e)
+		end
+	end
+	if event == "COMPANION_UPDATE" then
+		TrackLastMount()
+		return
+	end
+	if not db then return end
+	if event == "UPDATE_BINDINGS" then
+		-- override bindings (ours too) fire this: only react to a changed key
+		if QD.KeySignature() == QD.appliedKeys then return end
+	end
+	if event == "PLAYER_LOGIN" then
+		if QD.Apply then QD.Apply() end
+	elseif QD.RequestApply then
+		QD.RequestApply()
+	end
+end)
+
+-- /eqd, /quickdraw (retail): open the Quickdraw settings.
+SLASH_EUIQUICKDRAW1 = "/eqd"
+SLASH_EUIQUICKDRAW2 = "/quickdraw"
+SlashCmdList.EUIQUICKDRAW = function()
+	if InCombatLockdown() then
+		print("Cannot open options in combat")
+		return
+	end
+	if ns.LoadOptions() and ns.OpenSettingsModule then ns.OpenSettingsModule("quickdraw") end
+end

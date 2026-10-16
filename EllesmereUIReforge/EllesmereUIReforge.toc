@@ -1,0 +1,20 @@
+## Interface: 50400
+## Title: |cff0cd29fEllesmereUI|r Reforge
+## Notes: Calculates the best reforge for your stat weights and caps (ReforgeLite 1.38 by d07.RiV, in the EllesmereUI style). /reforge
+## Author: d07.RiV (ReforgeLite), EllesmereUI port
+## Version: 3.4.0
+## Dependencies: EllesmereUI
+## OptionalDeps: Pawn
+## SavedVariables: EllesmereUIReforgeDB
+
+# ReforgeLite data and math (globals renamed to EUIReforge*)
+Localization.lua
+Scaling.lua
+# EllesmereUI style widgets and windows
+GUI.lua
+# Main window, output window, events, /reforge
+EllesmereUIReforge.lua
+ReforgeEngine.lua
+Parsers.lua
+Presets.lua
+TaskUI.lua

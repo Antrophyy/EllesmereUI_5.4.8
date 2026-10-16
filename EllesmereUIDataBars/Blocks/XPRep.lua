@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIDataBars_Compat.lua
 -- Blocks\XPRep.lua
 -- XP / reputation bar block factory.
 
@@ -192,7 +192,22 @@ ns.BlockFactories.xprep = function(blockCfg, slot, content, barCtx)
         -- friendship API carries the real rank window -- same handling as the
         -- Action Bars RepBar. Checked before renown, matching that code path.
         local isFriendship = false
-        if factionID and C_GossipInfo and C_GossipInfo.GetFriendshipReputation then
+        -- 5.4.8 port: GetFriendshipReputation (Tillers, Nat Pagle, ...) returns
+        -- friendID, rep, maxRep, name, text, texture, level, threshold, nextThreshold.
+        if factionID and GetFriendshipReputation then
+            local friendID, friendRep, _, _, _, _, _, friendThreshold, nextFriendThreshold = GetFriendshipReputation(factionID)
+            if friendID and friendID > 0 then
+                isFriendship = true
+                minV = friendThreshold or 0
+                curV = friendRep or minV
+                if nextFriendThreshold and nextFriendThreshold > minV then
+                    maxV = nextFriendThreshold
+                else
+                    minV, maxV, curV = 0, 1, 1
+                end
+            end
+        end
+        if not isFriendship and factionID and C_GossipInfo and C_GossipInfo.GetFriendshipReputation then
             local fi = C_GossipInfo.GetFriendshipReputation(factionID)
             if fi and fi.friendshipFactionID and fi.friendshipFactionID > 0 then
                 isFriendship = true
@@ -318,7 +333,7 @@ ns.BlockFactories.xprep = function(blockCfg, slot, content, barCtx)
             barTrack:ClearAllPoints()
             barTrack:SetPoint("CENTER", content, "CENTER", 0, 0)
             barTrack:SetSize(width, height)
-            barTrack:SetColorTexture(1, 1, 1, 0.1)
+            barTrack:SetTexture(1, 1, 1, 0.1)
             bar:ClearAllPoints()
             bar:SetAllPoints(barTrack)
             restBar:ClearAllPoints(); restBar:SetAllPoints(bar)
@@ -338,7 +353,7 @@ ns.BlockFactories.xprep = function(blockCfg, slot, content, barCtx)
             barTrack:ClearAllPoints()
             barTrack:SetPoint("TOP", content, "TOP", 0, -(3 + textH + 3))
             barTrack:SetSize(innerW, bH)
-            barTrack:SetColorTexture(1, 1, 1, 0.1)
+            barTrack:SetTexture(1, 1, 1, 0.1)
             bar:ClearAllPoints()
             bar:SetSize(innerW, bH)
             bar:SetPoint("TOP", content, "TOP", 0, -(3 + textH + 3))
@@ -383,7 +398,7 @@ ns.BlockFactories.xprep = function(blockCfg, slot, content, barCtx)
             barTrack:ClearAllPoints()
             barTrack:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -(pad + textH + 2))
             barTrack:SetSize(barW, bH)
-            barTrack:SetColorTexture(1, 1, 1, 0.1)
+            barTrack:SetTexture(1, 1, 1, 0.1)
             bar:ClearAllPoints(); bar:SetSize(barW, bH)
             bar:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -(pad + textH + 2))
             restBar:ClearAllPoints(); restBar:SetAllPoints(bar)

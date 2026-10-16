@@ -1,0 +1,14 @@
+## Interface: 50400
+## Title: |cff0cd29fEllesmereUI|r Top Bar
+## Notes: Top bar: friends, guild, clock, hearthstone and Challenge Mode portals, FPS / MS readout, plus the NaowhUI QoL features (death release guard, spell alerts, co-tank frame, stealth / stance reminders). 5.4.8 port of NaowhUI.
+## Author: EllesmereUI port
+## Version: 3.15.0
+## Dependencies: EllesmereUI
+## OptionalDeps: ElvUI
+## SavedVariables: EllesmereUITopBarDB
+
+EllesmereUITopBar.lua
+EllesmereUITopBar_Portals.lua
+EllesmereUITopBar_QoL.lua
+EllesmereUITopBar_QoL_CoTank.lua
+EllesmereUITopBar_QoL_Stealth.lua

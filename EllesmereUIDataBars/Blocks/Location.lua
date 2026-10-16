@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIDataBars_Compat.lua
 -- Blocks\Location.lua
 -- Location and coordinates block factories.
 
@@ -94,16 +94,10 @@ local function LocCoordText(precision)
     return format(COORD_FMT[precision] or COORD_FMT[0], x, y)
 end
 
+-- 5.4.8 port: the continent of the player's map (Compat ns.ContinentName)
+-- instead of the retail C_Map parent walk.
 local function LocContinentName()
-    if not (C_Map and C_Map.GetBestMapForUnit) then return nil end
-    local mapID = C_Map.GetBestMapForUnit("player")
-    while mapID and mapID ~= 0 do
-        local info = C_Map.GetMapInfo(mapID)
-        if not info then return nil end
-        if info.mapType == CONTINENT_MAP_TYPE then return info.name end
-        mapID = info.parentMapID
-    end
-    return nil
+    return ns.ContinentName and ns.ContinentName() or nil
 end
 
 -- Status label. COLOR comes from ZoneReactionColor so the tooltip status line and the block's Dynamic text mode agree; labels are localized Blizz globals.
@@ -208,10 +202,19 @@ local function MakeLocationBlock(blockCfg, slot, content, barCtx, opts)
     -- (same mechanism as the micro menu block). Created lazily, never in lockdown (secure
     -- frames can't be configured there) -- until built the block displays/tooltips but can't
     -- click; PLAYER_REGEN_ENABLED drives Refresh's retry so a block built mid-fight becomes clickable once combat ends.
+    -- 5.4.8 port: the 5.4.8 quest log micro button does not open the map, and
+    -- the world map toggles from addon code like its key binding does
+    -- (ToggleFrame(WorldMapFrame)), so the block clicks the map itself and no
+    -- secure overlay is built.
     local clickBtn
+    frame:SetScript("OnClick", function(_, button)
+        if button ~= "LeftButton" then return end
+        if ToggleWorldMap then ToggleWorldMap()
+        elseif WorldMapFrame then ToggleFrame(WorldMapFrame) end
+    end)
     local function EnsureClickButton()
         if clickBtn or InCombatLockdown() then return clickBtn end
-        local micro = _G.QuestLogMicroButton
+        local micro = nil
         if not micro then return nil end
         clickBtn = CreateFrame("Button", "EWB_LOC_" .. inst.key, frame,
             "SecureActionButtonTemplate,SecureHandlerStateTemplate")

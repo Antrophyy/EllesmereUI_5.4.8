@@ -1,29 +1,20 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Quality of Life
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
 ## Notes: Lightweight quality of life tools and enhancements.
-## Author: Ellesmere
-## Version: 9.5.5
+## Author: EllesmereUI port
+## Version: 3.18.0
 ## Dependencies: EllesmereUI
+## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ExRT, ElvUI, Details, DBM-Core, WeakAuras, VuhDo, BonusRollConfirm
 ## SavedVariables: EllesmereUIQoLDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
-# Main Luas
-EllesmereUIQoL_ForeverStats.lua
 EllesmereUIQoL.lua
+EllesmereUIQoL_Extras.lua
+EllesmereUIQoL_SelfCombatText.lua
 EllesmereUIQoL_Cursor.lua
-EllesmereUIQoL_BattleRes.lua
-EllesmereUIQoL_Bloodlust.lua
-EllesmereUIQoL_AutoLogging.lua
-EllesmereUIQoL_Keys.lua
-EllesmereUIQoL_TeleportPrompt.lua
-EllesmereUIQoL_Waypoint.lua
 EllesmereUIQoL_Shifter.lua
 EllesmereUIQoL_MovementAlert.lua
 EllesmereUIQoL_RaidTools.lua
-EllesmereUIQoL_SelfCombatText.lua
-EllesmereUIQoL_Alerts.lua
-EUI_UpgradeCalc.lua
-
-# Options
+EllesmereUIQoL_AutoLogging.lua
+EllesmereUIQoL_BattleRes.lua
+EllesmereUIQoL_Bloodlust.lua
+EllesmereUIQoL_MacroFactory.lua

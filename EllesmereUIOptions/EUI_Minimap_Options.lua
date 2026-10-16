@@ -1,1919 +1,596 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
--------------------------------------------------------------------------------
---  EUI_Minimap_Options.lua
---  Registers the Minimap module with EllesmereUI.
---  All get/set calls go through the global bridge to the addon's DB profile.
--------------------------------------------------------------------------------
-local ADDON_NAME = "EllesmereUIMinimap"
-local ns = EllesmereUI._ModuleNS[ADDON_NAME]  -- module namespace (published by the module at its load)
-if not ns then return end  -- module disabled: no options page
-
-local PAGE_CHAT          = "Chat"
-local PAGE_MINIMAP       = "Minimap"
-local PAGE_FRIENDS       = "Friends"
-local PAGE_QUEST_TRACKER = "Quest Tracker"
-local PAGE_CURSOR        = "Cursor"
-local PAGE_DMG_METERS    = "Damage Meters"
-
-local SECTION_CHAT    = "CHAT"
-local SECTION_MINIMAP = "DISPLAY"
-
-local initFrame = CreateFrame("Frame")
-initFrame:RegisterEvent("PLAYER_LOGIN")
-initFrame:SetScript("OnEvent", function(self)
-    self:UnregisterEvent("PLAYER_LOGIN")
-
-    if not EllesmereUI or not EllesmereUI.RegisterModule then return end
-
-    ---------------------------------------------------------------------------
-    --  DB helpers
-    ---------------------------------------------------------------------------
-    local db
-
-    C_Timer.After(0, function()
-        db = _G._EMM_DB
-    end)
-
-    local function DB()
-        if not db then db = _G._EMM_DB end
-        return db and db.profile
-    end
-
-    local function ChatDB()
-        local p = DB()
-        return p and p.chat
-    end
-
-    local function MinimapDB()
-        local p = DB()
-        return p and p.minimap
-    end
-
-    -- Square and Rectangular share the rect layout/border engine (not the circle wrap).
-    -- The WoW Forever look's Forever Square is the square map whatever Shape is stored.
-    local function ShapeUsesRectLayout()
-        if ns.MinimapFvSquare() then return true end
-        local m = MinimapDB()
-        local s = m and m.shape or "square"
-        return s == "square" or s == "rectangular"
-    end
-
-    local function FriendsDB()
-        local p = DB()
-        return p and p.friends
-    end
-
-    ---------------------------------------------------------------------------
-    --  Refresh helpers
-    ---------------------------------------------------------------------------
-    local function RefreshChat()
-        if _G._EBS_ApplyChat then _G._EBS_ApplyChat() end
-    end
-
-    local function RefreshMinimap()
-        if _G._EMM_ApplyMinimap then _G._EMM_ApplyMinimap() end
-    end
-
-    local function FullRebuildMinimap()
-        if _G._EMM_FullRebuildMinimap then _G._EMM_FullRebuildMinimap()
-        else RefreshMinimap() end
-    end
-
-    local function RefreshFriends()
-        if _G._EBS_ApplyFriends then _G._EBS_ApplyFriends() end
-    end
-
-    local function RefreshAll()
-        if _G._EBS_ApplyAll then _G._EBS_ApplyAll() end
-    end
-
-    ---------------------------------------------------------------------------
-    --  Visibility row builder (reused across all pages)
-    ---------------------------------------------------------------------------
-    local PP = EllesmereUI.PP
-    -- One control for both halves (see EllesmereUI.BuildVisibilityRow): the mode axes
-    -- and the option axes are Show/Hide lanes of the same list now. Storage is
-    -- unchanged, so nothing else in this module had to move. The right DualRow slot
-    -- the old Visibility Options dropdown occupied is free.
-    local function BuildVisibilityRow(W, parent, y, getCfg, refreshFn, rightCfg)
-        local visRow, visH = EllesmereUI.BuildVisibilityRow(W, parent, y,
-            { getStore = getCfg, legacyKey = "visibility",
-              caps = { partyIncludesRaid = false, luaDragonriding = true },
-              onChanged = function()
-                  if refreshFn then refreshFn() end
-                  if _G._EBS_UpdateVisibility then _G._EBS_UpdateVisibility() end
-              end,
-              -- Option axes only need the dispatcher pass; the page rebuild is
-              -- deferred to menu close by the row itself.
-              onOptionChanged = function()
-                  if _G._EBS_UpdateVisibility then _G._EBS_UpdateVisibility() end
-              end }, rightCfg)
-        return visH, visRow
-    end
-
-    ---------------------------------------------------------------------------
-    --  Chat Page
-    ---------------------------------------------------------------------------
-
-    ---------------------------------------------------------------------------
-    --  Minimap Page
-    ---------------------------------------------------------------------------
-    -- The Size slider's drag cover: our own texture on the map, built on the
-    -- first drag and kept here (never as a key on Blizzard's frame).
-    local sizeDragOverlay
-
-    local function BuildMinimapPage(pageName, parent, yOffset)
-        local W = EllesmereUI.Widgets
-        local y = yOffset
-        local _, h
-
-        parent._showRowDivider = true
-        EllesmereUI:ClearContentHeader()
-
-        _, h = W:SectionHeader(parent, SECTION_MINIMAP, y);  y = y - h
-        y = EllesmereUI.BlizzStyle.Note(parent, y, "minimap")
-
-        -- A square frame on the Forever client (the WoW Forever look's Forever
-        -- Square, or Blizzard Style's Square in the slim line): the map renders
-        -- the EllesmereUI look's layout in that frame, so the rows that lay that
-        -- look out stay live (Gate, BlockInline); the shape and border rows wait
-        -- for the EllesmereUI look under every stock look (BlizzStyle.Gate).
-        -- Latched for the session, like the look.
-        local fvSquare = ns.MinimapFvSquare()
-        local function Gate(cfg)
-            if fvSquare then return cfg end
-            return EllesmereUI.BlizzStyle.Gate("minimap", cfg)
-        end
-        local function BlockInline(widget)
-            if not fvSquare then EllesmereUI.BlizzStyle.BlockInline("minimap", widget) end
-        end
-
-        -- Row 1: Visibility | Shape. On the WoW Forever look its Border Style
-        -- takes the slot, as the shape is part of it: Forever Circle ("circle"),
-        -- the variant's round map in Blizzard's Forever ring, or Forever Square
-        -- (the default there),
-        -- the EllesmereUI look's square map in the bronze frame of Forever's
-        -- own windows. Blizzard Style on the Forever client has its own (below).
-        -- The two render different layouts and latch with the look, so a change
-        -- asks for a reload. A changed pick also moves the clock to that border's
-        -- spot (BorderClock), the one the Style page's seed gives a first visit.
-        -- Square: inside the map at its bottom, no offset (the title bar holds
-        -- the zone name). Circle: at its top, 10px down.
-        local function BorderClock(m, square)
-            if square then
-                m.clockPosition, m.clockOffsetY = "bottom", 0
-            else
-                m.clockPosition, m.clockOffsetY = "top", -10
-            end
-        end
-        local shapeCfg
-        if EllesmereUI.BlizzStyle.Forever("minimap") then
-            shapeCfg = { type="dropdown", text="Border Style",
-              tooltip="Forever Circle: the round map in WoW Forever's ring. Forever Square: the EllesmereUI square map in the bronze frame of WoW Forever's windows, with the zone name in its title bar. Applies after a UI reload.",
-              values = { circle = "Forever Circle", square = "Forever Square" },
-              order  = { "circle", "square" },
-              disabled = function() return not EllesmereUI.ForeverHeavyOK() end,
-              disabledTooltip = "This client is missing WoW Forever's window frame art.", rawTooltip = true,
-              getValue=function() local m = MinimapDB(); return (m and m.foreverBorder == "circle") and "circle" or "square" end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                -- Forever Square is the default: the round map saves "circle".
-                local square = v == "square"
-                if square ~= (m.foreverBorder ~= "circle") then BorderClock(m, square) end
-                m.foreverBorder = square and "square" or "circle"
-                if square == ns.MinimapFvSquare() then return end
-                EllesmereUI:ShowConfirmPopup({
-                    title       = "Reload Required",
-                    message     = "Border Style changed. A UI reload is needed to apply it.",
-                    confirmText = "Reload Now",
-                    cancelText  = "Later",
-                    reload      = true,
-                })
-              end }
-        elseif EllesmereUI.IS_FOREVER and EllesmereUI.BlizzStyle.Active("minimap") == "blizzard" then
-            -- Blizzard Style on the Forever client: a Border Style of its own,
-            -- Circle (the WoW Forever look's Forever Circle exactly) or Square
-            -- (the default there: the same square layout in the slim bronze
-            -- line). Latched with the look, as above.
-            shapeCfg = { type="dropdown", text="Border Style",
-              tooltip="Circle: the round map in WoW Forever's ring. Square: the EllesmereUI square map in a thin bronze frame, with the zone name in its title bar. Applies after a UI reload.",
-              values = { circle = "Circle", square = "Square" },
-              order  = { "circle", "square" },
-              getValue=function() local m = MinimapDB(); return (m and m.blizzBorder == "circle") and "circle" or "square" end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                -- Square is the default: the round map saves "circle".
-                local square = v == "square"
-                if square ~= (m.blizzBorder ~= "circle") then BorderClock(m, square) end
-                m.blizzBorder = square and "square" or "circle"
-                if square == ns.MinimapFvSquare() then return end
-                EllesmereUI:ShowConfirmPopup({
-                    title       = "Reload Required",
-                    message     = "Border Style changed. A UI reload is needed to apply it.",
-                    confirmText = "Reload Now",
-                    cancelText  = "Later",
-                    reload      = true,
-                })
-              end }
-        else
-            shapeCfg = EllesmereUI.BlizzStyle.Gate("minimap", { type="dropdown", text="Shape",
-              values = { square = "Square", rectangular = "Rectangular", circle = "Circle", textured_circle = "Textured Circle" },
-              order  = { "square", "rectangular", "circle", "textured_circle" },
-              getValue=function() local m = MinimapDB(); return m and m.shape or "square" end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.shape = v
-                RefreshMinimap()
-                -- Rebuild: the Width | Height Offset row exists only on the rect layout.
-                EllesmereUI:RefreshPage(true)
-              end })
-        end
-        local visRow
-        h, visRow = BuildVisibilityRow(W, parent, y, MinimapDB, RefreshMinimap, shapeCfg);  y = y - h
-        -- Inline cog on Visibility: Opacity of the shown map (showing and hiding stay
-        -- with Visibility). Greyed while the map never shows; the checklist refreshes
-        -- the page on close, which re-runs the cog's disabled state.
-        if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineCog(visRow._leftRegion, {
-                title = "Minimap Opacity",
-                disabled = function()
-                    local m = MinimapDB()
-                    return m ~= nil and (EllesmereUI.VisOverrideValue(m) or m.visibility) == "never"
-                end,
-                disabledTooltip = "This option requires a Visibility other than Never",
-                rows = {
-                    { type="slider", label="Opacity", min=10, max=100, step=1,
-                      tooltip="Fades the minimap while it is shown. Visibility still decides when it shows.",
-                      get=function() local m = MinimapDB(); return (m and m.opacity) or 100 end,
-                      set=function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.opacity = v
-                          -- One SetAlpha, not a full apply pass.
-                          if _G._EMM_ApplyMapAlpha then _G._EMM_ApplyMapAlpha() end
-                      end },
-                },
-            })
-        end
-
-        -- Row 2: Size (+ Icon Size cog) | Interactable Button Size
-        local sizeRow
-        sizeRow, h = W:DualRow(parent, y,
-            { type="slider", text="Size", min=100, max=600, step=1,
-              getValue=function() local m = MinimapDB(); return m and m.mapSize or 140 end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.mapSize = v
-                -- Cover the map render during drag to mask the zoom-nudge blink.
-                -- Borders, buttons, etc. remain visible above the overlay.
-                local minimap = _G.Minimap
-                if minimap then
-                    if not sizeDragOverlay then
-                        sizeDragOverlay = minimap:CreateTexture(nil, "BACKGROUND", nil, 7)
-                        sizeDragOverlay:SetAllPoints(minimap)
-                    end
-                    local shape = ns.MinimapShape()
-                    if shape == "circle" or shape == "textured_circle" then
-                        sizeDragOverlay:SetTexture("Interface\\Common\\CommonMaskCircle")
-                        sizeDragOverlay:SetVertexColor(0, 0, 0, 1)
-                    elseif shape == "rectangular" then
-                        sizeDragOverlay:SetTexture("Interface\\AddOns\\EllesmereUIMinimap\\Media\\minimap_rectangular-mask.blp")
-                        sizeDragOverlay:SetVertexColor(0, 0, 0, 1)
-                    else
-                        sizeDragOverlay:SetColorTexture(0, 0, 0, 1)
-                    end
-                    sizeDragOverlay:Show()
-                end
-                RefreshMinimap()
-                if not _G._EBS_SizeDragTimer then
-                    _G._EBS_SizeDragTimer = C_Timer.NewTimer(0, function() end)
-                end
-                _G._EBS_SizeDragTimer:Cancel()
-                _G._EBS_SizeDragTimer = C_Timer.NewTimer(0.15, function()
-                    if sizeDragOverlay then sizeDragOverlay:Hide() end
-                end)
-              end },
-            { type="slider", text="Interactable Button Size", min=16, max=40, step=1,
-              tooltip="Size of mail, calendar, tracking, and minimap button group toggle",
-              getValue=function() local m = MinimapDB(); return m and m.interactableBtnSize or 21 end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.interactableBtnSize = v
-                RefreshMinimap()
-              end })
-        y = y - h
-        -- Icon Size in a cog on Size: Blizzard's Edit Mode Icon Size (the scale of
-        -- the icons on the map), kept here and applied to the map itself, so the
-        -- Edit Mode layout is never written. Unset shows Edit Mode's value.
-        if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineCog(sizeRow._leftRegion, {
-                title = "Minimap Icons",
-                rows = {
-                    { type="slider", label="Icon Size", min=50, max=200, step=10,
-                      tooltip="Size of the icons on the map, such as group members, quest objectives and gathering nodes. The same setting as Blizzard's Edit Mode Icon Size.",
-                      get=function()
-                          local m = MinimapDB()
-                          local v = m and m.iconScale
-                          if v then return v end
-                          return (_G._EMM_EditModeIconScale and _G._EMM_EditModeIconScale()) or 100
-                      end,
-                      set=function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.iconScale = v
-                          if _G._EMM_ApplyIconScale then _G._EMM_ApplyIconScale() end
-                      end },
-                },
-            })
-        end
-
-        -- Row 3: Border Style (+ options cog) | Border Size (+ class/custom swatches)
-        local texValues, texOrder = EllesmereUI.GetBorderTextureDropdown()
-        local borderRow
-        borderRow, h = W:DualRow(parent, y,
-            EllesmereUI.BlizzStyle.Gate("minimap", { type="dropdown", text="Border Style",
-              values=texValues, order=texOrder,
-              disabled=function() return not ShapeUsesRectLayout() end,
-              disabledTooltip="Square or Rectangular Shape",
-              getValue=function() local m = MinimapDB(); return (m and m.borderTexture) or "solid" end,
-              setValue=function(v)
-                  local m = MinimapDB(); if not m then return end
-                  m.borderTexture = v
-                  m.borderTextureOffset = nil
-                  m.borderTextureOffsetY = nil
-                  m.borderTextureShiftX = nil
-                  m.borderTextureShiftY = nil
-                  local _bcol, _bbehind = EllesmereUI.GetBorderStyleSelectDefaults(v)
-                  m.borderColor = _bcol
-                  m.borderA = 1
-                  m.borderBehind = _bbehind
-                  m.borderUseClassColor = false
-                  m.useClassColor = false
-                  local defSz = EllesmereUI.GetBorderDefaultSize("minimap", v)
-                  if defSz then m.borderSize = defSz end
-                  if m.borderSizePx then m.borderSizePx = false end
-                  RefreshMinimap()
-                  -- Rebuild: the Width | Height Offset row follows the Solid / textured pick.
-                  EllesmereUI:RefreshPage(true)
-              end }),
-            -- Exact pixels over borderSize + borderSizePx (EllesmereUI.BorderPx). Only the
-            -- square and rectangular border reads the texture and the exact size; the
-            -- circle disc grows by the legacy step alone, so there the slider is a plain
-            -- 0-4 view of that step and never stores an exact size it cannot draw.
-            EllesmereUI.BlizzStyle.Gate("minimap", EllesmereUI.BorderPxSliderCfg{
-              text="Border Size", trackWidth=120,
-              getStep=function() local m = MinimapDB(); return (m and m.borderSize) or 1 end,
-              setStep=function(v) local m = MinimapDB(); if m then m.borderSize = v end end,
-              getTex=function()
-                  if not ShapeUsesRectLayout() then return "solid" end
-                  local m = MinimapDB(); return (m and m.borderTexture) or "solid"
-              end,
-              getPx=function()
-                  if not ShapeUsesRectLayout() then return nil end
-                  local m = MinimapDB(); return m and m.borderSizePx
-              end,
-              setPx=function(v)
-                  if not ShapeUsesRectLayout() then return end
-                  local m = MinimapDB(); if m then m.borderSizePx = v end
-              end,
-              apply=RefreshMinimap })
-        );  y = y - h
-
-        -- Row 3b: Width Offset | Height Offset. The textured border's outward offsets
-        -- as their own row, present only while the rect layout draws a textured style
-        -- (the circle ignores textures); the shape and style setters rebuild the page.
-        -- Each slider shows what is drawn (override, else the "minimap" registry
-        -- default for the step) and stores nothing while the value follows the default.
-        do
-            local m = MinimapDB()
-            local tex = (m and m.borderTexture) or "solid"
-            if ShapeUsesRectLayout() and tex ~= "" and tex ~= "solid" then
-                local ocfgL, ocfgR = EllesmereUI.BorderOffsetRowCfgs{
-                    addonKey = "minimap",
-                    getTex = function() local m = MinimapDB(); return (m and m.borderTexture) or "solid" end,
-                    getStep = function() local m = MinimapDB(); return (m and m.borderSize) or 1 end,
-                    getSizeKey = function() local m = MinimapDB(); return (m and m.borderSize) or 1 end,
-                    getPx = function() local m = MinimapDB(); return m and m.borderSizePx end,
-                    getX = function() local m = MinimapDB(); return m and m.borderTextureOffset end,
-                    setX = function(v) local m = MinimapDB(); if m then m.borderTextureOffset = v end end,
-                    getY = function() local m = MinimapDB(); return m and m.borderTextureOffsetY end,
-                    setY = function(v) local m = MinimapDB(); if m then m.borderTextureOffsetY = v end end,
-                    apply = RefreshMinimap,
-                }
-                _, h = W:DualRow(parent, y,
-                    EllesmereUI.BlizzStyle.Gate("minimap", ocfgL),
-                    EllesmereUI.BlizzStyle.Gate("minimap", ocfgR))
-                y = y - h
-            end
-        end
-
-        -- Inline cog for border options (left region); only shown for textured styles
-        if not EllesmereUI._prebuilding then
-            local rgn = borderRow._leftRegion
-            local function BorderTex()
-                local m = MinimapDB(); return (m and m.borderTexture) or "solid"
-            end
-            local function BorderSz()
-                local m = MinimapDB(); return (m and m.borderSize) or 1
-            end
-            local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.DIRECTIONS_ICON,
-                title = "Border Options",
-                rows = {
-                    { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
-                      get = function()
-                          local m = MinimapDB()
-                          local v = m and m.borderTextureShiftX
-                          if v then return v end
-                          local _, _, dsx = EllesmereUI.GetBorderDefaults("minimap", BorderTex(), BorderSz())
-                          return dsx
-                      end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.borderTextureShiftX = (v ~= 0) and v or nil
-                          RefreshMinimap()
-                      end },
-                    { type = "slider", label = "Shift Y", min = -10, max = 10, step = 1,
-                      get = function()
-                          local m = MinimapDB()
-                          local v = m and m.borderTextureShiftY
-                          if v then return v end
-                          local _, _, _, dsy = EllesmereUI.GetBorderDefaults("minimap", BorderTex(), BorderSz())
-                          return dsy
-                      end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.borderTextureShiftY = (v ~= 0) and v or nil
-                          RefreshMinimap()
-                      end },
-                    { type = "toggle", label = "Show Behind",
-                      get = function() local m = MinimapDB(); return (m and m.borderBehind) or false end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.borderBehind = v
-                          RefreshMinimap()
-                          EllesmereUI:RefreshPage()
-                      end },
-                },
-            })
-            local function UpdateCogVis()
-                local rect = ShapeUsesRectLayout() and not EllesmereUI.BlizzStyle.Get("minimap")
-                if rect and BorderTex() ~= "solid" then cogBtn:Show() else cogBtn:Hide() end
-            end
-            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-            UpdateCogVis()
-        end
-        -- Inline accent + class + custom colour swatches on the Border Size
-        -- slider. Modes are mutually exclusive: class > accent > custom.
-        if not EllesmereUI._prebuilding then
-            local rgn = borderRow._rightRegion
-            local PPl = EllesmereUI.PP
-
-            -- Accent swatch (nearest the control): live theme accent.
-            local accentSwatch, updateAccent = EllesmereUI.BuildColorSwatch(
-                rgn, borderRow:GetFrameLevel() + 3,
-                function()
-                    local ar, ag, ab = EllesmereUI.GetAccentColor()
-                    return ar, ag, ab, 1
-                end,
-                function() end, false, 18)
-            accentSwatch:SetScript("OnClick", function()
-                local m = MinimapDB(); if not m then return end
-                m.useClassColor = true
-                m.borderUseClassColor = false
-                RefreshMinimap()
-                EllesmereUI:RefreshPage()
-            end)
-            PPl.Point(accentSwatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-            rgn._lastInline = accentSwatch
-
-            -- Class-colour swatch (to the left of accent): live player class colour.
-            local classSwatch, updateClass = EllesmereUI.BuildColorSwatch(
-                rgn, borderRow:GetFrameLevel() + 3,
-                function()
-                    local cc = EllesmereUI.GetClassColor(select(2, UnitClass("player")))
-                    if cc then return cc.r, cc.g, cc.b, 1 end
-                    return 1, 1, 1, 1
-                end,
-                function() end, false, 18)
-            classSwatch:SetScript("OnClick", function()
-                local m = MinimapDB(); if not m then return end
-                m.borderUseClassColor = true
-                m.useClassColor = false
-                RefreshMinimap()
-                EllesmereUI:RefreshPage()
-            end)
-            PPl.Point(classSwatch, "RIGHT", rgn._lastInline, "LEFT", -8, 0)
-            rgn._lastInline = classSwatch
-
-            -- Custom-colour swatch (outermost): stored custom colour.
-            local customSwatch, updateCustom = EllesmereUI.BuildColorSwatch(
-                rgn, borderRow:GetFrameLevel() + 3,
-                function()
-                    local m = MinimapDB()
-                    local c = m and m.borderColor
-                    if c then return c.r, c.g, c.b, (m.borderA) or 1 end
-                    -- Legacy: pre-style users' border colour keys
-                    if m then return m.borderR or 0, m.borderG or 0, m.borderB or 0, m.borderA or 1 end
-                    return 0, 0, 0, 1
-                end,
-                function(r, g, b, a)
-                    local m = MinimapDB(); if not m then return end
-                    m.borderColor = { r = r, g = g, b = b }
-                    m.borderA = a
-                    RefreshMinimap()
-                end,
-                true, 18)
-            -- Preserve BuildColorSwatch's picker click, but while class or accent
-            -- mode is on a click just switches back to custom mode instead.
-            local openPicker = customSwatch:GetScript("OnClick")
-            customSwatch:SetScript("OnClick", function(self)
-                local m = MinimapDB()
-                if m and (m.borderUseClassColor or m.useClassColor) then
-                    m.borderUseClassColor = false
-                    m.useClassColor = false
-                    RefreshMinimap()
-                    EllesmereUI:RefreshPage()
-                    return
-                end
-                if openPicker then openPicker(self) end
-            end)
-            PPl.Point(customSwatch, "RIGHT", rgn._lastInline, "LEFT", -8, 0)
-            rgn._lastInline = customSwatch
-
-            accentSwatch:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(accentSwatch, "Accent Color") end)
-            accentSwatch:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            classSwatch:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(classSwatch, "Class Color") end)
-            classSwatch:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            customSwatch:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(customSwatch, "Custom Color") end)
-            customSwatch:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            local function UpdateState()
-                if updateAccent then updateAccent() end
-                if updateClass then updateClass() end
-                if updateCustom then updateCustom() end
-                -- Blizzard Style draws the stock ring: every border colour is inert.
-                if EllesmereUI.BlizzStyle.Get("minimap") then
-                    accentSwatch:SetAlpha(0.3); classSwatch:SetAlpha(0.3); customSwatch:SetAlpha(0.3)
-                    return
-                end
-                local m = MinimapDB()
-                local useClass = m and m.borderUseClassColor
-                local useAccent = (not useClass) and m and m.useClassColor
-                accentSwatch:SetAlpha(useAccent and 1 or 0.3)
-                classSwatch:SetAlpha(useClass and 1 or 0.3)
-                customSwatch:SetAlpha((useClass or useAccent) and 0.3 or 1)
-            end
-            EllesmereUI.RegisterWidgetRefresh(UpdateState)
-            UpdateState()
-            EllesmereUI.BlizzStyle.BlockInline("minimap", accentSwatch)
-            EllesmereUI.BlizzStyle.BlockInline("minimap", classSwatch)
-            EllesmereUI.BlizzStyle.BlockInline("minimap", customSwatch)
-        end
-
-        -- Reset Zoom (+ seconds) | Rotate Minimap. Off (default) keeps the
-        -- rotateMinimap CVar at 0; on sets it to 1 (enforced in ApplyMinimap).
-        local fmRow
-        fmRow, h = W:DualRow(parent, y,
-            { type="slider", text="Reset Zoom", min=0, max=15, step=1,
-              tooltip="Automatically zoom back out to maximum distance after this many seconds of no manual zoom change. 0 disables the reset.",
-              getValue=function() local m = MinimapDB(); return m and m.zoomResetSeconds or 0 end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.zoomResetSeconds = v
-                RefreshMinimap()
-              end },
-            { type="toggle", text="Rotate Minimap",
-              getValue=function() local m = MinimapDB(); return m and m.rotateMinimap or false end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.rotateMinimap = v
-                RefreshMinimap()
-              end }
-        );  y = y - h
-
-        -- "(seconds)" suffix next to the Reset Zoom slider (mirrors Damage
-        -- Meters' Refresh Rate suffix). Prebuild-guarded like the Nameplates
-        -- "(Percent)" suffix: the hidden search-index pass has no use for it.
-        if not EllesmereUI._prebuilding then
-            local rgn = fmRow._leftRegion
-            local suffix = rgn:CreateFontString(nil, "OVERLAY")
-            suffix:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
-            suffix:SetTextColor(1, 1, 1, 0.35)
-            local rzLabel
-            local regions = { rgn:GetRegions() }
-            for i = 1, #regions do
-                local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Reset Zoom" then
-                    rzLabel = reg
-                    break
-                end
-            end
-            if rzLabel then
-                suffix:SetPoint("LEFT", rzLabel, "RIGHT", 5, 0)
-            else
-                suffix:SetPoint("LEFT", rgn, "LEFT", 150, 0)
-            end
-            suffix:SetText(EllesmereUI.L("(seconds)"))
-        end
-
-        y = y - 10
-
-        -- MINIMAP & QOL BUTTONS section header
-        _, h = W:SectionHeader(parent, "MINIMAP & QOL BUTTONS", y);  y = y - h
-
-        -- Ungroup Minimap Buttons | In-Group Button Size
-        -- A lone minimap button always shows ungrouped, so the choice needs two or more.
-        local function TooFewButtons()
-            local vis, n = _G._EBS_AddonVisible or {}, 0
-            for _, btn in ipairs(_G._EBS_CachedAddonButtons or {}) do
-                if vis[btn] ~= false and btn:GetName() then n = n + 1 end
-            end
-            return n < 2
-        end
-        local ungroupRow
-        ungroupRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Ungroup Minimap Buttons",
-              values = { __placeholder = "..." }, order = { "__placeholder" },
-              disabled = TooFewButtons,
-              disabledTooltip = "This option requires 2 or more minimap buttons.",
-              rawTooltip = true,
-              getValue = function() return "__placeholder" end,
-              setValue = function() end },
-            { type="slider", text="In-Group Button Size", min=14, max=40, step=1,
-              tooltip="Size of addon minimap buttons in the flyout grid",
-              getValue=function() local m = MinimapDB(); return m and m.addonBtnSize or 24 end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.addonBtnSize = v
-                RefreshMinimap()
-              end }
-        );  y = y - h
-
-        -- Replace placeholder dropdown with checkbox dropdown
-        if not EllesmereUI._prebuilding then
-            local leftRgn = ungroupRow._leftRegion
-            if leftRgn._control then leftRgn._control:Hide() end
-
-            -- Build items from currently collected minimap buttons. Ungrouped
-            -- buttons come first in their stored drag order (legacy boolean
-            -- entries sort last among them), the rest alphabetically.
-            local function GetUngroupItems()
-                local items = {}
-                local btns = _G._EBS_CachedAddonButtons or {}
-                local vis = _G._EBS_AddonVisible or {}
-                local m = MinimapDB()
-                local ug = m and m.ungroupedButtons or {}
-                for _, btn in ipairs(btns) do
-                    local name = btn:GetName()
-                    if name and vis[btn] ~= false then
-                        local label = name:gsub("^LibDBIcon10_", ""):gsub("^Lib_GPI_Minimap_", ""):gsub("MinimapButton$", ""):gsub("_MinimapButton$", "")
-                        items[#items + 1] = { key = name, label = label }
-                    end
-                end
-                local function OrderOf(key)
-                    local v = ug[key]
-                    if type(v) == "number" then return v end
-                    if v then return math.huge end
-                    return nil
-                end
-                table.sort(items, function(a, b)
-                    local oa, ob = OrderOf(a.key), OrderOf(b.key)
-                    if oa and ob then
-                        if oa ~= ob then return oa < ob end
-                        return a.label < b.label
-                    end
-                    if oa then return true end
-                    if ob then return false end
-                    return a.label < b.label
-                end)
-                return items
-            end
-
-            local cbDD, cbDDRefresh = EllesmereUI.BuildReorderCBDropdown(
-                leftRgn, 210, leftRgn:GetFrameLevel() + 2,
-                GetUngroupItems(),
-                function(k)
-                    local m = MinimapDB(); if not m then return false end
-                    return m.ungroupedButtons and m.ungroupedButtons[k] and true or false
-                end,
-                function(k, v)
-                    local m = MinimapDB(); if not m then return end
-                    if not m.ungroupedButtons then m.ungroupedButtons = {} end
-                    if v then
-                        local maxOrder = 0
-                        for _, ord in pairs(m.ungroupedButtons) do
-                            if type(ord) == "number" and ord > maxOrder then maxOrder = ord end
-                        end
-                        m.ungroupedButtons[k] = maxOrder + 1
-                    else
-                        m.ungroupedButtons[k] = nil
-                    end
-                    FullRebuildMinimap()
-                end,
-                {
-                    hint = "Drag to Reorder Buttons",
-                    setOrder = function(orderedKeys)
-                        local m = MinimapDB(); if not m or not m.ungroupedButtons then return end
-                        -- Renumber only the ungrouped entries; unticked rows
-                        -- have no stored order.
-                        for i, k in ipairs(orderedKeys) do
-                            if m.ungroupedButtons[k] then m.ungroupedButtons[k] = i end
-                        end
-                        FullRebuildMinimap()
-                    end,
-                })
-            local PP = EllesmereUI.PP
-            PP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
-            leftRgn._control = cbDD
-            leftRgn._lastInline = nil
-            EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
-
-            -- The checkbox dropdown has no disabled state of its own: grey it and
-            -- block clicks; the row's disabled overlay shows the requirement.
-            local function ApplyUngroupDisabled()
-                local off = TooFewButtons()
-                cbDD:SetAlpha(off and 0.3 or 1)
-                cbDD:EnableMouse(not off)
-            end
-            ApplyUngroupDisabled()
-            EllesmereUI.RegisterWidgetRefresh(ApplyUngroupDisabled)
-        end
-
-        -- Show Extra Buttons (checkbox dropdown with drag-to-reorder)
-        local extraBtnRow
-        extraBtnRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Show Extra Buttons",
-              values = { __placeholder = "..." }, order = { "__placeholder" },
-              getValue = function() return "__placeholder" end,
-              setValue = function() end },
-            { type="toggle", text="Mouseover Extra Buttons",
-              tooltip="When enabled, the extra buttons (Great Vault, M+ Portals, Friends Online, Group Button) and any ungrouped minimap buttons only show while the mouse is over the minimap. The M+ Portals flyout keeps them shown until it closes.",
-              getValue = function() local m = MinimapDB(); return m and m.mouseoverExtraBtns or false end,
-              setValue = function(v) local m = MinimapDB(); if m then m.mouseoverExtraBtns = v; RefreshMinimap() end end }
-        );  y = y - h
-
-        -- Replace placeholder with checkbox dropdown
-        if not EllesmereUI._prebuilding then
-            local leftRgn = extraBtnRow._leftRegion
-            if leftRgn._control then leftRgn._control:Hide() end
-
-            -- Checked = shown (stored inverted in hideExtraBtns, so existing
-            -- profiles carry over with no migration). Movable rows follow the saved
-            -- extraBtnOrder; the Group Button anchors the row and is checkbox-only.
-            local EXTRA_BTN_LABELS = {
-                greatVault    = "Great Vault",
-                friendsOnline = "Friends Online",
-                portals       = "M+ Portals",
-            }
-            local EXTRA_BTN_DEFAULT_ORDER = { "greatVault", "friendsOnline", "portals" }
-            -- WoW Forever has no Great Vault and no keystone portals: the module
-            -- never builds those two buttons there, so the list offers Friends
-            -- Online only (a saved order still carrying the keys is skipped below).
-            if EllesmereUI.IS_FOREVER then
-                EXTRA_BTN_LABELS.greatVault, EXTRA_BTN_LABELS.portals = nil, nil
-                EXTRA_BTN_DEFAULT_ORDER = { "friendsOnline" }
-            end
-            local function GetExtraBtnItems()
-                local m = MinimapDB()
-                local order = m and m.extraBtnOrder
-                local items, added = {}, {}
-                if type(order) == "table" then
-                    for _, k in ipairs(order) do
-                        if EXTRA_BTN_LABELS[k] and not added[k] then
-                            added[k] = true
-                            items[#items + 1] = { key = k, label = EXTRA_BTN_LABELS[k] }
-                        end
-                    end
-                end
-                for _, k in ipairs(EXTRA_BTN_DEFAULT_ORDER) do
-                    if not added[k] then
-                        items[#items + 1] = { key = k, label = EXTRA_BTN_LABELS[k] }
-                    end
-                end
-                items[#items + 1] = { key = "groupButton", label = "Group Button", fixed = true }
-                return items
-            end
-
-            local cbDD, cbDDRefresh = EllesmereUI.BuildReorderCBDropdown(
-                leftRgn, 210, leftRgn:GetFrameLevel() + 2,
-                GetExtraBtnItems(),
-                function(k)
-                    local m = MinimapDB(); if not m then return true end
-                    local heb = m.hideExtraBtns
-                    return not (heb and heb[k])
-                end,
-                function(k, v)
-                    local m = MinimapDB(); if not m then return end
-                    if not m.hideExtraBtns then m.hideExtraBtns = {} end
-                    m.hideExtraBtns[k] = not v
-                    RefreshMinimap()
-                end,
-                {
-                    hint = "Drag to Reorder Buttons",
-                    setOrder = function(orderedKeys)
-                        local m = MinimapDB(); if not m then return end
-                        local t = {}
-                        for i, k in ipairs(orderedKeys) do t[i] = k end
-                        m.extraBtnOrder = t
-                        RefreshMinimap()
-                    end,
-                })
-            local PP = EllesmereUI.PP
-            PP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
-            leftRgn._control = cbDD
-            leftRgn._lastInline = nil
-            EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
-        end
-
-        -- M+ Portals Scale | Open Micro Menu on Middle Click
-        -- (no keystone portals on WoW Forever: the middle-click toggle takes the left slot there)
-        local portalsScaleCfg = { type="slider", text="M+ Portals Scale", min=0.5, max=2.0, step=0.01,
-              tooltip="Scales the M+ Portals flyout the portals button opens.",
-              getValue=function() local m = MinimapDB(); return m and m.extraFlyoutScale or 1.0 end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.extraFlyoutScale = v
-              end }
-        local middleClickCfg = { type="toggle", text="Open Micro Menu on Middle Click",
-              tooltip="Middle-click the minimap to open the EllesmereUI micro menu. When off, middle-click does nothing.",
-              getValue=function() local m = MinimapDB(); return m and m.openMicroMenuOnMiddleClick ~= false end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.openMicroMenuOnMiddleClick = v
-              end }
-        if EllesmereUI.IS_FOREVER then
-            _, h = W:DualRow(parent, y, middleClickCfg, { type="label", text="" })
-        else
-            _, h = W:DualRow(parent, y, portalsScaleCfg, middleClickCfg)
-        end
-        y = y - h
-
-        -- Friends Tooltip Cap (+ cog: Show Notes) | Custom Tooltip Size
-        local friendsCapRow
-        friendsCapRow, h = W:DualRow(parent, y,
-            { type="slider", text="Friends Tooltip Cap", min=0, max=30, step=1,
-              tooltip="Max rows per section in the Friends Online tooltip (0 = the 30-row max). The cog can show each note under its row.",
-              getValue=function() local m = MinimapDB(); return m and m.friendsMaxRows or 0 end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.friendsMaxRows = v
-              end },
-            { type="slider", text="Custom Tooltip Size", min=0.5, max=2.0, step=0.01,
-              tooltip="Scales the custom tooltips shown by the unique minimap buttons (Great Vault, friends, calendar, mail, tracking).",
-              getValue=function() local m = MinimapDB(); return m and m.customTooltipScale or 1.0 end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.customTooltipScale = v
-              end }
-        );  y = y - h
-        -- Inline cog on Friends Tooltip Cap: Show Notes
-        if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineCog(friendsCapRow._leftRegion, {
-                title = "Friends Tooltip",
-                rows = {
-                    { type = "toggle", label = "Show Notes",
-                      tooltip = "Shows each guild or friend note on a second line under its row. The tooltip gets taller.",
-                      get = function() local m = MinimapDB(); return m and m.friendsShowNotes or false end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.friendsShowNotes = v
-                      end },
-                },
-            })
-        end
-
-        -- Shared row-position choices (QoL button row + Blizzard element row).
-        -- The two rows are mutually exclusive per position: a value picked on
-        -- one dropdown is disabled on the other.
-        local ROW_POS_VALUES = {
-            blUp = "Bottom Left, Grow Up", blRight = "Bottom Left, Grow Right",
-            tlDown = "Top Left, Grow Down", tlRight = "Top Left, Grow Right",
-            brUp = "Bottom Right, Grow Up", brLeft = "Bottom Right, Grow Left",
-            trLeft = "Top Right, Grow Left", trDown = "Top Right, Grow Down",
-        }
-        local ROW_POS_ORDER = { "blUp", "blRight", "tlDown", "tlRight", "brUp", "brLeft", "trLeft", "trDown" }
-        local function BtnRowPos()
-            local m = MinimapDB(); return (m and m.btnRowPosition) or "blUp"
-        end
-        local function ElementRowPos()
-            local m = MinimapDB(); return (m and m.elementRowPosition) or "tlDown"
-        end
-
-        -- Button Row Position (+ spacing cog) | Free Move Buttons (+ cog: Button Backgrounds; "Reset" link)
-        local btnRowRow
-        btnRowRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Button Row Position",
-              tooltip="Which minimap corner the button row builds out from and the direction it grows.",
-              values = ROW_POS_VALUES, order = ROW_POS_ORDER,
-              itemDisabled=function(val) return val == ElementRowPos() end,
-              itemDisabledTooltip=function(val)
-                  if val == ElementRowPos() then return "Already used by Element Row Position" end
-              end,
-              getValue=BtnRowPos,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.btnRowPosition = v
-                RefreshMinimap()
-              end },
-            { type="toggle", text="Free Move Buttons",
-              tooltip="When enabled, Shift+Click any minimap button (mail, calendar, tracking, addon buttons) to drag it to a custom position.",
-              getValue=function() local m = MinimapDB(); return m and m.freeMoveBtns end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.freeMoveBtns = v
-                if not v then
-                    m.btnPositions = {}
-                end
-                RefreshMinimap()
-                EllesmereUI:RefreshPage()
-              end }
-        );  y = y - h
-        -- Inline cog on Button Row Position for icon spacing
-        if not EllesmereUI._prebuilding then
-            local rgn = btnRowRow._leftRegion
-            EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON,
-                title = "Button Row Settings",
-                rows = {
-                    { type = "slider", pixel = true, label = "Icon Spacing", min = -20, max = 40, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.btnRowSpacing or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.btnRowSpacing = v
-                          RefreshMinimap()
-                      end },
-                    { type = "slider", label = "Distance from Map", min = -20, max = 60, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.btnRowDistance or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.btnRowDistance = v
-                          RefreshMinimap()
-                      end },
-                    { type = "dropdown", label = "Grow Tooltip/Popup",
-                      values = { auto = "Auto", up = "Up", down = "Down", left = "Left", right = "Right" },
-                      order = { "auto", "up", "down", "left", "right" },
-                      get = function() local m = MinimapDB(); return (m and m.flyoutGrowDir) or "auto" end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.flyoutGrowDir = v
-                          RefreshMinimap()
-                      end },
-                },
-            })
-        end
-
-        -- Inline cog on Free Move Buttons: Button Backgrounds. Then the "Reset"
-        -- link (only visible while free move is on) to the cog's left.
-        if not EllesmereUI._prebuilding then
-            local rgn = btnRowRow._rightRegion
-            local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
-                title = "Button Settings",
-                rows = {
-                    { type = "toggle", label = "Button Backgrounds",
-                      tooltip = "Show black backgrounds behind minimap indicator buttons (tracking, calendar, mail, crafting, addon buttons, flyout toggle).",
-                      get = function() local m = MinimapDB(); return m and m.btnBackgrounds ~= false end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.btnBackgrounds = v
-                          FullRebuildMinimap()
-                      end },
-                },
-            })
-            -- The stock looks and Forever Square draw no button boxes (every
-            -- button wears the ring dress), so the cog waits under all of them.
-            EllesmereUI.BlizzStyle.BlockInline("minimap", cogBtn)
-
-            local resetFS = rgn:CreateFontString(nil, "OVERLAY")
-            resetFS:SetFont(EllesmereUI.EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 12, "")
-            resetFS:SetTextColor(1, 1, 1, 0.8)
-            resetFS:SetText(EllesmereUI.L("Reset"))
-            resetFS:SetPoint("RIGHT", cogBtn, "LEFT", -8, 0)
-            local hitBtn = CreateFrame("Button", nil, rgn)
-            hitBtn:SetAllPoints(resetFS)
-            hitBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
-            hitBtn:SetScript("OnEnter", function() resetFS:SetTextColor(1, 0.3, 0.3, 1) end)
-            hitBtn:SetScript("OnLeave", function() resetFS:SetTextColor(1, 1, 1, 0.8) end)
-            hitBtn:SetScript("OnClick", function()
-                local m = MinimapDB(); if not m then return end
-                m.btnPositions = {}
-                RefreshMinimap()
-            end)
-            local function UpdateResetVis()
-                local m = MinimapDB()
-                local on = m and m.freeMoveBtns
-                resetFS:SetShown(on)
-                hitBtn:SetShown(on)
-            end
-            UpdateResetVis()
-            EllesmereUI.RegisterWidgetRefresh(UpdateResetVis)
-        end
-
-        y = y - 10
-
-        -- BLIZZARD ELEMENTS section header
-        _, h = W:SectionHeader(parent, "BLIZZARD ELEMENTS", y);  y = y - h
-
-        -- Show Omnium Folio (expansion landing page button) | inline X/Y cog
-        -- Legacy fallback mirrors the runtime: pre-dropdown data carries the
-        -- showOmniumFolio toggle (default ON; only false is ever stored).
-        -- No expansion landing page on WoW Forever: the row is not built there.
-        if not EllesmereUI.IS_FOREVER then
-        local function OmniumMode()
-            local m = MinimapDB()
-            if not m then return "always" end
-            if m.omniumFolioMode then return m.omniumFolioMode end
-            if m.showOmniumFolio == false then return "never" end
-            return "always"
-        end
-        local omniumRow
-        omniumRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Show Omnium Folio",
-              tooltip="Show the expansion landing page (Omnium Folio) button on the minimap. Use the cog to choose its corner and nudge its position.",
-              values = { never = "Never", hover = "On Hover", always = "Always" },
-              order  = { "never", "hover", "always" },
-              getValue=OmniumMode,
-              setValue=function(v)
-                  local m = MinimapDB(); if not m then return end
-                  m.omniumFolioMode = v
-                  RefreshMinimap()
-                  EllesmereUI:RefreshPage()
-              end },
-            { type="slider", text="Omnium Folio Scale", min=0.5, max=1.5, step=0.05,
-              disabled=function() return OmniumMode() == "never" end,
-              disabledTooltip="Show Omnium Folio",
-              getValue=function() local m = MinimapDB(); return (m and m.omniumFolioScale) or 0.75 end,
-              setValue=function(v)
-                  local m = MinimapDB(); if not m then return end
-                  m.omniumFolioScale = v
-                  RefreshMinimap()
-              end });  y = y - h
-        if not EllesmereUI._prebuilding then
-            local rgn = omniumRow._leftRegion
-            local function omniumOff() return OmniumMode() == "never" end
-            EllesmereUI.BuildInlineCog(rgn, {
-                disabled = omniumOff,
-                disabledTooltip = "Show Omnium Folio",
-                title = "Omnium Folio Position",
-                rows = {
-                    { type="dropdown", label="Corner",
-                      values={ ["BOTTOMLEFT"]="Bottom Left", ["BOTTOMRIGHT"]="Bottom Right", ["TOPLEFT"]="Top Left", ["TOPRIGHT"]="Top Right" },
-                      order={ "BOTTOMLEFT", "BOTTOMRIGHT", "TOPLEFT", "TOPRIGHT" },
-                      get=function() local m=MinimapDB(); return (m and m.omniumFolioCorner) or "BOTTOMLEFT" end,
-                      set=function(v) local m=MinimapDB(); if not m then return end m.omniumFolioCorner=v; RefreshMinimap() end },
-                    -- "X Offset" / "Y Offset" (not "X" / "Y"): labels under ~10px wide make
-                    -- BuildCogPopup fall back to a 60px label column, which left the old cog
-                    -- with a big gap before the sliders. Longer labels avoid that fallback.
-                    { type="slider", label="X Offset", min=-1000, max=1000, step=1,
-                      get=function() local m=MinimapDB(); return (m and m.omniumFolioX) or 0 end,
-                      set=function(v) local m=MinimapDB(); if not m then return end m.omniumFolioX=v; RefreshMinimap() end },
-                    { type="slider", label="Y Offset", min=-1000, max=1000, step=1,
-                      get=function() local m=MinimapDB(); return (m and m.omniumFolioY) or 0 end,
-                      set=function(v) local m=MinimapDB(); if not m then return end m.omniumFolioY=v; RefreshMinimap() end },
-                },
-            })
-        end
-        end -- not IS_FOREVER
-
-        -- Show Addon Compartment (Blizzard's addon menu button) | inline cog.
-        -- Blizzard parents it into MinimapCluster, which this module hides, so
-        -- the runtime reparents it onto our minimap and pins it to a corner --
-        -- same treatment (and same controls) as the Omnium Folio above.
-        local function CompartmentOff()
-            local m = MinimapDB()
-            return (m and m.hideAddonCompartment) or false
-        end
-        local compartmentRow
-        compartmentRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Addon Compartment",
-              tooltip="Show Blizzard's addon compartment button on the minimap. Use the cog to choose its corner and nudge its position.",
-              getValue=function() return not CompartmentOff() end,
-              setValue=function(v)
-                  local m = MinimapDB(); if not m then return end
-                  m.hideAddonCompartment = not v
-                  RefreshMinimap()
-                  EllesmereUI:RefreshPage()
-              end },
-            { type="slider", text="Addon Compartment Scale", min=0.5, max=1.5, step=0.05,
-              disabled=CompartmentOff,
-              disabledTooltip="Show Addon Compartment",
-              getValue=function() local m = MinimapDB(); return (m and m.addonCompartmentScale) or 0.9 end,
-              setValue=function(v)
-                  local m = MinimapDB(); if not m then return end
-                  m.addonCompartmentScale = v
-                  RefreshMinimap()
-              end });  y = y - h
-        if not EllesmereUI._prebuilding then
-            local rgn = compartmentRow._leftRegion
-            EllesmereUI.BuildInlineCog(rgn, {
-                disabled = CompartmentOff,
-                disabledTooltip = "Show Addon Compartment",
-                title = "Addon Compartment Position",
-                rows = {
-                    { type="dropdown", label="Corner",
-                      values={ ["BOTTOMLEFT"]="Bottom Left", ["BOTTOMRIGHT"]="Bottom Right", ["TOPLEFT"]="Top Left", ["TOPRIGHT"]="Top Right" },
-                      order={ "BOTTOMLEFT", "BOTTOMRIGHT", "TOPLEFT", "TOPRIGHT" },
-                      get=function() local m=MinimapDB(); return (m and m.addonCompartmentCorner) or "TOPRIGHT" end,
-                      set=function(v) local m=MinimapDB(); if not m then return end m.addonCompartmentCorner=v; RefreshMinimap() end },
-                    { type="slider", label="X Offset", min=-1000, max=1000, step=1,
-                      get=function() local m=MinimapDB(); return (m and m.addonCompartmentX) or 0 end,
-                      set=function(v) local m=MinimapDB(); if not m then return end m.addonCompartmentX=v; RefreshMinimap() end },
-                    { type="slider", label="Y Offset", min=-1000, max=1000, step=1,
-                      get=function() local m=MinimapDB(); return (m and m.addonCompartmentY) or 0 end,
-                      set=function(v) local m=MinimapDB(); if not m then return end m.addonCompartmentY=v; RefreshMinimap() end },
-                },
-            })
-        end
-
-        -- Show Blizzard Elements | Scroll to Zoom
-        local blizzElements = {
-            { key = "calendar",   label = "Calendar",       hideKey = "hideGameTime" },
-            { key = "mail",       label = "Mail",           hideKey = "hideMail" },
-            { key = "tracking",   label = "Tracking",       hideKey = "hideTrackingButton" },
-            { key = "crafting",   label = "Crafting Order", hideKey = "hideCraftingOrder" },
-            { key = "difficulty", label = "Difficulty",      hideKey = "hideRaidDifficulty",
-              -- Overridden while the difficulty shows as text (Text section)
-              lockedFn = function() local m = MinimapDB(); return (m and m.diffTextEnabled) or false end },
-            { key = "zoom",       label = "Zoom +/- Icons", hideKey = "hideZoomButtons" },
-        }
-        local blizzRow
-        blizzRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Show Blizzard Elements",
-              values={ ["_placeholder"]="..." }, order={ "_placeholder" },
-              getValue=function() return "_placeholder" end,
-              setValue=function() end },
-            { type="toggle", text="Scroll to Zoom",
-              getValue=function() local m = MinimapDB(); return m and m.scrollZoom end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.scrollZoom = v
-                RefreshMinimap()
-              end }); y = y - h
-        if not EllesmereUI._prebuilding then
-            local rgn = blizzRow._leftRegion
-            if rgn._control then rgn._control:Hide() end
-            local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
-                rgn, 210, rgn:GetFrameLevel() + 2,
-                blizzElements,
-                function(k)
-                    local m = MinimapDB(); if not m then return false end
-                    for _, el in ipairs(blizzElements) do
-                        if el.key == k then
-                            if el.direct then return m[el.hideKey] or false
-                            else return not m[el.hideKey] end
-                        end
-                    end
-                    return false
-                end,
-                function(k, v)
-                    local m = MinimapDB(); if not m then return end
-                    for _, el in ipairs(blizzElements) do
-                        if el.key == k then
-                            if el.direct then m[el.hideKey] = v
-                            else m[el.hideKey] = not v end
-                            break
-                        end
-                    end
-                    RefreshMinimap()
-                    EllesmereUI:RefreshPage()
-                end)
-            PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
-            rgn._control = cbDD
-            rgn._lastInline = nil
-            EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
-        end
-
-        -- Element Row Position (+ spacing cog) | (empty)
-        local elRowRow
-        elRowRow, h = W:DualRow(parent, y,
-            -- Blizzard Style lays the elements out round the stock top bar.
-            Gate({ type="dropdown", text="Element Row Position",
-              tooltip="Which minimap corner the Blizzard element row (tracking, calendar, mail, crafting) builds out from and the direction it grows.",
-              values = ROW_POS_VALUES, order = ROW_POS_ORDER,
-              disabled=function() return not ShapeUsesRectLayout() end,
-              disabledTooltip="Square or Rectangular Shape",
-              itemDisabled=function(val) return val == BtnRowPos() end,
-              itemDisabledTooltip=function(val)
-                  if val == BtnRowPos() then return "Already used by Button Row Position" end
-              end,
-              getValue=ElementRowPos,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.elementRowPosition = v
-                RefreshMinimap()
-              end }),
-            { type="dropdown", text="Mail Position",
-              values = { button = "Minimap Button", TOPRIGHT = "Top Right", TOPLEFT = "Top Left",
-                         BOTTOMRIGHT = "Bottom Right", BOTTOMLEFT = "Bottom Left" },
-              order = { "button", "TOPRIGHT", "TOPLEFT", "BOTTOMRIGHT", "BOTTOMLEFT" },
-              disabled=function() local m = MinimapDB(); return m and m.hideMail end,
-              disabledTooltip="Mail in Show Blizzard Elements",
-              getValue=function() local m = MinimapDB(); return m and m.mailPosition or "button" end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.mailPosition = v
-                RefreshMinimap()
-                EllesmereUI:RefreshPage()
-              end }
-        );  y = y - h
-        -- Inline offset cog on Mail Position (corner modes only)
-        if not EllesmereUI._prebuilding then
-            local rgn = elRowRow._rightRegion
-            local function mailOff()
-                local m = MinimapDB()
-                return not m or m.hideMail or (m.mailPosition or "button") == "button"
-            end
-            EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.DIRECTIONS_ICON,
-                disabled = mailOff,
-                disabledTooltip = function()
-                    local m = MinimapDB()
-                    return (m and m.hideMail) and "Mail in Show Blizzard Elements" or "a Mail Position corner"
-                end,
-                title = "Mail Position",
-                rows = {
-                    { type = "slider", label = "X Offset", min = -100, max = 100, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.mailOffsetX or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.mailOffsetX = v
-                          RefreshMinimap()
-                      end },
-                    { type = "slider", label = "Y Offset", min = -500, max = 500, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.mailOffsetY or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.mailOffsetY = v
-                          RefreshMinimap()
-                      end },
-                },
-            })
-        end
-        -- Inline cog on Element Row Position for icon spacing
-        if not EllesmereUI._prebuilding then
-            local rgn = elRowRow._leftRegion
-            local function elOff()
-                return not ShapeUsesRectLayout()
-            end
-            local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON,
-                disabled = elOff,
-                disabledTooltip = "Square or Rectangular Shape",
-                title = "Element Row Spacing",
-                rows = {
-                    { type = "slider", pixel = true, label = "Icon Spacing", min = -20, max = 40, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.elementRowSpacing or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.elementRowSpacing = v
-                          RefreshMinimap()
-                      end },
-                    { type = "slider", label = "Distance from Map", min = -20, max = 60, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.elementRowDistance or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.elementRowDistance = v
-                          RefreshMinimap()
-                      end },
-                },
-            })
-            BlockInline(cogBtn)
-        end
-
-        y = y - 10
-
-        -- TEXT section header
-        _, h = W:SectionHeader(parent, "TEXT", y);  y = y - h
-
-        -- Shared anchor-position choices (clock, zone text, coordinates)
-        local MAP_POS_VALUES = {
-            belowMap = "Below Map", aboveMap = "Above Map",
-            topLeft = "Top Left", top = "Top", topRight = "Top Right",
-            left = "Left", right = "Right",
-            bottomLeft = "Bottom Left", bottom = "Bottom", bottomRight = "Bottom Right",
-        }
-        local MAP_POS_ORDER = { "belowMap", "aboveMap", "topLeft", "top", "topRight", "left", "right", "bottomLeft", "bottom", "bottomRight" }
-
-        -- Clock Style | Clock Position (with cog: Scale + X/Y offset)
-        -- Legacy fallback mirrors the runtime: pre-dropdown data carries the
-        -- clockInside toggle (defaulted ON) and the removed Show Blizzard
-        -- Elements Clock checkbox (showClock == false meant hidden).
-        local function ClockMode()
-            local m = MinimapDB()
-            if not m then return "inside" end
-            if m.clockMode ~= nil then return m.clockMode end
-            if m.showClock == false then return "none" end
-            return (m.clockInside == false) and "edge" or "inside"
-        end
-        local clockRow
-        clockRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Clock Style",
-              values = { none = "None", inside = "Inside Map", edge = "Edge Box" },
-              order  = { "none", "inside", "edge" },
-              getValue=ClockMode,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.clockMode = v
-                RefreshMinimap()
-                EllesmereUI:RefreshPage()
-              end },
-            { type="dropdown", text="Clock Position",
-              values = MAP_POS_VALUES, order = MAP_POS_ORDER,
-              disabled=function() return ClockMode() == "none" end,
-              disabledTooltip="Clock Style",
-              getValue=function() local m = MinimapDB(); return m and m.clockPosition or "top" end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.clockPosition = v
-                RefreshMinimap()
-              end }
-        );  y = y - h
-        -- Inline cog on Clock Position for scale + X/Y offset
-        if not EllesmereUI._prebuilding then
-            local rgn = clockRow._rightRegion
-            local function clockOff()
-                return ClockMode() == "none"
-            end
-            EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
-                disabled = clockOff,
-                disabledTooltip = "Clock Style",
-                title = "Clock Size and Position",
-                rows = {
-                    { type = "slider", label = "Scale", min = 0.5, max = 2.0, step = 0.01,
-                      get = function() local m = MinimapDB(); return m and m.clockScale or 1.15 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.clockScale = v
-                          local bg = _G._EBS_ClockBg
-                          if bg then bg:SetScale(v) end
-                      end },
-                    { type = "slider", label = "X Offset", min = -500, max = 500, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.clockOffsetX or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.clockOffsetX = v
-                          RefreshMinimap()
-                      end },
-                    { type = "slider", label = "Y Offset", min = -500, max = 500, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.clockOffsetY or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.clockOffsetY = v
-                          RefreshMinimap()
-                      end },
-                },
-            })
-        end
-
-        -- Zone Text Style | Zone Position (with cog: Scale + X/Y offset)
-        -- Legacy fallback mirrors the runtime: pre-dropdown data carries the
-        -- zoneInside toggle (defaulted OFF) and the removed Show Blizzard
-        -- Elements Zone checkbox (hideZoneText == true meant hidden). The stock
-        -- looks put the zone text in their top bar and Forever Square in its
-        -- frame's title bar, so Zone Position waits for the EllesmereUI look
-        -- under all of them (the cog's scale and offsets still apply).
-        local function LocationMode()
-            local m = MinimapDB()
-            if not m then return "inside" end
-            if m.locationMode ~= nil then return m.locationMode end
-            if m.hideZoneText == true then return "none" end
-            return m.zoneInside and "inside" or "edge"
-        end
-        local zoneRow
-        zoneRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Zone Text Style",
-              values = { none = "None", inside = "Inside Map", edge = "Edge Box" },
-              order  = { "none", "inside", "edge" },
-              getValue=LocationMode,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.locationMode = v
-                RefreshMinimap()
-                EllesmereUI:RefreshPage()
-              end },
-            EllesmereUI.BlizzStyle.Gate("minimap", { type="dropdown", text="Zone Position",
-              values = MAP_POS_VALUES, order = MAP_POS_ORDER,
-              disabled=function() return LocationMode() == "none" end,
-              disabledTooltip="Zone Text Style",
-              getValue=function() local m = MinimapDB(); return m and m.locationPosition or "bottom" end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.locationPosition = v
-                RefreshMinimap()
-              end })
-        );  y = y - h
-        -- Inline cog on Zone Text Style: reactive zone coloring
-        if not EllesmereUI._prebuilding then
-            local rgn = zoneRow._leftRegion
-            local function styleOff()
-                return LocationMode() == "none"
-            end
-            EllesmereUI.BuildInlineCog(rgn, {
-                disabled = styleOff,
-                disabledTooltip = "Zone Text Style",
-                title = "Zone Text Settings",
-                rows = {
-                    { type = "toggle", label = "Display Sub Zone",
-                      get = function() local m = MinimapDB(); return m and m.zoneShowSubZone or false end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.zoneShowSubZone = v
-                          RefreshMinimap()
-                      end },
-                    { type = "toggle", label = "Reactive Coloring",
-                      get = function() local m = MinimapDB(); return m and m.zoneReactiveColor or false end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.zoneReactiveColor = v
-                          RefreshMinimap()
-                      end },
-                },
-            })
-        end
-        -- Inline cog on Zone Position for scale + X/Y offset
-        if not EllesmereUI._prebuilding then
-            local rgn = zoneRow._rightRegion
-            local function locOff()
-                return LocationMode() == "none"
-            end
-            EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
-                disabled = locOff,
-                disabledTooltip = "Zone Text Style",
-                title = "Zone Text Size and Position",
-                rows = {
-                    { type = "slider", label = "Scale", min = 0.5, max = 2.0, step = 0.01,
-                      get = function() local m = MinimapDB(); return m and m.locationScale or 1.15 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.locationScale = v
-                          local bg = _G._EBS_LocationBg
-                          if bg then bg:SetScale(v) end
-                      end },
-                    { type = "slider", label = "X Offset", min = -500, max = 500, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.locationOffsetX or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.locationOffsetX = v
-                          RefreshMinimap()
-                      end },
-                    { type = "slider", label = "Y Offset", min = -500, max = 500, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.locationOffsetY or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.locationOffsetY = v
-                          RefreshMinimap()
-                      end },
-                },
-            })
-        end
-
-        -- Show Coordinates | Coordinates Position (with cog: X/Y offset)
-        -- Legacy fallback mirrors the runtime: pre-dropdown data only carries
-        -- coordsBelow (true = always-on below the map).
-        local function CoordsMode()
-            local m = MinimapDB()
-            if not m then return "always" end
-            return m.coordsMode or (m.coordsBelow and "always") or "always"
-        end
-        local coordsRow
-        coordsRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Show Coordinates",
-              values = { never = "Never", hover = "On Hover", always = "Always" },
-              order  = { "never", "hover", "always" },
-              getValue=CoordsMode,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.coordsMode = v
-                RefreshMinimap()
-                EllesmereUI:RefreshPage()
-              end },
-            { type="dropdown", text="Coordinates Position",
-              values = MAP_POS_VALUES, order = MAP_POS_ORDER,
-              disabled=function() return CoordsMode() == "never" end,
-              disabledTooltip="Show Coordinates",
-              getValue=function()
-                local m = MinimapDB()
-                if not m then return "topLeft" end
-                return m.coordsPosition or (m.coordsBelow and "belowMap") or "topLeft"
-              end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.coordsPosition = v
-                RefreshMinimap()
-              end }
-        );  y = y - h
-        -- Inline cog on Show Coordinates for decimal precision
-        if not EllesmereUI._prebuilding then
-            local rgn = coordsRow._leftRegion
-            local function coordsOff() return CoordsMode() == "never" end
-            EllesmereUI.BuildInlineCog(rgn, {
-                disabled = coordsOff,
-                disabledTooltip = "Show Coordinates",
-                title = "Coordinate Precision",
-                rows = {
-                    { type = "slider", label = "Decimal Places", min = 0, max = 2, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.coordPrecision or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.coordPrecision = v
-                          RefreshMinimap()
-                      end },
-                },
-            })
-        end
-        -- Inline cog on Coordinates Position for X/Y offset
-        if not EllesmereUI._prebuilding then
-            local rgn = coordsRow._rightRegion
-            local function coordsOff() return CoordsMode() == "never" end
-            EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
-                disabled = coordsOff,
-                disabledTooltip = "Show Coordinates",
-                title = "Coordinates Size and Position",
-                rows = {
-                    { type = "slider", label = "Scale", min = 0.5, max = 2.0, step = 0.01,
-                      get = function() local m = MinimapDB(); return m and m.coordsScale or 1.0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.coordsScale = v
-                          local cf = _G._EBS_CoordFrame
-                          if cf then cf:SetScale(v) end
-                      end },
-                    { type = "slider", label = "X Offset", min = -500, max = 500, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.coordsBelowOffsetX or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.coordsBelowOffsetX = v
-                          RefreshMinimap()
-                      end },
-                    { type = "slider", label = "Y Offset", min = -500, max = 500, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.coordsBelowOffsetY or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.coordsBelowOffsetY = v
-                          RefreshMinimap()
-                      end },
-                },
-            })
-        end
-
-        -- Show FPS/MS (+ swatch + cog, mirrors QoL Show FPS Counter) | FPS/MS Position (+ offset cog)
-        local function FpsOff()
-            local m = MinimapDB(); return not (m and m.showFPS)
-        end
-        local fpsRow
-        fpsRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Show FPS/MS",
-              getValue=function() local m = MinimapDB(); return m and m.showFPS or false end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.showFPS = v
-                RefreshMinimap()
-                EllesmereUI:RefreshPage()
-              end },
-            { type="dropdown", text="FPS/MS Position",
-              values = MAP_POS_VALUES, order = MAP_POS_ORDER,
-              disabled=FpsOff,
-              disabledTooltip="Show FPS/MS",
-              getValue=function() local m = MinimapDB(); return m and m.fpsPosition or "bottomLeft" end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.fpsPosition = v
-                RefreshMinimap()
-              end }
-        );  y = y - h
-        -- Inline cog on Show FPS/MS (text size + which MS readouts show).
-        -- The description-colour swatches live on the Accented Text row at
-        -- the bottom of this section.
-        if not EllesmereUI._prebuilding then
-            local leftRgn = fpsRow._leftRegion
-
-            EllesmereUI.BuildInlineCog(leftRgn, {
-                gap = 9,
-                disabled = FpsOff,
-                disabledTooltip = "Show FPS/MS",
-                title = "FPS/MS Settings",
-                rows = {
-                    { type="slider", label="Text Size", min=8, max=30, step=1,
-                      get=function() local m = MinimapDB(); return m and m.fpsTextSize or 12 end,
-                      set=function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.fpsTextSize = v
-                          RefreshMinimap()
-                      end },
-                    { type="toggle", label="Show Local MS",
-                      get=function()
-                          local m = MinimapDB()
-                          local sl = m and m.fpsShowLocalMS
-                          if sl == nil then return true end
-                          return sl
-                      end,
-                      set=function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.fpsShowLocalMS = v
-                          RefreshMinimap()
-                      end },
-                    { type="toggle", label="Show World MS",
-                      get=function() local m = MinimapDB(); return m and m.fpsShowWorldMS or false end,
-                      set=function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.fpsShowWorldMS = v
-                          RefreshMinimap()
-                      end },
-                    { type="slider", label="Update Interval", min=1, max=5, step=1,
-                      get=function() local m = MinimapDB(); return m and m.fpsUpdateInterval or 3 end,
-                      set=function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.fpsUpdateInterval = v
-                          RefreshMinimap()
-                      end },
-                },
-            })
-        end
-        -- Inline offset cog on FPS/MS Position
-        if not EllesmereUI._prebuilding then
-            local rgn = fpsRow._rightRegion
-            EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
-                disabled = FpsOff,
-                disabledTooltip = "Show FPS/MS",
-                title = "FPS/MS Size and Position",
-                rows = {
-                    { type = "slider", label = "Scale", min = 0.5, max = 2.0, step = 0.01,
-                      get = function() local m = MinimapDB(); return m and m.fpsScale or 1.0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.fpsScale = v
-                          local fb = _G._EBS_FpsBg
-                          if fb then fb:SetScale(v) end
-                      end },
-                    { type = "slider", label = "X Offset", min = -500, max = 500, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.fpsOffsetX or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.fpsOffsetX = v
-                          RefreshMinimap()
-                      end },
-                    { type = "slider", label = "Y Offset", min = -500, max = 500, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.fpsOffsetY or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.fpsOffsetY = v
-                          RefreshMinimap()
-                      end },
-                },
-            })
-        end
-
-        -- Show on FPS/MS Hover | Show on Clock Hover
-        local HOVER_TT_VALUES = { none = "None", lockouts = "Instance Lockouts", vault = "Great Vault" }
-        local HOVER_TT_ORDER = { "none", "lockouts", "vault" }
-        -- No Great Vault on WoW Forever: the entry is dropped and a saved "vault"
-        -- shows as None (the module reads it as none too and never rewrites it).
-        if EllesmereUI.IS_FOREVER then
-            HOVER_TT_VALUES.vault = nil
-            HOVER_TT_ORDER = { "none", "lockouts" }
-        end
-        _, h = W:DualRow(parent, y,
-            { type="dropdown", text="Show on FPS/MS Hover",
-              values = HOVER_TT_VALUES, order = HOVER_TT_ORDER,
-              disabled=FpsOff,
-              disabledTooltip="Show FPS/MS",
-              getValue=function()
-                local m = MinimapDB(); local v = m and m.fpsHoverTooltip or "none"
-                if EllesmereUI.IS_FOREVER and v == "vault" then v = "none" end
-                return v
-              end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.fpsHoverTooltip = v
-                RefreshMinimap()
-              end },
-            { type="dropdown", text="Show on Clock Hover",
-              values = HOVER_TT_VALUES, order = HOVER_TT_ORDER,
-              disabled=function() return ClockMode() == "none" end,
-              disabledTooltip="Clock Style",
-              getValue=function()
-                local m = MinimapDB(); local v = m and m.clockHoverTooltip or "none"
-                if EllesmereUI.IS_FOREVER and v == "vault" then v = "none" end
-                return v
-              end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.clockHoverTooltip = v
-              end }
-        );  y = y - h
-
-        -- Show Instance Difficulty as Text | Difficulty Position (+ size/offset cog)
-        local function DiffTextOn()
-            local m = MinimapDB(); return (m and m.diffTextEnabled) or false
-        end
-        local diffRow
-        diffRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Instance Difficulty as Text",
-              getValue=DiffTextOn,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.diffTextEnabled = v and true or false
-                RefreshMinimap()
-                EllesmereUI:RefreshPage()
-              end },
-            { type="dropdown", text="Difficulty Position",
-              values = MAP_POS_VALUES, order = MAP_POS_ORDER,
-              disabled=function() return not DiffTextOn() end,
-              disabledTooltip="Show Instance Difficulty as Text",
-              getValue=function() local m = MinimapDB(); return m and m.diffTextPosition or "topLeft" end,
-              setValue=function(v)
-                local m = MinimapDB(); if not m then return end
-                m.diffTextPosition = v
-                RefreshMinimap()
-              end }
-        );  y = y - h
-        -- Inline cog on Difficulty Position for text size + X/Y offset
-        if not EllesmereUI._prebuilding then
-            local rgn = diffRow._rightRegion
-            local function diffOff()
-                return not DiffTextOn()
-            end
-            EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
-                disabled = diffOff,
-                disabledTooltip = "Show Instance Difficulty as Text",
-                title = "Difficulty Text Size and Position",
-                rows = {
-                    { type = "slider", label = "Text Size", min = 8, max = 24, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.diffTextSize or 12 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.diffTextSize = v
-                          RefreshMinimap()
-                      end },
-                    { type = "slider", label = "X Offset", min = -500, max = 500, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.diffTextOffsetX or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.diffTextOffsetX = v
-                          RefreshMinimap()
-                      end },
-                    { type = "slider", label = "Y Offset", min = -500, max = 500, step = 1,
-                      get = function() local m = MinimapDB(); return m and m.diffTextOffsetY or 0 end,
-                      set = function(v)
-                          local m = MinimapDB(); if not m then return end
-                          m.diffTextOffsetY = v
-                          RefreshMinimap()
-                      end },
-                },
-            })
-        end
-
-        -- Accented Text | (empty) -- which Text elements colour their
-        -- description parts (clock AM/PM, FPS/MS suffixes, difficulty letter) with the
-        -- accent/custom colour from the inline swatches. Dynamic values always render
-        -- white. Difficulty and Difficulty (Reactive) are mutually exclusive: flat
-        -- accent/custom colour vs colour-by-tier. Each locks while the other is
-        -- checked, and the setters clear the sibling as a consistency net (the locked
-        -- state repaints on the next menu open).
-        local accentItems = {
-            { key = "clock",      label = "Clock" },
-            { key = "fpsms",      label = "FPS/MS" },
-            { key = "difficulty", label = "Difficulty",
-              lockedFn = function() local m = MinimapDB(); return (m and m.diffTextReactive) or false end },
-            { key = "difficultyReactive", label = "Difficulty (Reactive)",
-              lockedFn = function() local m = MinimapDB(); return (m and m.diffTextAccent) or false end },
-        }
-        local accentRow
-        accentRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Accented Text",
-              values={ ["_placeholder"]="..." }, order={ "_placeholder" },
-              getValue=function() return "_placeholder" end,
-              setValue=function() end },
-            { type="label", text="" }
-        );  y = y - h
-        if not EllesmereUI._prebuilding then
-            local rgn = accentRow._leftRegion
-            if rgn._control then rgn._control:Hide() end
-            local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
-                rgn, 210, rgn:GetFrameLevel() + 2,
-                accentItems,
-                function(k)
-                    local m = MinimapDB(); if not m then return false end
-                    if k == "clock" then return m.fpsColorClockAMPM or false end
-                    if k == "fpsms" then
-                        local v = m.fpsColorSuffix
-                        if v == nil then return true end
-                        return v
-                    end
-                    if k == "difficulty" then return m.diffTextAccent or false end
-                    if k == "difficultyReactive" then return m.diffTextReactive or false end
-                    return false
-                end,
-                function(k, v)
-                    local m = MinimapDB(); if not m then return end
-                    if k == "clock" then m.fpsColorClockAMPM = v
-                    elseif k == "fpsms" then m.fpsColorSuffix = v
-                    elseif k == "difficulty" then
-                        m.diffTextAccent = v
-                        if v then m.diffTextReactive = false end
-                    elseif k == "difficultyReactive" then
-                        m.diffTextReactive = v
-                        if v then m.diffTextAccent = false end
-                    end
-                    RefreshMinimap()
-                end)
-            PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
-            rgn._control = cbDD
-            rgn._lastInline = nil
-            EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
-
-            -- Accent swatch (nearest the control): live theme accent.
-            local accentSwatch, updateAccent = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5,
-                function()
-                    local ar, ag, ab = EllesmereUI.GetAccentColor()
-                    return ar, ag, ab, 1
-                end,
-                function() end, false, 18)
-            accentSwatch:SetScript("OnClick", function()
-                local m = MinimapDB(); if not m then return end
-                m.fpsUseAccent = true
-                RefreshMinimap()
-                EllesmereUI:RefreshPage()
-            end)
-            PP.Point(accentSwatch, "RIGHT", cbDD, "LEFT", -12, 0)
-            rgn._lastInline = accentSwatch
-
-            -- Custom swatch (to the left of accent): stored custom colour.
-            local customSwatch, updateCustom = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5,
-                function()
-                    local m = MinimapDB()
-                    local c = m and m.fpsColor
-                    if c then return c.r or 1, c.g or 1, c.b or 1, 1 end
-                    return 1, 1, 1, 1
-                end,
-                function(r, g, b)
-                    local m = MinimapDB(); if not m then return end
-                    m.fpsColor = { r = r, g = g, b = b }
-                    RefreshMinimap()
-                end, false, 18)
-            local openPicker = customSwatch:GetScript("OnClick")
-            customSwatch:SetScript("OnClick", function(self)
-                local m = MinimapDB()
-                if m and m.fpsUseAccent then
-                    m.fpsUseAccent = false
-                    RefreshMinimap()
-                    EllesmereUI:RefreshPage()
-                    return
-                end
-                if openPicker then openPicker(self) end
-            end)
-            PP.Point(customSwatch, "RIGHT", accentSwatch, "LEFT", -8, 0)
-            rgn._lastInline = customSwatch
-
-            accentSwatch:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(accentSwatch, "Accent Color") end)
-            accentSwatch:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            customSwatch:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(customSwatch, "Custom Color") end)
-            customSwatch:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                if updateAccent then updateAccent() end
-                if updateCustom then updateCustom() end
-                local m = MinimapDB()
-                local useAccent = m and m.fpsUseAccent
-                accentSwatch:SetAlpha(useAccent and 1 or 0.3)
-                customSwatch:SetAlpha(useAccent and 0.3 or 1)
-            end)
-            local mInit = MinimapDB()
-            local initAccent = mInit and mInit.fpsUseAccent
-            accentSwatch:SetAlpha(initAccent and 1 or 0.3)
-            customSwatch:SetAlpha(initAccent and 0.3 or 1)
-        end
-
-        return math.abs(y)
-    end
-
-    ---------------------------------------------------------------------------
-    --  Register the module
-    ---------------------------------------------------------------------------
-    EllesmereUI:RegisterModule("EllesmereUIMinimap", {
-        title       = "Minimap",
-        description = "Custom minimap skin and layout.",
-        pages       = { "Minimap" },
-        buildPage   = function(pageName, parent, yOffset)
-            if pageName == "Minimap" then return BuildMinimapPage(pageName, parent, yOffset) end
-        end,
-        onReset = function()
-            if _G._EMM_DB and _G._EMM_DB.ResetProfile then
-                _G._EMM_DB:ResetProfile()
-            end
-            EllesmereUI:InvalidatePageCache()
-            if _G._EMM_ApplyMinimap then _G._EMM_ApplyMinimap() end
-        end,
-    })
-
-    SLASH_EMM1 = "/emm"
-    SlashCmdList.EMM = function()
-        if InCombatLockdown and InCombatLockdown() then return end
-        EllesmereUI:ShowModule("EllesmereUIMinimap")
-    end
-end)
--- LoadOnDemand: this addon loads after PLAYER_LOGIN, so the event above will never fire; run the init now.
-if IsLoggedIn() then initFrame:GetScript("OnEvent")(initFrame) end
+-- Settings page of UI Reskin Addons > Minimap (EllesmereUI EUI_Minimap_Options.lua:
+-- the same sections, labels, tooltips and keys). Rows that need a retail-only
+-- API are left out (Border Style textures, Icon Size, Great Vault, M+ Portals,
+-- Crafting Order, Omnium Folio, Addon Compartment). Show Queue Status (the
+-- 5.4.8 queue eye) takes the Omnium Folio's row.
+-- Part of EllesmereUIOptions (load on demand); skipped when EllesmereUIMinimap
+-- is not loaded.
+
+local ns = EllesmereUI
+if not IsAddOnLoaded("EllesmereUIMinimap") then
+	return
+end
+local EMM = ns.EMM
+if not EMM then
+	return
+end
+
+local function M()
+	return EMM.DB()
+end
+
+local function Items(list)
+	local out = {}
+	for i = 1, #list do
+		out[i] = { value = list[i][1], name = list[i][2] }
+	end
+	return out
+end
+
+local function LabelOf(list, value)
+	for i = 1, #list do
+		if list[i][1] == value then
+			return list[i][2]
+		end
+	end
+	return tostring(value or "")
+end
+
+-- Dropdown on a profile key.
+local function KeyDropdown(p, label, tip, list, key, default, isDisabled, onSet)
+	p:Dropdown(label, tip,
+		function() return Items(list) end,
+		function() local m = M(); return (m and m[key]) or default end,
+		function() local m = M(); return LabelOf(list, (m and m[key]) or default) end,
+		function(v)
+			M()[key] = v
+			if onSet then onSet(v) end
+		end,
+		nil, isDisabled)
+end
+
+local function Getter(key, default)
+	return function()
+		local m = M()
+		local v = m and m[key]
+		if v == nil then
+			return default
+		end
+		return v
+	end
+end
+
+local function Setter(key)
+	return function(v) M()[key] = v end
+end
+
+-- Cog rows on profile keys.
+local function SliderRow(label, key, minV, maxV, step, default, tip)
+	return { type = "slider", label = label, min = minV, max = maxV, step = step, tip = tip,
+		get = Getter(key, default), set = Setter(key) }
+end
+
+local function ToggleRow(label, key, tip)
+	return { type = "toggle", label = label, tip = tip, get = Getter(key, false), set = Setter(key) }
+end
+
+---------------------------------------------------------------------------
+-- Value lists (retail labels)
+---------------------------------------------------------------------------
+local SHAPES = { { "square", "Square" }, { "rectangular", "Rectangular" }, { "circle", "Circle" } }
+local ROW_POS = {
+	{ "blUp", "Bottom Left, Grow Up" }, { "blRight", "Bottom Left, Grow Right" },
+	{ "tlDown", "Top Left, Grow Down" }, { "tlRight", "Top Left, Grow Right" },
+	{ "brUp", "Bottom Right, Grow Up" }, { "brLeft", "Bottom Right, Grow Left" },
+	{ "trLeft", "Top Right, Grow Left" }, { "trDown", "Top Right, Grow Down" },
+}
+local GROW = { { "auto", "Auto" }, { "up", "Up" }, { "down", "Down" }, { "left", "Left" }, { "right", "Right" } }
+local CORNERS = { { "BOTTOMLEFT", "Bottom Left" }, { "BOTTOMRIGHT", "Bottom Right" }, { "TOPLEFT", "Top Left" }, { "TOPRIGHT", "Top Right" } }
+local MODES3 = { { "never", "Never" }, { "hover", "On Hover" }, { "always", "Always" } }
+local MAIL_POS = {
+	{ "button", "Minimap Button" }, { "TOPRIGHT", "Top Right" }, { "TOPLEFT", "Top Left" },
+	{ "BOTTOMRIGHT", "Bottom Right" }, { "BOTTOMLEFT", "Bottom Left" },
+}
+local TEXT_STYLES = { { "none", "None" }, { "inside", "Inside Map" }, { "edge", "Edge Box" } }
+local MAP_POS = {
+	{ "belowMap", "Below Map" }, { "aboveMap", "Above Map" }, { "topLeft", "Top Left" }, { "top", "Top" },
+	{ "topRight", "Top Right" }, { "left", "Left" }, { "right", "Right" }, { "bottomLeft", "Bottom Left" },
+	{ "bottom", "Bottom" }, { "bottomRight", "Bottom Right" },
+}
+local HOVER_TT = { { "none", "None" }, { "lockouts", "Instance Lockouts" } }
+
+local function ShapeUsesRectLayout()
+	local m = M()
+	local s = m and m.shape or "square"
+	return s == "square" or s == "rectangular"
+end
+
+---------------------------------------------------------------------------
+-- Visibility checklist (retail BuildVisibilityRow)
+---------------------------------------------------------------------------
+local function Axis(key)
+	for _, axis in ipairs(EMM.VIS_AXES) do
+		if axis.key == key then
+			return axis
+		end
+	end
+end
+
+local function VisibilityItems()
+	local items = {
+		{ value = "state:never", name = "Never" },
+		{ value = "state:always", name = "Always" },
+		{ value = "state:mouseover", name = "Mouseover" },
+		{ value = "match:all", name = "Match All Conditions" },
+		{ value = "match:any", name = "Match Any Condition" },
+	}
+	for _, axis in ipairs(EMM.VIS_AXES) do
+		items[#items + 1] = { value = "show:" .. axis.key, name = "Show: " .. axis.label }
+		items[#items + 1] = { value = "hide:" .. axis.key, name = "Hide: " .. axis.label }
+	end
+	return items
+end
+
+local function VisibilityRow(p)
+	p:MultiSelect("Visibility", "When the minimap is shown. Never / Always / Mouseover is the base state; the Show conditions must match (all or any), a Hide condition always hides.",
+		VisibilityItems,
+		function(value)
+			local s = M()
+			local kind, key = value:match("^(%a+):(.+)$")
+			if kind == "state" then
+				return EMM.VisBase(s) == key
+			elseif kind == "match" then
+				return (s.visibilityMatch or "all") == key
+			end
+			local axis = Axis(key)
+			return EMM.VisFlag(s, kind == "show" and axis.show or axis.hide)
+		end,
+		function(value)
+			local s = M()
+			local kind, key = value:match("^(%a+):(.+)$")
+			if kind == "state" then
+				EMM.SetVisBase(s, key)
+				return
+			elseif kind == "match" then
+				s.visibilityMatch = key
+				return
+			end
+			local axis = Axis(key)
+			local laneKey = kind == "show" and axis.show or axis.hide
+			local otherKey = kind == "show" and axis.hide or axis.show
+			local on = not EMM.VisFlag(s, laneKey)
+			EMM.SetVisFlag(s, laneKey, on)
+			if on then
+				EMM.SetVisFlag(s, otherKey, false)
+			end
+		end,
+		function()
+			local s = M()
+			local base = EMM.VisBase(s)
+			local text = base == "never" and "Never" or (base == "mouseover" and "Mouseover" or "Always")
+			local n = 0
+			for _, axis in ipairs(EMM.VIS_AXES) do
+				if EMM.VisFlag(s, axis.show) or EMM.VisFlag(s, axis.hide) then
+					n = n + 1
+				end
+			end
+			if n > 0 and base ~= "never" then
+				text = text .. " + " .. n .. (n == 1 and " condition" or " conditions")
+			end
+			return text
+		end)
+end
+
+-- Multi-select on "hide" keys: checked = shown.
+local function HideKeyMulti(p, label, tip, list, isDisabled)
+	p:MultiSelect(label, tip,
+		function()
+			local items = {}
+			for _, e in ipairs(list) do
+				items[#items + 1] = { value = e.key, name = e.label, locked = e.locked, lockedTip = e.lockedTip }
+			end
+			return items
+		end,
+		function(key)
+			for _, e in ipairs(list) do
+				if e.key == key then
+					return not e.get()
+				end
+			end
+		end,
+		function(key)
+			for _, e in ipairs(list) do
+				if e.key == key then
+					e.set(not e.get())
+				end
+			end
+		end,
+		function()
+			local on = {}
+			for _, e in ipairs(list) do
+				if not e.get() then
+					on[#on + 1] = e.label
+				end
+			end
+			return #on == 0 and "None" or table.concat(on, ", ")
+		end,
+		isDisabled)
+end
+
+-- Position size cog (Scale + X / Y offset), on the last cell.
+local function SizePosCog(p, title, scaleKey, scaleDefault, xKey, yKey, isOff, offTip, sizeRow)
+	local rows = {}
+	if sizeRow then
+		rows[#rows + 1] = sizeRow
+	end
+	if scaleKey then
+		rows[#rows + 1] = SliderRow("Scale", scaleKey, 0.5, 2.0, 0.05, scaleDefault)
+	end
+	rows[#rows + 1] = SliderRow("X Offset", xKey, -500, 500, 1, 0)
+	rows[#rows + 1] = SliderRow("Y Offset", yKey, -500, 500, 1, 0)
+	p:Cog(title, rows, { icon = "resize", disabled = isOff, disabledTip = offTip })
+end
+
+---------------------------------------------------------------------------
+-- Page
+---------------------------------------------------------------------------
+local function Build(p)
+	if EMM:IsDisabledByElvUI() then
+		p:Paragraph("|cffff6060ElvUI's minimap is on, so EllesmereUI Minimap is off.|r Turn off ElvUI > Maps > Minimap > Enable and reload to use it.")
+	end
+
+	-- DISPLAY -------------------------------------------------------------
+	p:Section("Display")
+	VisibilityRow(p)
+	p:Cog("Minimap Opacity", {
+		SliderRow("Opacity", "opacity", 10, 100, 1, 100, "Fades the minimap while it is shown. Visibility still decides when it shows."),
+	}, {
+		disabled = function() return EMM.VisBase(M()) == "never" end,
+		disabledTip = "This option requires a Visibility other than Never",
+	})
+	KeyDropdown(p, "Shape", nil, SHAPES, "shape", "square")
+
+	p:Slider("Size", nil, 100, 600, 1, Getter("mapSize", 140), Setter("mapSize"))
+	p:Slider("Interactable Button Size", "Size of mail, calendar, tracking, and minimap button group toggle", 16, 40, 1,
+		Getter("interactableBtnSize", 21), Setter("interactableBtnSize"))
+
+	-- Border Size with accent / class / custom color swatches.
+	p:Slider("Border Size", nil, 0, 4, 1, Getter("borderSize", 1), Setter("borderSize"))
+	p:Swatch("Accent Color",
+		function() local r, g, b = EMM.AccentColor(); return r, g, b, 1 end,
+		function() end,
+		{ readonly = true,
+		  active = function() local m = M(); return m.useClassColor and not m.borderUseClassColor end,
+		  onClick = function() local m = M(); m.useClassColor = true; m.borderUseClassColor = false; return true end })
+	p:Swatch("Class Color",
+		function() return EMM.ClassColor() end,
+		function() end,
+		{ readonly = true,
+		  active = function() return M().borderUseClassColor and true or false end,
+		  onClick = function() local m = M(); m.borderUseClassColor = true; m.useClassColor = false; return true end })
+	p:Swatch("Custom Color",
+		function()
+			local m = M()
+			local c = m.borderColor
+			if c then
+				return c.r, c.g, c.b, m.borderA or 1
+			end
+			return m.borderR or 0, m.borderG or 0, m.borderB or 0, m.borderA or 1
+		end,
+		function(r, g, b, a)
+			local m = M()
+			m.borderColor = { r = r, g = g, b = b }
+			m.borderA = a or 1
+		end,
+		{ alpha = true,
+		  active = function() local m = M(); return not (m.borderUseClassColor or m.useClassColor) end,
+		  onClick = function()
+			local m = M()
+			if m.borderUseClassColor or m.useClassColor then
+				m.borderUseClassColor = false
+				m.useClassColor = false
+				return true
+			end
+		  end })
+	p:Blank()
+
+	p:Slider("Reset Zoom (seconds)", "Automatically zoom back out to maximum distance after this many seconds of no manual zoom change. 0 disables the reset.",
+		0, 15, 1, Getter("zoomResetSeconds", 0), Setter("zoomResetSeconds"))
+	p:Toggle("Rotate Minimap", nil, Getter("rotateMinimap", false), Setter("rotateMinimap"))
+
+	-- MINIMAP & QOL BUTTONS ----------------------------------------------
+	p:Section("Minimap & QoL Buttons")
+	local function TooFewButtons()
+		return #EMM.AddonButtonItems() < 2
+	end
+	p:MultiSelect("Ungroup Minimap Buttons", "Addon buttons picked here stand on the button row by themselves instead of inside the group. The order you pick them in is their order on the row.",
+		EMM.AddonButtonItems,
+		function(key)
+			local ug = M().ungroupedButtons
+			return ug and ug[key] and true or false
+		end,
+		function(key)
+			local m = M()
+			m.ungroupedButtons = m.ungroupedButtons or {}
+			if m.ungroupedButtons[key] then
+				m.ungroupedButtons[key] = nil
+			else
+				local maxOrder = 0
+				for _, ord in pairs(m.ungroupedButtons) do
+					if type(ord) == "number" and ord > maxOrder then
+						maxOrder = ord
+					end
+				end
+				m.ungroupedButtons[key] = maxOrder + 1
+			end
+			EMM.FullRebuild()
+		end,
+		function()
+			local n = 0
+			for _, item in ipairs(EMM.AddonButtonItems()) do
+				local ug = M().ungroupedButtons
+				if ug and ug[item.value] then
+					n = n + 1
+				end
+			end
+			if TooFewButtons() then
+				return "..."
+			end
+			return n == 0 and "None" or (n .. " ungrouped")
+		end,
+		TooFewButtons)
+	p:Slider("In-Group Button Size", "Size of addon minimap buttons in the flyout grid", 14, 40, 1,
+		Getter("addonBtnSize", 24), Setter("addonBtnSize"))
+
+	HideKeyMulti(p, "Show Extra Buttons", "Extra buttons on the button row.", {
+		{ key = "friendsOnline", label = "Friends Online",
+		  get = function() local h = M().hideExtraBtns; return h and h.friendsOnline end,
+		  set = function(v) local m = M(); m.hideExtraBtns = m.hideExtraBtns or {}; m.hideExtraBtns.friendsOnline = v end },
+		{ key = "groupButton", label = "Group Button",
+		  get = function() local h = M().hideExtraBtns; return h and h.groupButton end,
+		  set = function(v) local m = M(); m.hideExtraBtns = m.hideExtraBtns or {}; m.hideExtraBtns.groupButton = v end },
+	})
+	p:Toggle("Mouseover Extra Buttons", "When enabled, the extra buttons (Friends Online, Group Button) and any ungrouped minimap buttons only show while the mouse is over the minimap.",
+		Getter("mouseoverExtraBtns", false), Setter("mouseoverExtraBtns"))
+
+	p:Toggle("Open Micro Menu on Middle Click", "Middle-click the minimap to open the EllesmereUI micro menu. When off, middle-click does nothing.",
+		function() return M().openMicroMenuOnMiddleClick ~= false end, Setter("openMicroMenuOnMiddleClick"))
+	p:Blank()
+
+	p:Slider("Friends Tooltip Cap", "Max rows per section in the Friends Online tooltip (0 = the 30-row max). The cog can show each note under its row.",
+		0, 30, 1, Getter("friendsMaxRows", 0), Setter("friendsMaxRows"))
+	p:Cog("Friends Tooltip", {
+		ToggleRow("Show Notes", "friendsShowNotes", "Shows each guild or friend note on a second line under its row. The tooltip gets taller."),
+	})
+	p:Slider("Custom Tooltip Size", "Scales the custom tooltips shown by the unique minimap buttons (friends, calendar, mail, tracking).",
+		0.5, 2.0, 0.05, Getter("customTooltipScale", 1.0), Setter("customTooltipScale"))
+
+	local function BtnRowPos() return M().btnRowPosition or "blUp" end
+	local function ElementRowPos() return M().elementRowPosition or "tlDown" end
+	local function RowItems(other)
+		local items = Items(ROW_POS)
+		for _, item in ipairs(items) do
+			local v = item.value
+			item.locked = function() return v == other() end
+			item.lockedTip = other == ElementRowPos and "Already used by Element Row Position" or "Already used by Button Row Position"
+		end
+		return items
+	end
+	p:Dropdown("Button Row Position", "Which minimap corner the button row builds out from and the direction it grows.",
+		function() return RowItems(ElementRowPos) end, BtnRowPos,
+		function() return LabelOf(ROW_POS, BtnRowPos()) end, Setter("btnRowPosition"))
+	p:Cog("Button Row Settings", {
+		SliderRow("Icon Spacing", "btnRowSpacing", -20, 40, 1, 0),
+		SliderRow("Distance from Map", "btnRowDistance", -20, 60, 1, 0),
+		{ type = "dropdown", label = "Grow Tooltip/Popup",
+		  items = function() return Items(GROW) end,
+		  get = Getter("flyoutGrowDir", "auto"), set = Setter("flyoutGrowDir"),
+		  labelFn = function() return LabelOf(GROW, M().flyoutGrowDir or "auto") end },
+	}, { icon = "resize" })
+	p:Toggle("Free Move Buttons", "When enabled, Shift+Click any minimap button (mail, calendar, tracking, addon buttons) to drag it to a custom position.",
+		Getter("freeMoveBtns", false),
+		function(v)
+			local m = M()
+			m.freeMoveBtns = v
+			if not v then
+				m.btnPositions = {}
+			end
+		end)
+	p:Cog("Button Settings", {
+		{ type = "toggle", label = "Button Backgrounds",
+		  tip = "Show black backgrounds behind minimap indicator buttons (tracking, calendar, mail, addon buttons, flyout toggle).",
+		  get = function() return M().btnBackgrounds ~= false end,
+		  set = function(v) M().btnBackgrounds = v; EMM.FullRebuild() end },
+	})
+	p:Button("Reset Button Positions", "Puts every button moved with Free Move back on its row.", "Reset",
+		function() M().btnPositions = {} end)
+	p:Blank()
+
+	-- BLIZZARD ELEMENTS ---------------------------------------------------
+	p:Section("Blizzard Elements")
+	local function QueueOff() return (M().queueStatusMode or "always") == "never" end
+	KeyDropdown(p, "Show Queue Status", "Show the queue status eye (dungeon, raid, battleground and scenario queues) on the minimap while you are queued. Use the cog to choose its corner and nudge its position.",
+		MODES3, "queueStatusMode", "always")
+	p:Cog("Queue Status Position", {
+		{ type = "dropdown", label = "Corner",
+		  items = function() return Items(CORNERS) end,
+		  get = Getter("queueStatusCorner", "BOTTOMLEFT"), set = Setter("queueStatusCorner"),
+		  labelFn = function() return LabelOf(CORNERS, M().queueStatusCorner or "BOTTOMLEFT") end },
+		SliderRow("X Offset", "queueStatusX", -1000, 1000, 1, 0),
+		SliderRow("Y Offset", "queueStatusY", -1000, 1000, 1, 0),
+	}, { disabled = QueueOff, disabledTip = "Show Queue Status" })
+	p:Slider("Queue Status Scale", nil, 0.5, 1.5, 0.05, Getter("queueStatusScale", 0.8), Setter("queueStatusScale"), QueueOff)
+
+	local function HideKey(key, label, extra)
+		local e = { key = key, label = label,
+			get = function() return M()[extra.hideKey] and true or false end,
+			set = function(v) M()[extra.hideKey] = v end }
+		e.locked = extra.locked
+		e.lockedTip = extra.lockedTip
+		return e
+	end
+	HideKeyMulti(p, "Show Blizzard Elements", "Blizzard parts shown on the minimap.", {
+		HideKey("calendar", "Calendar", { hideKey = "hideGameTime" }),
+		HideKey("mail", "Mail", { hideKey = "hideMail" }),
+		HideKey("tracking", "Tracking", { hideKey = "hideTrackingButton" }),
+		HideKey("difficulty", "Difficulty", { hideKey = "hideRaidDifficulty",
+			locked = function() return M().diffTextEnabled and true or false end,
+			lockedTip = "Shown as text (Show Instance Difficulty as Text)" }),
+		HideKey("zoom", "Zoom +/- Icons", { hideKey = "hideZoomButtons" }),
+	})
+	p:Toggle("Scroll to Zoom", nil, Getter("scrollZoom", true), Setter("scrollZoom"))
+
+	local function ElOff() return not ShapeUsesRectLayout() end
+	p:Dropdown("Element Row Position", "Which minimap corner the Blizzard element row (tracking, calendar, mail) builds out from and the direction it grows.",
+		function() return RowItems(BtnRowPos) end, ElementRowPos,
+		function() return LabelOf(ROW_POS, ElementRowPos()) end, Setter("elementRowPosition"), nil, ElOff)
+	p:Cog("Element Row Spacing", {
+		SliderRow("Icon Spacing", "elementRowSpacing", -20, 40, 1, 0),
+		SliderRow("Distance from Map", "elementRowDistance", -20, 60, 1, 0),
+	}, { icon = "resize", disabled = ElOff, disabledTip = "Square or Rectangular Shape" })
+	local function MailHidden() return M().hideMail and true or false end
+	KeyDropdown(p, "Mail Position", nil, MAIL_POS, "mailPosition", "button", MailHidden)
+	p:Cog("Mail Position", {
+		SliderRow("X Offset", "mailOffsetX", -100, 100, 1, 0),
+		SliderRow("Y Offset", "mailOffsetY", -500, 500, 1, 0),
+	}, { icon = "directions",
+	     disabled = function() local m = M(); return m.hideMail or (m.mailPosition or "button") == "button" end,
+	     disabledTip = "a Mail Position corner" })
+
+	-- TEXT ------------------------------------------------------------------
+	p:Section("Text")
+	local function ClockMode() local c = EMM.GetElementModes(M()); return c end
+	local function LocationMode() local _, l = EMM.GetElementModes(M()); return l end
+	local function ClockOff() return ClockMode() == "none" end
+	local function LocOff() return LocationMode() == "none" end
+
+	p:Dropdown("Clock Style", nil, function() return Items(TEXT_STYLES) end, ClockMode,
+		function() return LabelOf(TEXT_STYLES, ClockMode()) end, Setter("clockMode"))
+	KeyDropdown(p, "Clock Position", nil, MAP_POS, "clockPosition", "top", ClockOff)
+	SizePosCog(p, "Clock Size and Position", "clockScale", 1.15, "clockOffsetX", "clockOffsetY", ClockOff, "Clock Style")
+
+	p:Dropdown("Zone Text Style", nil, function() return Items(TEXT_STYLES) end, LocationMode,
+		function() return LabelOf(TEXT_STYLES, LocationMode()) end, Setter("locationMode"))
+	p:Cog("Zone Text Settings", {
+		ToggleRow("Display Sub Zone", "zoneShowSubZone"),
+		ToggleRow("Reactive Coloring", "zoneReactiveColor"),
+	}, { disabled = LocOff, disabledTip = "Zone Text Style" })
+	KeyDropdown(p, "Zone Position", nil, MAP_POS, "locationPosition", "bottom", LocOff)
+	SizePosCog(p, "Zone Text Size and Position", "locationScale", 1.15, "locationOffsetX", "locationOffsetY", LocOff, "Zone Text Style")
+
+	local function CoordsMode() local mode = EMM.GetCoordsModePos(M()); return mode end
+	local function CoordsPos() local _, pos = EMM.GetCoordsModePos(M()); return pos end
+	local function CoordsOff() return CoordsMode() == "never" end
+	p:Dropdown("Show Coordinates", nil, function() return Items(MODES3) end, CoordsMode,
+		function() return LabelOf(MODES3, CoordsMode()) end, Setter("coordsMode"))
+	p:Cog("Coordinate Precision", {
+		SliderRow("Decimal Places", "coordPrecision", 0, 2, 1, 0),
+	}, { disabled = CoordsOff, disabledTip = "Show Coordinates" })
+	p:Dropdown("Coordinates Position", nil, function() return Items(MAP_POS) end, CoordsPos,
+		function() return LabelOf(MAP_POS, CoordsPos()) end, Setter("coordsPosition"), nil, CoordsOff)
+	SizePosCog(p, "Coordinates Size and Position", "coordsScale", 1.0, "coordsBelowOffsetX", "coordsBelowOffsetY", CoordsOff, "Show Coordinates")
+
+	local function FpsOff() return not M().showFPS end
+	p:Toggle("Show FPS/MS", nil, Getter("showFPS", false), Setter("showFPS"))
+	p:Cog("FPS/MS Settings", {
+		SliderRow("Text Size", "fpsTextSize", 8, 30, 1, 12),
+		{ type = "toggle", label = "Show Local MS",
+		  get = function() return M().fpsShowLocalMS ~= false end, set = Setter("fpsShowLocalMS") },
+		ToggleRow("Show World MS", "fpsShowWorldMS"),
+		SliderRow("Update Interval", "fpsUpdateInterval", 1, 5, 1, 3),
+	}, { disabled = FpsOff, disabledTip = "Show FPS/MS" })
+	KeyDropdown(p, "FPS/MS Position", nil, MAP_POS, "fpsPosition", "bottomLeft", FpsOff)
+	SizePosCog(p, "FPS/MS Size and Position", "fpsScale", 1.0, "fpsOffsetX", "fpsOffsetY", FpsOff, "Show FPS/MS")
+
+	KeyDropdown(p, "Show on FPS/MS Hover", nil, HOVER_TT, "fpsHoverTooltip", "none", FpsOff)
+	KeyDropdown(p, "Show on Clock Hover", nil, HOVER_TT, "clockHoverTooltip", "none", ClockOff)
+
+	local function DiffOff() return not M().diffTextEnabled end
+	p:Toggle("Show Instance Difficulty as Text", nil, Getter("diffTextEnabled", false), Setter("diffTextEnabled"))
+	KeyDropdown(p, "Difficulty Position", nil, MAP_POS, "diffTextPosition", "topLeft", DiffOff)
+	SizePosCog(p, "Difficulty Text Size and Position", nil, nil, "diffTextOffsetX", "diffTextOffsetY", DiffOff,
+		"Show Instance Difficulty as Text", SliderRow("Text Size", "diffTextSize", 8, 24, 1, 12))
+
+	-- Accented Text: which text parts take the accent / custom color.
+	local accentItems = {
+		{ value = "clock", name = "Clock" },
+		{ value = "fpsms", name = "FPS/MS" },
+		{ value = "difficulty", name = "Difficulty",
+		  locked = function() return M().diffTextReactive and true or false end,
+		  lockedTip = "Difficulty (Reactive) is checked" },
+		{ value = "difficultyReactive", name = "Difficulty (Reactive)",
+		  locked = function() return M().diffTextAccent and true or false end,
+		  lockedTip = "Difficulty is checked" },
+	}
+	local function AccentOn(key)
+		local m = M()
+		if key == "clock" then return m.fpsColorClockAMPM and true or false end
+		if key == "fpsms" then return m.fpsColorSuffix ~= false end
+		if key == "difficulty" then return m.diffTextAccent and true or false end
+		if key == "difficultyReactive" then return m.diffTextReactive and true or false end
+		return false
+	end
+	p:MultiSelect("Accented Text", "Which text parts (clock AM/PM, the FPS / MS words, the difficulty letter) take the accent or custom color from the swatches. Numbers stay white.",
+		function() return accentItems end,
+		AccentOn,
+		function(key)
+			local m = M()
+			local v = not AccentOn(key)
+			if key == "clock" then
+				m.fpsColorClockAMPM = v
+			elseif key == "fpsms" then
+				m.fpsColorSuffix = v
+			elseif key == "difficulty" then
+				m.diffTextAccent = v
+				if v then m.diffTextReactive = false end
+			elseif key == "difficultyReactive" then
+				m.diffTextReactive = v
+				if v then m.diffTextAccent = false end
+			end
+		end,
+		function()
+			local on = {}
+			for _, item in ipairs(accentItems) do
+				if AccentOn(item.value) then
+					on[#on + 1] = item.name
+				end
+			end
+			return #on == 0 and "None" or table.concat(on, ", ")
+		end)
+	p:Swatch("Accent Color",
+		function() local r, g, b = EMM.AccentColor(); return r, g, b, 1 end,
+		function() end,
+		{ readonly = true,
+		  active = function() return M().fpsUseAccent and true or false end,
+		  onClick = function() M().fpsUseAccent = true; return true end })
+	p:Swatch("Custom Color",
+		function()
+			local c = M().fpsColor
+			if c then
+				return c.r or 1, c.g or 1, c.b or 1, 1
+			end
+			return 1, 1, 1, 1
+		end,
+		function(r, g, b) M().fpsColor = { r = r, g = g, b = b } end,
+		{ active = function() return not M().fpsUseAccent end,
+		  onClick = function()
+			if M().fpsUseAccent then
+				M().fpsUseAccent = false
+				return true
+			end
+		  end })
+	p:Blank()
+end
+
+ns.RegisterSettingsModule({
+	key = "minimap",
+	name = "Minimap",
+	group = "UI Reskin Addons",
+	tabs = {
+		{ key = "minimap", name = "Minimap", description = "Custom minimap skin and layout.", build = Build },
+	},
+	reset = function()
+		EMM:Reset()
+	end,
+	resetTip = "Set all Minimap settings back to the EllesmereUI defaults (size and position too).",
+})

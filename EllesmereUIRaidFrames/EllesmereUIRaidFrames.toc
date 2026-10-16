@@ -1,62 +1,28 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Raid Frames
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
-## Notes: Incredibly light performance, modern raid frames with endless flexibility.
-## Author: Ellesmere
-## Version: 9.5.5
+## Notes: Incredibly light performance, modern raid frames with endless flexibility (EllesmereUI Raid Frames, 5.4.8 port). /erf for settings.
+## Author: EllesmereUI port
+## Version: 3.17.0
 ## Dependencies: EllesmereUI
+## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ElvUI
 ## SavedVariables: EllesmereUIRaidFramesDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
-
-# Main Luas
+# Defaults, saved settings, settings views, shared helpers
 EllesmereUIRaidFrames.lua
-EUI_RaidFrames_Colors.lua
-EUI_RaidFrames_Compact.lua
-EUI_RaidFrames_Absorb.lua
-EUI_RaidFrames_Style.lua
-EUI_RaidFrames_Update.lua
-EUI_RaidFrames_BossFrames.lua
-EUI_RaidFrames_ExtraFrames.lua
-EUI_RaidFrames_PetFrames.lua
-EUI_RaidFrames_Sort.lua
-EUI_RaidFrames_Layout.lua
-EUI_RaidFrames_Reload.lua
-EUI_RaidFrames_Visibility.lua
-EUI_RaidFrames_Events.lua
-EUI_RaidFrames_Party.lua
-EUI_RaidFrames_PartyTargets.lua
-EUI_RaidFrames_PartyLayout.lua
-EUI_RaidFrames_Extras.lua
-EUI_RaidFrames_Lifecycle.lua
-
-# Options preview (fake raid/party members while the options panel is open)
-EUI_RaidFrames_Preview.lua
-
-# Blizzard Style / Classic WoW UI (edge, highlights, defaults)
-EUI_RaidFrames_Stock.lua
-
-# Party portrait (every style)
-EUI_RaidFrames_Portrait.lua
-
-# Click Casting
-EUI_RaidFrames_ClickCast.lua
-
-# Buff Manager
+# Retail "Naowh" profile (first run)
+EUI_RaidFrames_Seed.lua
+# Look of one unit button
+EUI_RaidFrames_Button.lua
+# Aura scan, debuffs, defensives, dispels
+EUI_RaidFrames_Auras.lua
+# Buff Manager v2 indicators
 EUI_RaidFrames_BuffManager.lua
-
-# 12.1 Aura Containers
-EUI_RaidFrames_AuraContainers.lua
-
-# 12.1 Debuff Manager (self-gated; inert on 12.0)
-EUI_RaidFrames_DebuffManager.lua
-
-# 12.1 Buff Manager v2: spell -> filter -> indicator model (self-gated)
-EUI_RaidFrames_BuffManager2.lua
-
-# WoW Forever: Missing Buffs indicator (returns on every other client)
-EUI_RaidFrames_ForeverMissingBuffs.lua
-
-# 12.1 Manager options pages (self-gated; inert on 12.0)
-
-# Options
+# Secure headers, sorting, layout, sizes, visibility, unlock mode
+EUI_RaidFrames_Headers.lua
+# Friendly boss, extra frames, pets, party targets, portrait, healer mana
+EUI_RaidFrames_Extras.lua
+# Fake members while the settings are open
+EUI_RaidFrames_Preview.lua
+# Click casting
+EUI_RaidFrames_ClickCast.lua
+# Events, start-up, /erf
+EUI_RaidFrames_Init.lua

@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIBags_Compat.lua
 -------------------------------------------------------------------------------
 --  EllesmereUIBags_DB.lua
 --  Bags profile database + login-time seeding. Lives in the resident module
@@ -7,6 +7,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  file-execution time: the suite-safe window (after the parent's SVs) and, in
 --  standalone builds, the pre-SV window the Lite re-root queue handles.
 -------------------------------------------------------------------------------
+local addonNS = select(2, ...)
 local BAGS_DEFAULTS = {
     profile = {
         bagScale              = 1,
@@ -24,22 +25,19 @@ local BAGS_DEFAULTS = {
         bagSplitSetGearBySet  = false,
         bagShowSetGearName    = false,
         bagSetNameFontSize    = 9,
-        bagMergeDuplicates    = true,    -- every display
+        bagMergeDuplicates    = true,
+        bagListMergeDuplicates = false,
         bagSidebarCollapsed   = false,
-        bagHideSidebarIconsCollapsed = false, -- on: collapsed = no icon strip, the expand arrow sits by the title
         bankSidebarCollapsed  = false,
         bagShowPinnedItems    = true,
         bagShowRecentItems    = true,
         bagPinnedInOneBag     = true,
-        bagHidePinnedInCategories = false,
         bagRecentInOneBag     = false,
         bagShowRecentClear    = false,
-        -- Bag Top Bar Icons: the header's Show Bags, Junk Marker, Quick Actions and Sort icons
-        bagShowBagsIcon       = true,
-        bagShowJunkIcon       = true,    -- the Junk Marker: header coin, Junk category, Sell Junk at merchants
-        bagShowQuickIcon      = false,   -- Quick Actions: dim all but items a spell works on; click or Alt-click casts it
+        bagShowPinRecentTips  = true,
         bagShowSortIcon       = true,
         bagSortToBottom       = false,
+        bagHideRandomize      = false,
         bagDefaultBagType     = "all",   -- "all" | "onebag" | "multibag"
         bagDefaultOneBag      = false,   -- legacy; migrated to bagDefaultBagType
         bagNestByExpansion    = false,
@@ -49,24 +47,20 @@ local BAGS_DEFAULTS = {
         bankHideTabsInSidebar = false,
         bankHideEmptyWhenNested = false,
         bankListView          = false,  -- reload to apply
-        bankCompactView       = false,  -- reload to apply; bankListView wins when both are set
         bagArmoryGroupBySlot  = false,
         bagCompactArmorySlotGroups = false,
+        bagHideOneBagWarning  = false,
         bagHideAddCategory    = false,
-        bagWindowLocked       = false,   -- footer lock icon: no resizing or moving
-        bankWindowLocked      = false,
-        bagOpenWithCharacter  = false,
-        -- bagFrameStrata has no default: unset reads the retired
-        -- bagAllowWindowsOverBags (ns.BagFrameStrata)
+        bagMoveNoShift        = false,
+        bagAllowWindowsOverBags = true,
         bagStackSplitter      = false,
+        enableGoldTracking    = true,
         detachReagentBag      = false,
         enhancedBags          = true,
-        bagDesaturateJunkItems = false,  -- Junk Item Visuals: grey items and Junk Marker junk, every display
-        bagShowJunkCoin       = false,   -- Junk Item Visuals: the coin badge on junk (Grid and Compact)
-        bagQualityBorder      = true,    -- Quality Item Border, every display
+        bagDesaturateJunkItems = false,
         bagDisplayBindType    = false,
         bagBindTypeFontSize   = 11,
-        bagDisplayMode        = "grid",  -- "grid" | "list" | "compact" (reload to apply)
+        bagDisplayMode        = "grid",  -- "grid" | "list" (reload to apply)
         bagListRoundIcons     = false,
         bagListSplitArmor     = false,
         bagListSplitWeapons   = false,
@@ -75,12 +69,84 @@ local BAGS_DEFAULTS = {
         bagListGapR           = 23,
         bagListFontSize       = 11,
         bagListRowHeight      = 24,
+        bagListQualityBorder  = false,
         bagListHideStripes    = false,
         bagListSectionValue   = false,
     },
 }
 local db = EllesmereUI.Lite.NewDB("EllesmereUIBagsDB", BAGS_DEFAULTS)
 EllesmereUI._bagsDB = db
+
+-------------------------------------------------------------------------------
+--  5.4.8 port: the bag settings of the retail EllesmereUI profile ("Naowh"),
+--  written once into a new EllesmereUIBagsDB so the bags look the same as on
+--  retail. Reset Bags goes back to the EllesmereUI defaults above, as retail.
+-------------------------------------------------------------------------------
+local RETAIL_PROFILE = {
+    bagDefaultBagType     = "onebag",
+    bagMergeDuplicates    = false,
+    bagAutoSize           = true,
+    bagHideRandomize      = true,
+    bagArmoryGroupBySlot  = true,
+    bagHideOneBagWarning  = true,
+    bagSidebarCollapsed   = true,
+    bagCountFontSize      = 14,
+    bagCatTitleSize       = 14,
+    itemlevelFontSize     = 14,
+    bagDisabledCategories = { ["Housing"] = true },
+    bagHiddenInAllItems   = {},
+    bagCategoryState = {
+        ["Weapons / Trinkets"] = { groupName = "The Armory", groupNameCustom = true },
+        ["Armor"]              = { groupName = "The Armory", groupNameCustom = true },
+        ["Item Set Gear"]      = { groupName = "The Armory", groupNameCustom = true },
+        ["Consumables"]        = { groupName = "Adventure Prep", groupNameCustom = true },
+        ["Gear Enhancements"]  = { groupName = "Adventure Prep", groupNameCustom = true },
+    },
+    bagCategoryOrder = {
+        "Pinned Items", "Recent Items", "Weapons / Trinkets", "Armor", "Item Set Gear",
+        "Consumables", "Gear Enhancements", "Trade Goods", "Professions", "Reagent Bag",
+        "Miscellaneous", "Quest Items", "Housing",
+    },
+}
+
+local loadFrame = CreateFrame("Frame")
+loadFrame:RegisterEvent("ADDON_LOADED")
+loadFrame:SetScript("OnEvent", function(self, _, name)
+    if name ~= "EllesmereUIBags" then return end
+    self:UnregisterEvent("ADDON_LOADED")
+    addonNS.AttachSavedVariables()
+    if db._isNew then
+        local p = db.profile
+        for k, v in pairs(RETAIL_PROFILE) do
+            p[k] = type(v) == "table" and CopyTable(v) or v
+        end
+        if not EllesmereUIDB then EllesmereUIDB = {} end
+        -- The retail first-run seeding below already happened there.
+        EllesmereUIDB.bagDisabledCategoriesSeeded = true
+        EllesmereUIDB.bagDefaultGroupsSeeded = true
+    end
+    if _G.EUI_CategoryManager then _G.EUI_CategoryManager:InitCategories() end
+end)
+
+-- Footer "Reset Bags" (retail onReset): the profile back to the defaults, and
+-- the per-character data in EllesmereUIDB cleared.
+function EllesmereUI._bagsReset()
+    local p = db.profile
+    if p then
+        for k in pairs(p) do p[k] = nil end
+        EllesmereUI.Lite.DeepMergeDefaults(p, db._profileDefaults)
+    end
+    if EllesmereUIDB then
+        EllesmereUIDB.bagPinnedItems = nil
+        EllesmereUIDB.bagItemAssignments = nil
+        EllesmereUIDB.characterGold = nil
+        EllesmereUIDB.warbandGold = nil
+        EllesmereUIDB.bagCurrencyByChar = nil
+    end
+    if _G.EUI_CategoryManager then _G.EUI_CategoryManager:InitCategories() end
+    if _G.EUI_Bags and _G.EUI_Bags.ApplyWindowLayering then _G.EUI_Bags:ApplyWindowLayering() end
+    if _G.EUI_Bags and _G.EUI_Bags:IsVisible() and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+end
 
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("PLAYER_LOGIN")
@@ -89,6 +155,12 @@ initFrame:SetScript("OnEvent", function(self)
 
     if not EllesmereUIDB then EllesmereUIDB = {} end
     local p = db.profile
+
+    -- 5.4.8 port: ElvUI's own bags take over the same bag keys and the bank.
+    local E = _G.ElvUI and _G.ElvUI[1]
+    if E and E.private and E.private.bags and E.private.bags.enable then
+        EllesmereUI.Print("ElvUI Bags is on. Turn it off (ElvUI > Bags > Enable) to use EllesmereUI Bags, or disable EllesmereUI Bags in the AddOns list.")
+    end
 
     -- The bank grouping dropdowns were replaced by two toggles. Convert the
     -- short-lived string keys once, then drop them.

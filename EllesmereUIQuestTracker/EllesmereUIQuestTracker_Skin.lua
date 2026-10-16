@@ -1,1665 +1,307 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
--- EllesmereUIQuestTracker_Skin.lua
+-- EllesmereUIQuestTracker_Skin.lua (5.4.8 port)
 --
--- Restyles Blizzard's ObjectiveTrackerFrame sub-trackers (headers, blocks,
--- progress bars, timer bars) via hooks only. Never SetScript on any tracker
--- frame; HookScript only. No frame-tree recursion.
---
--- Styling targets (match the legacy custom tracker exactly):
---   title color      = { r=1.00, g=0.91, b=0.47 }  gold
---   objective color  = { r=0.72, g=0.72, b=0.72 }  gray
---   completed color  = { r=0.25, g=1.00, b=0.35 }  green
---   section accent   = live EllesmereUI.ELLESMERE_GREEN
---   bar bg           = { r=0.15, g=0.15, b=0.15 } at 0.8 alpha
---   bar fill         = accent tint on Blizzard's default statusbar texture
---   timer fill       = { r=1.00, g=0.82, b=0.20 }
---   timer low fill   = { r=1.00, g=0.30, b=0.30 }
---   font             = EllesmereUI.GetFontPath("unitFrames")
---   shadow / outline = EllesmereUI.GetFontUseShadow / GetFontOutlineFlag
---   border           = PanelPP.CreateBorder 1px black, physical pixel perfect
+-- Retail restyles ObjectiveTrackerFrame (fonts, sizes, title / completed /
+-- focused colors, header color, accent line under the header, "All
+-- Objectives" header). 5.4.8 draws the tracker with the WatchFrame:
+--   WatchFrameHeader / WatchFrameTitle   = the master "Objectives" header
+--   WatchFrameCollapseExpandButton       = its minimize button
+--   WatchFrame_SetLine(line, ...)        = every quest / achievement / scenario line
+--   WATCHFRAME_LINKBUTTONS               = one per shown quest / achievement
+-- Only hooksecurefunc / HookScript: no SetScript on Blizzard frames, no
+-- writes to Blizzard tables or globals (state lives in our weak tables).
+-- Retail parts with no 5.4.8 counterpart (section headers, quest type icons,
+-- block click areas) are skipped.
 -------------------------------------------------------------------------------
-local _, ns = ...
-local EQT = ns.EQT
+local addonName, P = ...
+local ns = EllesmereUI
+local EQT = P.EQT
 
--- External weak-keyed table for block skin state (never write custom keys
--- onto Blizzard pool frames -- causes taint).
-local _skinned = setmetatable({}, { __mode = "k" })
+local DEFAULT_FONT = "Fonts\\FRIZQT__.TTF"
 
--- Stock styles (Blizzard Style / Classic WoW UI), latched once in InitSkin.
--- STOCK keeps Blizzard's own tracker art, fonts and POI icons: the skin passes
--- stand down and only the behaviour (visibility, click sinks, click-anywhere
--- headers, QoL) runs. Both stock styles draw the tracker the same way
--- (Blizzard's header bars included); CLASSIC only keeps its gold header
--- colour for any remaining GetHeaderRGB reader.
-local STOCK, CLASSIC = false, false
-
--- Blizzard's native quest POI icons instead of our classified icons: the
--- user's toggle, or forced by either stock style.
-local function NativeIcons()
-    return STOCK or EQT.Cfg("showQuestIcons")
-end
-
-
--- Color helpers. All four user-facing text colors come from DB so they
--- follow the Colors section in the options page.
-local function GetTitleRGB()
-    local c = EQT.DB()
-    return c.titleR or 1.0, c.titleG or 0.910, c.titleB or 0.471
-end
-local function GetCompletedRGB()
-    local c = EQT.DB()
-    return c.completedR or 0.251, c.completedG or 1.0, c.completedB or 0.349
-end
-local function GetFocusRGB()
-    local c = EQT.DB()
-    return c.focusR or 0.871, c.focusG or 0.251, c.focusB or 1.0
-end
-local SUB_TRACKERS = {
-    "ScenarioObjectiveTracker",
-    "UIWidgetObjectiveTracker",
-    "CampaignQuestObjectiveTracker",
-    "QuestObjectiveTracker",
-    "AdventureObjectiveTracker",
-    "AchievementObjectiveTracker",
-    "MonthlyActivitiesObjectiveTracker",
-    "ProfessionsRecipeTracker",
-    "BonusObjectiveTracker",
-    "WorldQuestObjectiveTracker",
-    "InitiativeTasksObjectiveTracker",
-}
-
--- ScenarioObjectiveTracker and UIWidgetObjectiveTracker render their content through
--- Blizzard's shared UI-widget pool -- the same pool GameTooltip and AreaPOI tooltips
--- draw from. ANY method call on their child blocks taints that pool, and the taint
--- surfaces later as "attempt to compare a secret number value" in LayoutFrame.lua when
--- a tooltip lays out a widget set (e.g. hovering an AreaPOI on the world map). We only
--- ever skin their headers; block-level loops must skip them entirely.
-local function SharesWidgetPool(tracker)
-    return tracker == _G.ScenarioObjectiveTracker
-        or tracker == _G.UIWidgetObjectiveTracker
-end
-
--- Shared font sizes -- read from DB so the options panel can tweak them.
--- Defaults are seeded in the loader's QT_DEFAULTS table.
-local function GetTitleSize()  return EQT.Cfg("titleFontSize")     or 13 end
-local function GetObjSize()    return EQT.Cfg("objectiveFontSize") or 11 end
+-------------------------------------------------------------------------------
+-- Settings readers (fallbacks = retail Get*RGB fallbacks)
+-------------------------------------------------------------------------------
+local function GetTitleSize()  return EQT.Cfg("titleFontSize")     or 12 end
+local function GetObjSize()    return EQT.Cfg("objectiveFontSize") or 10 end
 local function GetHeaderSize() return EQT.Cfg("headerFontSize")    or 13 end
 
--------------------------------------------------------------------------------
--- External weak-keyed flag tables. Never write custom fields onto Blizzard-
--- owned tables: the tracker iterates its own data tables (e.g. tracker.blocks
--- keyed by blockID) with pairs(), and any stray key becomes a "fake entry"
--- that breaks their MarkBlocksUnused logic. All idempotency flags live here.
--------------------------------------------------------------------------------
-local _hookedTrackers    = setmetatable({}, { __mode = "k" })
-local _hookedBlocks      = setmetatable({}, { __mode = "k" })
-local _blockIcons        = setmetatable({}, { __mode = "k" })  -- block -> our icon texture
+local function GetTitleRGB()
+	local c = EQT.DB()
+	return c.titleR or 1.0, c.titleG or 0.910, c.titleB or 0.471
+end
+local function GetCompletedRGB()
+	local c = EQT.DB()
+	return c.completedR or 0.251, c.completedG or 1.0, c.completedB or 0.349
+end
+local function GetFocusRGB()
+	local c = EQT.DB()
+	return c.focusR or 0.871, c.focusG or 0.251, c.focusB or 1.0
+end
 
--- External weak-keyed flag tables. Every "am I in a state?" bool / number
--- we used to write directly onto Blizzard-owned frames (block, tracker,
--- line, FontString, StatusBar, bar, etc.) lives here instead so Blizzard's
--- iteration of its own tables never sees our additions. This is the
--- canonical taint-avoidance pattern per CLAUDE.md.
-local _blockFocus        = setmetatable({}, { __mode = "k" })  -- block -> focus texture
-local _masterHeaderCollapseHooked = false  -- guards the SetCollapsed re-skin hook below
-
--------------------------------------------------------------------------------
--- Helpers
--------------------------------------------------------------------------------
 local function GetAccent()
-    local eg = EllesmereUI and EllesmereUI.ELLESMERE_GREEN
-    if eg then return eg.r, eg.g, eg.b end
-    return 0.047, 0.824, 0.624
+	if ns.ResolveAccent then
+		local r, g, b = ns.ResolveAccent()
+		if r then return r, g, b end
+	end
+	return 0.047, 0.824, 0.624
 end
+EQT.GetAccent = GetAccent
 
--- Player class color, via the shared EllesmereUI.GetClassColor() cache.
--- Falls back to white if the player's class token isn't known yet.
 local function GetClassColorRGB()
-    local cc = EllesmereUI and EllesmereUI._playerClass and EllesmereUI.GetClassColor(EllesmereUI._playerClass)
-    if cc then return cc.r, cc.g, cc.b end
-    return 1.0, 1.0, 1.0
+	local _, class = UnitClass("player")
+	local cc = class and ns.GetClassColor and ns.GetClassColor(class)
+	if cc and cc.r then return cc.r, cc.g, cc.b end
+	return 1.0, 1.0, 1.0
 end
+EQT.GetClassColorRGB = GetClassColorRGB
 
--- Header text + minimize-button color, user-adjustable via the "Header
--- Color" swatch in Colors options: Class Color / Custom Color / Accent
--- Color. Applies uniformly to every header (the master "All Objectives"
--- header and every per-section header alike). Defaults to Accent Color
--- (headerUseAccent is treated as true unless explicitly set to false).
+-- Header Color / Line Color: Class Color / Custom Color / Accent Color
+-- (the UseAccent keys count as true until set to false).
 local function GetHeaderRGB()
-    if CLASSIC then
-        local n = _G.NORMAL_FONT_COLOR
-        if n then return n.r, n.g, n.b end
-        return 1.0, 0.82, 0.0
-    end
-    local c = EQT.DB()
-    if c.headerShowClassColor then return GetClassColorRGB() end
-    if c.headerUseAccent ~= false then return GetAccent() end
-    return c.headerR or 1.0, c.headerG or 1.0, c.headerB or 1.0
+	local c = EQT.DB()
+	if c.headerShowClassColor then return GetClassColorRGB() end
+	if c.headerUseAccent ~= false then return GetAccent() end
+	return c.headerR or 1.0, c.headerG or 1.0, c.headerB or 1.0
 end
-
--- Section-divider line color, user-adjustable via the "Line Color" swatch in Colors
--- options: Class Color / Custom Color / Accent Color. Defaults to Accent Color
--- (lineUseAccent is treated as true unless explicitly set to false).
 local function GetLineRGB()
-    local c = EQT.DB()
-    if c.lineShowClassColor then return GetClassColorRGB() end
-    if c.lineUseAccent ~= false then return GetAccent() end
-    return c.lineR or 1.0, c.lineG or 1.0, c.lineB or 1.0
+	local c = EQT.DB()
+	if c.lineShowClassColor then return GetClassColorRGB() end
+	if c.lineUseAccent ~= false then return GetAccent() end
+	return c.lineR or 1.0, c.lineG or 1.0, c.lineB or 1.0
 end
 
+-- Font: the module font ("__global" = EllesmereUI font for Quest Tracker).
 local function GetFont()
-    local db = _G._EQT_DB
-    local fontKey = db and db.profile and db.profile.questTracker and db.profile.questTracker.font
-    if fontKey and fontKey ~= "__global" then
-        if EllesmereUI and EllesmereUI.ResolveFontName then
-            return EllesmereUI.ResolveFontName(fontKey) or "Fonts/FRIZQT__.TTF"
-        end
-    end
-    if EllesmereUI and EllesmereUI.GetFontPath then
-        return EllesmereUI.GetFontPath("questTracker") or "Fonts/FRIZQT__.TTF"
-    end
-    return "Fonts/FRIZQT__.TTF"
+	local key = EQT.Cfg("font")
+	if key and key ~= "__global" and ns.ResolveFontName then
+		local p = ns.ResolveFontName(key)
+		if p then return p end
+	end
+	return (ns.GetFontPath and ns.GetFontPath("questTracker")) or DEFAULT_FONT
+end
+local function GetOutline()
+	return (ns.GetFontOutlineFlag and ns.GetFontOutlineFlag("questTracker")) or ""
 end
 
-
-local function ApplyShadow(fs)
-    if not fs then return end
-    local useShadow = (EllesmereUI.GetFontUseShadow("questTracker")) and true or false
-    -- 12.0.7: instance shadows no longer render; shadow must ride a FontObject.
-    -- These are Blizzard objective-tracker strings, so capture and restore the
-    -- current font face around PrimeFontShadow to preserve Blizzard's typeface.
-    local _pf, _ps, _pfl = fs:GetFont()
-    EllesmereUI.PrimeFontShadow(fs, useShadow)
-    if _pf then fs:SetFont(_pf, _ps, _pfl) end
+local fontSize = setmetatable({}, { __mode = "k" })  -- fs -> size we set
+local function StyleFS(fs, size)
+	if not fs or not fs.SetFont then return end
+	local flags = GetOutline()
+	fs:SetFont(GetFont(), size, flags)
+	if not fs:GetFont() then fs:SetFont(DEFAULT_FONT, size, flags) end
+	if flags == "" then
+		fs:SetShadowOffset(1, -1)
+		fs:SetShadowColor(0, 0, 0, 1)
+	else
+		fs:SetShadowOffset(0, 0)
+	end
+	fontSize[fs] = size
 end
 
--- Registry of every FontString we've styled. Lets us re-template in bulk
--- when the user changes font path / outline / shadow settings.
-local _eqtFontRegistry = setmetatable({}, { __mode = "k" })
-
--- Reapplies EUI font path with explicit size + outline + shadow.
--- If `size` is nil, preserves Blizzard's current size.
-local function StyleFontStringSized(fs, size)
-    if STOCK or not fs or not fs.GetFont then return end
-    if not size then
-        local _, cur = fs:GetFont()
-        size = cur or 12
-    end
-    local ok = pcall(fs.SetFont, fs, GetFont(), size, EllesmereUI.GetFontOutlineFlag("questTracker"))
-    if not ok then fs:SetFont("Fonts/FRIZQT__.TTF", size, EllesmereUI.GetFontOutlineFlag("questTracker")) end
-    ApplyShadow(fs)
-    _eqtFontRegistry[fs] = true
-end
-
--- Convenience wrappers so every title / objective uses the shared sizes.
-local function StyleFontString(fs)     StyleFontStringSized(fs, nil)            end
-local function StyleTitleFS(fs)        StyleFontStringSized(fs, GetTitleSize()) end
-local function StyleObjectiveFS(fs)    StyleFontStringSized(fs, GetObjSize())   end
-local function StyleHeaderFS(fs)       StyleFontStringSized(fs, GetHeaderSize()) end
-
--- Walk every FontString region on a frame (top-level only) and restyle it.
--- No recursion: child frames each go through their own skin call.
-local function StyleAllFontStrings(frame)
-    if not frame or not frame.GetRegions then return end
-    for _, region in ipairs({ frame:GetRegions() }) do
-        if region and region:GetObjectType() == "FontString" then
-            StyleFontString(region)
-        end
-    end
-end
-
--- Bulk re-template everything we've touched. Called when user changes font
--- settings in options.
+-- Font settings changed: every string we styled takes the new face.
 function EQT.RefreshFonts()
-    for fs in pairs(_eqtFontRegistry) do
-        if fs and fs.GetFont then
-            local _, size = fs:GetFont()
-            pcall(fs.SetFont, fs, GetFont(), size or 12, EllesmereUI.GetFontOutlineFlag("questTracker"))
-            ApplyShadow(fs)
-        end
-    end
-end
-
--- FORBIDDEN: calling ObjectiveTrackerFrame:Update() from addon execution,
--- in ANY shape -- synchronous, deferred via C_Timer, or combat-gated with a
--- regen retry. A forced Update() runs Blizzard's entire quest machinery in
--- our (tainted) execution context, and the Lua tables that machinery
--- materializes are served to secure code for the rest of the session:
--- QuestEventListener callback tables, cached quest/task/mapInfo tables, and structural
--- writes on the world map's data-provider objects. Secure map code reading any of them
--- turns tainted mid-flight, which surfaces as "blocked in combat ...
--- SetPassThroughButtons()" on every map pin refresh and secret-number compare errors in
--- tooltip layout. Field taint logs from two testers (2026-07-18) confirmed this end to
--- end; deferral does NOT launder taint (taint is execution-context, not call ancestry).
---
--- Consequence we accept instead: after a font-size change or a focus
--- change, Blizzard's cached block heights can be briefly stale (overlapping
--- text) until its next natural relayout (any quest event). Cosmetic and
--- self-healing; never reintroduce a forced Update() to fix it.
-
--- Physical-pixel-perfect 1px accent divider under each section header. Parented to
--- ObjectiveTrackerFrame (NOT the header) so collapse/expand animations on the header
--- don't drag our divider with them. Keyed by header so we only create one per section
--- (Quests, Professions, etc). Follows the canonical border pattern: DisablePixelSnap +
--- SetHeight via PP.perfect / effectiveScale.
-local _headerDividers = setmetatable({}, { __mode = "k" })
-local function EnsureAccentDivider(header)
-    if STOCK or not header or not header.CreateTexture then return nil end
-    local otf = _G.ObjectiveTrackerFrame
-    if not otf or not otf.CreateTexture then return nil end
-
-    local isMasterHeader = (header == otf.HeaderMenu or header == otf.Header)
-
-    -- Divider is visible only when the tracker itself is currently being
-    -- rendered (Blizzard hides the tracker frame when it has no content). The
-    -- master header is suppressed with alpha rather than Hide(), so an alpha-0
-    -- header counts as not rendered too -- see ApplyMasterHeaderVisibility.
-    local headerShown = header.IsShown and header:IsShown()
-        and (not header.GetAlpha or header:GetAlpha() > 0)
-    local active
-
-    if isMasterHeader then
-        -- The master header's own IsShown() already reflects whether the
-        -- tracker has any module to display (Blizzard's
-        -- ObjectiveTrackerFrameMixin:Update -> ShouldShowHeader(), verified
-        -- against Gethe/wow-ui-source), so no block-scan is needed here.
-        active = headerShown and otf:IsShown()
-    else
-        -- Signals, ORed:
-        --   tracker has any block, OR
-        --   tracker is flagged as having contents (hasContents), OR
-        --   tracker was displayed on the last layout pass (wasDisplayedLastLayout).
-        -- Any of those == the section is still active. All false == fully hidden.
-        -- Collapse keeps hasContents/wasDisplayedLastLayout true, so collapsed
-        -- trackers still show their divider.
-        local owner = header:GetParent()
-        local hasAnyBlock = false
-        if owner and owner.usedBlocks then
-            for _, byTemplate in pairs(owner.usedBlocks) do
-                if type(byTemplate) == "table" then
-                    for _ in pairs(byTemplate) do
-                        hasAnyBlock = true
-                        break
-                    end
-                    if hasAnyBlock then break end
-                end
-            end
-        end
-        -- The divider belongs to a section that is actually rendered. Require
-        -- the header itself to be shown right now AND the tracker to have some
-        -- current content signal. `wasDisplayedLastLayout` alone isn't enough
-        -- because Blizzard doesn't always clear it when a section empties.
-        local trackerShown = owner and owner.IsShown and owner:IsShown()
-        local hasContentSignal = hasAnyBlock or (owner and owner.hasContents)
-        active = headerShown and trackerShown and hasContentSignal
-    end
-
-    if not active then
-        local tex = _headerDividers[header]
-        if tex then tex:Hide() end
-        return nil
-    end
-    local tex = _headerDividers[header]
-    if not tex then
-        tex = otf:CreateTexture(nil, "OVERLAY")
-        _headerDividers[header] = tex
-    end
-    tex:ClearAllPoints()
-    tex:SetPoint("TOPLEFT",  header, "BOTTOMLEFT",  7, 0)
-    tex:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", -1, 0)
-    local PP_CORE = EllesmereUI and EllesmereUI.PP
-    local PP_SEC  = EllesmereUI and EllesmereUI.PanelPP
-    if PP_SEC and PP_SEC.DisablePixelSnap then PP_SEC.DisablePixelSnap(tex) end
-    local perfect = (PP_CORE and PP_CORE.perfect) or (PP_SEC and PP_SEC.mult) or 1
-    local es = header.GetEffectiveScale and header:GetEffectiveScale() or 1
-    local onePixel = (es and es > 0) and (perfect / es) or (PP_SEC and PP_SEC.mult) or 1
-    tex:SetHeight(onePixel)
-    local r, g, b = GetLineRGB()
-    tex:SetColorTexture(r, g, b, 1)
-    tex:Show()
-    return tex
+	for fs, size in pairs(fontSize) do
+		StyleFS(fs, size)
+	end
 end
 
 -------------------------------------------------------------------------------
--- Strip every Texture region on a frame except ones explicitly preserved.
--- Top-level only, never recurses. Leaves FontStrings alone.
+-- Lines. Hooked inside WatchFrame_SetLine so the new font is in place before
+-- Blizzard checks whether the next quest still fits: the line heights are
+-- measured again with the new font (same rules as WatchFrame_SetLine).
 -------------------------------------------------------------------------------
-local function StripTextures(frame, keep)
-    if not frame or not frame.GetRegions then return end
-    keep = keep or {}
-    -- IMPORTANT: hide via SetTexture("") only. SetTexture(nil) and SetAlpha(0) both
-    -- taint Blizzard-owned textures. Tainted widget-pool textures cause arithmetic
-    -- errors when the pool reuses them for tooltip/POI widgets later
-    -- (Blizzard_UIWidgetTemplateTextWithState textHeight crashes).
-    for _, region in ipairs({ frame:GetRegions() }) do
-        if region and region:GetObjectType() == "Texture" and not keep[region]
-           and region.SetTexture then
-            region:SetTexture("")
-        end
-    end
+local LINE_H = 16  -- WATCHFRAME_LINEHEIGHT
+
+local function FixLineHeight(line, size, fullHeight)
+	local text = line.text
+	local baseH = WATCHFRAME_LINEHEIGHT or LINE_H
+	text:SetHeight(0)
+	local h = text:GetHeight() or 0
+	if h > baseH then
+		if fullHeight then
+			line:SetHeight(h + 4)
+		else
+			-- Two lines, like WATCHFRAME_MULTIPLE_LINEHEIGHT for our size.
+			local two = math.ceil(size) * 2 + 5
+			line:SetHeight(two)
+			text:SetHeight(two)
+		end
+	else
+		line:SetHeight(baseH)
+	end
 end
 
--------------------------------------------------------------------------------
--- The master "All Objectives" header's MinimizeButton renders with a
--- different atlas than every per-section header's MinimizeButton by
--- default. Verified in-game (2026-07-24, via in-game atlas dump) rather
--- than guessed from source:
---   expanded (shows "-", click collapses)  -> UI-QuestTrackerButton-Secondary-Collapse
---   collapsed (shows "+", click expands)   -> UI-QuestTrackerButton-Secondary-Expand
--- Both confirmed as the atlas QuestObjectiveTracker's MinimizeButton (a known-good,
--- already-flat section header) uses in that state. The "-Pressed" pushed-state suffix
--- is directly confirmed for the expanded atlas and assumed (not separately dumped) for
--- the collapsed one, following that same observed Blizzard naming convention.
--------------------------------------------------------------------------------
-local MASTER_MINBTN_ATLAS = {
-    [false] = { normal = "UI-QuestTrackerButton-Secondary-Collapse", pushed = "UI-QuestTrackerButton-Secondary-Collapse-Pressed" },
-    [true]  = { normal = "UI-QuestTrackerButton-Secondary-Expand",   pushed = "UI-QuestTrackerButton-Secondary-Expand-Pressed" },
-}
-
-local function SyncMasterMinimizeButtonLook(masterBtn, collapsed)
-    if not masterBtn then return end
-    if collapsed == nil then
-        -- No known state (e.g. the very first InitSkin() skin pass, before
-        -- any SetCollapsed call has fired) -- "All Objectives" is expanded
-        -- by default on login, so assume expanded rather than guess wrong.
-        collapsed = false
-    end
-    local look = MASTER_MINBTN_ATLAS[collapsed]
-    if not look then return end
-    local n = masterBtn.GetNormalTexture and masterBtn:GetNormalTexture()
-    local p = masterBtn.GetPushedTexture and masterBtn:GetPushedTexture()
-    if n then n:SetAtlas(look.normal) end
-    if p then p:SetAtlas(look.pushed) end
+local function OnSetLine(line, anchor, verticalOffset, isHeader, text, dash, hasItem, fullHeight)
+	if not line or not line.text then return end
+	local size = isHeader and GetTitleSize() or GetObjSize()
+	StyleFS(line.text, size)
+	if line.dash then StyleFS(line.dash, GetObjSize()) end
+	FixLineHeight(line, size, fullHeight)
 end
 
 -------------------------------------------------------------------------------
--- Header skin: accent color + EUI font. Strips every decorative texture
--- region from the header; keeps the minimize button (+/-) and Text intact.
+-- Colors. After every WatchFrame_Update: each shown link button names the
+-- lines of one quest / achievement (startLine = its title).
 -------------------------------------------------------------------------------
-local function SkinHeader(header, knownCollapsed)
-    if not header then return end
-    if not EQT.Cfg("skinHeaders") then return end
+local function QuestInfo(watchIndex)
+	local qIndex = GetQuestIndexForWatch(watchIndex)
+	if not qIndex then return nil end
+	local _, _, _, _, _, _, _, _, questID = GetQuestLogTitle(qIndex)
+	return questID
+end
 
-    local minBtn = header.MinimizeButton
-    -- The stock styles (Blizzard Style and Classic WoW UI alike) keep the
-    -- header exactly as Blizzard draws it (its header bar art, +/- buttons and
-    -- text); only the click-anywhere hit rect below applies.
-    if not STOCK then
-    -- Named decorative regions we always want gone.
-    -- Hide via SetTexture("") only (anti-taint pattern -- see StripTextures).
-    for _, k in ipairs({
-        "Background", "Line", "LineSheen", "LineGlow", "Divider",
-        "Sheen", "Glow", "Stripe",
-    }) do
-        local r = header[k]
-        if r and r.SetTexture then r:SetTexture("") end
-    end
+local function TitleRGB(button)
+	if button.type == "QUEST" then
+		local questID = QuestInfo(button.index)
+		local focus = GetSuperTrackedQuestID()
+		if questID and focus and focus ~= 0 and questID == focus then
+			return GetFocusRGB()
+		end
+		if button.isComplete then
+			return GetCompletedRGB()
+		end
+	end
+	return GetTitleRGB()
+end
 
-    -- Sweep anonymous Texture regions too. Preserve the minimize button's
-    -- textures by skipping anything owned by header.MinimizeButton.
-    local otf = _G.ObjectiveTrackerFrame
-    if minBtn and otf and (header == otf.HeaderMenu or header == otf.Header) then
-        SyncMasterMinimizeButtonLook(minBtn, knownCollapsed)
-    end
-    local keep = {}
-    if minBtn and minBtn.GetRegions then
-        for _, region in ipairs({ minBtn:GetRegions() }) do
-            keep[region] = true
-        end
-        if minBtn.GetNormalTexture and minBtn:GetNormalTexture() then
-            keep[minBtn:GetNormalTexture()] = true
-        end
-        if minBtn.GetPushedTexture and minBtn:GetPushedTexture() then
-            keep[minBtn:GetPushedTexture()] = true
-        end
-        if minBtn.GetHighlightTexture and minBtn:GetHighlightTexture() then
-            keep[minBtn:GetHighlightTexture()] = true
-        end
-    end
-    StripTextures(header, keep)
+local function ColorButtonTitle(button)
+	local lines = button.lines
+	local first = button.startLine
+	if not (lines and first) then return end
+	local line = lines[first]
+	if line and line.text then
+		line.text:SetTextColor(TitleRGB(button))
+	end
+end
 
-    -- Tint the +/- minimize button with the header color. Desaturate
-    -- first so the base atlas's built-in tint doesn't multiply with ours.
-    if minBtn then
-        local r, g, b = GetHeaderRGB()
-        local function tint(tex)
-            if not tex then return end
-            if tex.SetDesaturated then tex:SetDesaturated(true) end
-            if tex.SetVertexColor then tex:SetVertexColor(r, g, b) end
-        end
-        tint(minBtn.GetNormalTexture    and minBtn:GetNormalTexture())
-        tint(minBtn.GetPushedTexture    and minBtn:GetPushedTexture())
-        tint(minBtn.GetHighlightTexture and minBtn:GetHighlightTexture())
-        tint(minBtn.GetDisabledTexture  and minBtn:GetDisabledTexture())
-        if minBtn.GetRegions then
-            for _, rg in ipairs({ minBtn:GetRegions() }) do
-                if rg:GetObjectType() == "Texture" then tint(rg) end
-            end
-        end
-    end
+local function ColorAllTitles()
+	local list = WATCHFRAME_LINKBUTTONS
+	if type(list) ~= "table" then return end
+	for _, button in pairs(list) do
+		if type(button) == "table" and button.IsShown and button:IsShown() then
+			ColorButtonTitle(button)
+		end
+	end
+end
+EQT.RestyleAll = function()
+	EQT.RestyleHeader()
+	ColorAllTitles()
+end
 
-    if not STOCK then
-    local text = header.Text
-    if text then
-        local r, g, b = GetHeaderRGB()
-        text:SetTextColor(r, g, b)
-        StyleHeaderFS(text)
-    end
-
-    -- Catch any other FontString regions on the header (subtitle, count text).
-    StyleAllFontStrings(header)
-
-    -- 1px divider beneath the header (Line Color: Class / Custom / Accent).
-    EnsureAccentDivider(header)
-    end -- not STOCK
-    end -- not STOCK (outer)
-
-    -- Click-anywhere-on-header: widen the NATIVE MinimizeButton's hit rect
-    -- across the header, so a title click dispatches straight to Blizzard's
-    -- own OnClick -- the identical path a bare +/- press takes.
-    -- HARD RULE: no addon code may run in this click path. Forwarding via an
-    -- overlay's Click() ran the collapse cascade from our execution and
-    -- tainted the container's shared dispatch loop -- a field-confirmed
-    -- injector (secret-aura GetAuraDataByIndex errors out of LayoutContents),
-    -- and the taint survives zone changes, so combat/instance gating cannot
-    -- close it. Do not reintroduce any overlay or click redirect here without
-    -- fresh taint-log evidence. Blizzard never calls SetHitRectInsets on
-    -- these buttons (source-verified), and the header frame is not
-    -- mouse-enabled, so nothing fights or swallows this.
-    if minBtn and minBtn.SetHitRectInsets then
-        local headerW = header.GetWidth and header:GetWidth() or 0
-        local headerH = header.GetHeight and header:GetHeight() or 0
-        local btnW    = minBtn.GetWidth and minBtn:GetWidth() or 0
-        local btnH    = minBtn.GetHeight and minBtn:GetHeight() or 0
-        if headerW > 0 and btnW > 0 then
-            -- Reserve the FilterButton's width while it is showing (master
-            -- header only, hidden by default; anchored 2px left of the
-            -- MinimizeButton). The widened rect still passes under it, but
-            -- the filter is declared later at the same frame level, so it
-            -- renders on top and keeps its own clicks; the reservation just
-            -- shortens the extension (accepted: the leftmost ~20px of the
-            -- header don't toggle while the filter is shown).
-            local reserved = btnW
-            local filter = header.FilterButton
-            if filter and filter.IsShown and filter:IsShown() then
-                reserved = reserved + ((filter.GetWidth and filter:GetWidth()) or 0) + 2
-            end
-            -- Negative inset expands the hit rect outward from that edge.
-            -- Re-applied on every skin pass so it tracks header size changes
-            -- (Edit Mode resize); clamped so a stale/short header can never
-            -- leave a hit area hanging off the header into empty screen.
-            local extendX = headerW - reserved
-            if extendX < 0 then extendX = 0 end
-            -- The button is shorter than the header (16 vs 26 on section
-            -- headers), so match the header's height as well or the top and
-            -- bottom few pixels of the title stay dead.
-            local extendY = (headerH - btnH) / 2
-            if extendY < 0 then extendY = 0 end
-            minBtn:SetHitRectInsets(-extendX, 0, -extendY, -extendY)
-        end
-    end
+-- Mouse leaves a quest: Blizzard puts its gold back; ours again.
+local function OnHighlight(button, onEnter)
+	if onEnter then return end
+	if type(button) == "table" then ColorButtonTitle(button) end
 end
 
 -------------------------------------------------------------------------------
--- Block skin: color quest title gold, objectives gray, completed green.
--- Objective lines live on block.lines[*] keyed by text; tint each line's
--- FontString according to its completion state each refresh via a hook on
--- the block's GetLine / AddObjective path where available.
+-- Master header ("Objectives", retail "All Objectives"): font, header color,
+-- tinted minimize button and a 1px line under it (Line Color).
 -------------------------------------------------------------------------------
-local function StyleObjectiveLine(line)
-    if not line or not line.Text then return end
-    StyleObjectiveFS(line.Text)
-    if line.Dash then StyleObjectiveFS(line.Dash) end
-    if line.GetRegions then StyleAllFontStrings(line) end
+local divider
+local function EnsureDivider()
+	if divider then return divider end
+	local wf = _G.WatchFrame
+	if not wf then return nil end
+	divider = wf:CreateTexture(nil, "OVERLAY")
+	divider:SetPoint("TOPLEFT", _G.WatchFrameHeader, "BOTTOMLEFT", 0, -2)
+	divider:SetPoint("RIGHT", wf, "RIGHT", -12, 0)
+	divider:SetHeight(1)
+	return divider
 end
 
--------------------------------------------------------------------------------
--- Quest type icon system. Replaces Blizzard's per-block type icon with our
--- own atlas picks so the visuals match the rest of EUI.
--------------------------------------------------------------------------------
-local QUEST_ICON_ATLAS = {
-    normal    = nil,
-    campaign  = "Crosshair_campaignquest_32",
-    legendary = "Crosshair_legendaryquest_32",
-    important = "Crosshair_important_48",
-    recurring = "Crosshair_Recurring_48",
-    daily     = "Crosshair_Recurring_48",
-    weekly    = "Crosshair_Recurring_48",
-    meta      = "Crosshair_Wrapper_48",
-}
-local QUEST_TURNIN_ATLAS = {
-    campaign  = "Crosshair_campaignquestturnin_32",
-    legendary = "Crosshair_legendaryquestturnin_32",
-    important = "Crosshair_importantturnin_48",
-    recurring = "Crosshair_Recurringturnin_48",
-    daily     = "Crosshair_Recurringturnin_48",
-    weekly    = "Crosshair_Recurringturnin_48",
-    meta      = "Crosshair_Wrapperturnin_48",
-}
-local QUEST_ICON_SIZE_OVERRIDE = {
-    recurring = 18, daily = 18, weekly = 18, important = 22,
-}
-local QUEST_ICON_SIZE = 16
-
--- Cache of questID -> { key = "...", done = bool }. Computed ONCE per quest
--- the first time we see it, then refreshed only when the quest log itself
--- signals change (via QUEST_LOG_UPDATE / QUEST_REMOVED handled below).
--- Never called inline on the live skin path so secure quest-log APIs
--- can't leak taint into MoneyFrame / reward rendering on quest turn-in.
-local _classifyCache = {}
-
-local function _computeClassification(questID)
-    if not questID or not C_QuestLog then return nil end
-    local logIdx = C_QuestLog.GetLogIndexForQuestID
-        and C_QuestLog.GetLogIndexForQuestID(questID)
-    local info = logIdx and C_QuestLog.GetInfo and C_QuestLog.GetInfo(logIdx)
-    local cls  = info and info.questClassification
-    local freq = (info and info.frequency) or 0
-    local done = C_QuestLog.IsComplete and C_QuestLog.IsComplete(questID) or false
-
-    local key = "normal"
-    if C_CampaignInfo and C_CampaignInfo.IsCampaignQuest
-       and C_CampaignInfo.IsCampaignQuest(questID) then
-        key = "campaign"
-    elseif cls and Enum and Enum.QuestClassification then
-        local QC = Enum.QuestClassification
-        if     cls == QC.Important then key = "important"
-        elseif cls == QC.Legendary then key = "legendary"
-        elseif cls == QC.Campaign  then key = "campaign"
-        elseif cls == QC.Recurring then key = "recurring"
-        end
-    end
-    if key == "normal" then
-        if     freq == 1 then key = "daily"
-        elseif freq == 2 then key = "weekly"
-        end
-    end
-    return { key = key, done = done }
+function EQT.ShouldHideMasterHeader()
+	return EQT.Cfg("hideAllObjectivesHeader") ~= false
 end
 
-local function ClassifyQuest(questID)
-    if not questID then return nil, false end
-    local entry = _classifyCache[questID]
-    if not entry then return nil, false end
-    local key = entry.key
-    if entry.done and QUEST_TURNIN_ATLAS[key] then
-        return QUEST_TURNIN_ATLAS[key], key
-    end
-    return QUEST_ICON_ATLAS[key], key
+local function UpdateDivider()
+	local tex = EnsureDivider()
+	if not tex then return end
+	local header = _G.WatchFrameHeader
+	local show = EQT.Cfg("skinHeaders") and not EQT.ShouldHideMasterHeader()
+		and header and header:IsShown()
+	if not show then
+		tex:Hide()
+		return
+	end
+	local r, g, b = GetLineRGB()
+	tex:SetTexture(r, g, b, 1)
+	tex:Show()
 end
 
--- Refresh the classify cache outside any skin / tracker-Update chain. Only driven by
--- quest-log events so secure-API reads never happen inside the debounced tracker Update
--- or block hover paths that surround MoneyFrame / reward rendering.
-local function _refreshClassifyCache()
-    if not (C_QuestLog and C_QuestLog.GetNumQuestLogEntries) then return end
-    local seen = {}
-    for i = 1, C_QuestLog.GetNumQuestLogEntries() do
-        local info = C_QuestLog.GetInfo and C_QuestLog.GetInfo(i)
-        local qID = info and info.questID
-        if qID then
-            seen[qID] = true
-            _classifyCache[qID] = _computeClassification(qID)
-        end
-    end
-    -- Drop stale entries for quests no longer in the log (turned in, etc.)
-    for qID in pairs(_classifyCache) do
-        if not seen[qID] then _classifyCache[qID] = nil end
-    end
+function EQT.RestyleHeader()
+	if not EQT.Cfg("skinHeaders") then
+		UpdateDivider()
+		return
+	end
+	local title = _G.WatchFrameTitle
+	if title then
+		StyleFS(title, GetHeaderSize())
+		title:SetTextColor(GetHeaderRGB())
+		local header = _G.WatchFrameHeader
+		if header and header:IsShown() and title:GetText() then
+			header:SetWidth((title:GetWidth() or 0) + 4)
+			header:SetHeight(math.max(16, GetHeaderSize() + 3))
+		end
+	end
+	local btn = _G.WatchFrameCollapseExpandButton
+	if btn then
+		local r, g, b = GetHeaderRGB()
+		for _, tex in ipairs({ btn:GetNormalTexture(), btn:GetPushedTexture(), btn:GetDisabledTexture() }) do
+			if tex then
+				tex:SetDesaturated(true)
+				tex:SetVertexColor(r, g, b)
+			end
+		end
+	end
+	UpdateDivider()
 end
 
-do
-    local f = CreateFrame("Frame")
-    f:RegisterEvent("QUEST_LOG_UPDATE")
-    f:RegisterEvent("QUEST_ACCEPTED")
-    f:RegisterEvent("QUEST_REMOVED")
-    f:RegisterEvent("PLAYER_ENTERING_WORLD")
-    local _pending = false
-    -- The cache only feeds our custom icons. The stock styles never draw them
-    -- (latched for the session): InitSkin unregisters this frame and blanks
-    -- its registration so ResumeQTEvents never brings it back. The Show Quest
-    -- Icons toggle can flip mid-session (its reload prompt can be declined),
-    -- so the cache stays warm on the EllesmereUI look either way.
-    f:SetScript("OnEvent", function()
-        if _pending or STOCK then return end
-        _pending = true
-        C_Timer.After(0.25, function()
-            _pending = false
-            if STOCK then return end
-            _refreshClassifyCache()
-        end)
-    end)
-    if not EQT._eventFrames then EQT._eventFrames = {} end
-    if not EQT._eventRegistrations then EQT._eventRegistrations = {} end
-    local idx = #EQT._eventFrames + 1
-    EQT._eventFrames[idx] = f
-    EQT._eventRegistrations[idx] = {"QUEST_LOG_UPDATE", "QUEST_ACCEPTED", "QUEST_REMOVED", "PLAYER_ENTERING_WORLD"}
-    EQT._classifyFrameIdx = idx
-end
-
--- Hides Blizzard's built-in quest type icon(s) on a block (without
--- recursing into the block's children) and stamps ours on top.
-
-local function ApplyQuestTypeIcon(block)
-    if not block then return end
-
-    -- "Show Quest Icons" on: Blizzard's native icons are shown instead, so
-    -- never stamp our own custom icon (hide any we already created).
-    if NativeIcons() then
-        if _blockIcons[block] then _blockIcons[block]:Hide() end
-        return
-    end
-
-    local qID = block.id
-    if type(qID) ~= "number" then
-        if _blockIcons[block] then _blockIcons[block]:Hide() end
-        return
-    end
-
-    -- Suppress our custom icon when Blizzard's ItemButton or
-    -- groupFinderButton is already visible on this block. Probe the block
-    -- fields directly (the icon you SEE is Blizzard's, and our overlay
-    -- texture is mouse-pass-through, so it eats the visual click target).
-    local hasItem = (block.ItemButton and block.ItemButton.IsShown
-                     and block.ItemButton:IsShown())
-                 or (block.itemButton and block.itemButton.IsShown
-                     and block.itemButton:IsShown())
-    -- block.GroupFinderButton was probed here too until the /fstack evidence in the
-    -- group-finder click fix proved it never exists (that same nil field left the
-    -- button unraised and unclickable). rightEdgeFrame is what actually covers the
-    -- group finder: it holds the LAST right-edge frame added, which is the group
-    -- finder on a quest that has only that, and a quest with both is already caught
-    -- by ItemButton above.
-    local hasLFG  = (block.groupFinderButton and block.groupFinderButton.IsShown
-                     and block.groupFinderButton:IsShown())
-                 or (block.rightEdgeFrame and block.rightEdgeFrame.IsShown
-                     and block.rightEdgeFrame:IsShown())
-    if hasItem or hasLFG then
-        if _blockIcons[block] then _blockIcons[block]:Hide() end
-        return
-    end
-
-    local atlas, key = ClassifyQuest(qID)
-    if not atlas then
-        if _blockIcons[block] then _blockIcons[block]:Hide() end
-        return
-    end
-
-    local ico = _blockIcons[block]
-    if not ico then
-        ico = block:CreateTexture(nil, "OVERLAY")
-        ico:SetPoint("TOPRIGHT", block, "TOPRIGHT", -2, 3)
-        _blockIcons[block] = ico
-    end
-    -- Skip redundant SetAtlas/SetSize when the icon already matches.
-    if ico._lastAtlas ~= atlas then
-        ico._lastAtlas = atlas
-        local size = QUEST_ICON_SIZE_OVERRIDE[key] or QUEST_ICON_SIZE
-        ico:SetSize(size, size)
-        ico:SetAtlas(atlas)
-    end
-    ico:SetAlpha(1)
-    ico:Show()
+-- Hide All Objectives: the header and its minimize button go (alpha 0, no
+-- mouse) and the lines move up into the space the header took.
+local linesMoved = false
+function EQT.ApplyMasterHeaderVisibility()
+	local header = _G.WatchFrameHeader
+	local btn = _G.WatchFrameCollapseExpandButton
+	local lines = _G.WatchFrameLines
+	local wf = _G.WatchFrame
+	if not (header and wf) then return end
+	local hide = EQT.ShouldHideMasterHeader()
+	header:SetAlpha(hide and 0 or 1)
+	header:EnableMouse(not hide)
+	if btn then
+		btn:SetAlpha(hide and 0 or 1)
+		btn:EnableMouse(not hide)
+	end
+	-- WatchFrameLines: TOPLEFT -30 below the WatchFrame top in WatchFrame.xml.
+	if lines and (hide or linesMoved) then
+		lines:SetPoint("TOPLEFT", wf, "TOPLEFT", 0, hide and -4 or -30)
+		linesMoved = hide
+	end
+	UpdateDivider()
 end
 
 -------------------------------------------------------------------------------
--- Focus highlight: color the super-tracked quest's block with the user's
--- focus color (default purple). One texture per block, cached in _blockFocus.
+-- Entry point
 -------------------------------------------------------------------------------
--- Find the quest title FontString on a block. It's the first FontString
--- region in Blizzard's layout (confirmed via dump). Cached per-block so
--- hot paths (hover reassert) don't re-walk regions on every mouse event.
-local _blockTitleFSCache = setmetatable({}, { __mode = "k" })
-local function GetBlockTitleFS(block)
-    if not block then return nil end
-    local cached = _blockTitleFSCache[block]
-    if cached then return cached end
-    if not block.GetRegions then return nil end
-    for _, rg in ipairs({ block:GetRegions() }) do
-        if rg.GetObjectType and rg:GetObjectType() == "FontString" then
-            _blockTitleFSCache[block] = rg
-            return rg
-        end
-    end
-    return nil
-end
-
--- Super-tracked quest ID cache. Updated only on SUPER_TRACKING_CHANGED so hover
--- handlers don't hit C_SuperTrack.GetSuperTrackedQuestID on every mouse enter/leave.
-local _superTrackedID = nil
-local function GetSuperTrackedIDCached() return _superTrackedID end
-do
-    local sf = CreateFrame("Frame")
-    sf:RegisterEvent("SUPER_TRACKING_CHANGED")
-    sf:RegisterEvent("PLAYER_ENTERING_WORLD")
-    sf:SetScript("OnEvent", function(_, event)
-        -- The cached ID only colours our focus highlight, which the stock
-        -- styles never paint.
-        if not STOCK and C_SuperTrack and C_SuperTrack.GetSuperTrackedQuestID then
-            local id = C_SuperTrack.GetSuperTrackedQuestID()
-            _superTrackedID = (id and id ~= 0) and id or nil
-        end
-        -- Super-tracking assigns a fresh POI button to the block.
-        -- Defer one frame so Blizzard's assignment lands first. Nothing to
-        -- suppress while native icons show, unless the hidden tracker needs
-        -- the fresh button mouse-off.
-        if event == "SUPER_TRACKING_CHANGED" and (not NativeIcons() or EQT._trackerMouseOff) then
-            C_Timer.After(0, function()
-                if not EQT._SuppressAllPOIs then return end
-                EQT._SuppressAllPOIs()
-            end)
-        end
-    end)
-    if not EQT._eventFrames then EQT._eventFrames = {} end
-    if not EQT._eventRegistrations then EQT._eventRegistrations = {} end
-    local idx = #EQT._eventFrames + 1
-    EQT._eventFrames[idx] = sf
-    EQT._eventRegistrations[idx] = {"SUPER_TRACKING_CHANGED", "PLAYER_ENTERING_WORLD"}
-    EQT._superTrackFrameIdx = idx
-end
-
--- One-time layout setup for the title fontstring: font, anchors, width.
--- Called once per block from SkinBlock's full pass.
-local function SetupTitleLayout(block)
-    if not block then return end
-    local fs = GetBlockTitleFS(block)
-    if not fs then return end
-    StyleTitleFS(fs)
-    if fs.SetWordWrap then fs:SetWordWrap(false) end
-    if fs.SetNonSpaceWrap then fs:SetNonSpaceWrap(false) end
-    -- Strip Blizzard's TOPLEFT+TOPRIGHT dual anchor so SetWidth works.
-    if fs.GetNumPoints and fs:GetNumPoints() > 0 then
-        local point, relTo, relPoint, x, y = fs:GetPoint(1)
-        if point then
-            fs:ClearAllPoints()
-            fs:SetPoint(point, relTo, relPoint, x or 0, y or 0)
-        end
-    end
-    if fs.SetWidth then fs:SetWidth(220) end
-end
-
--- Lightweight color-only refresh. Called on hover (OnEnter/OnLeave) and
--- from the stamped fast-path in SkinBlock.
-local function ApplyFocusHighlight(block)
-    if not block then return end
-    local fs = GetBlockTitleFS(block)
-    if not fs then return end
-    local qID     = (type(block.id) == "number") and block.id or nil
-    local isFocus = qID and (qID == GetSuperTrackedIDCached())
-    local isDone  = qID and C_QuestLog and C_QuestLog.IsComplete
-                    and C_QuestLog.IsComplete(qID)
-    local r, g, b
-    if isFocus then
-        r, g, b = GetFocusRGB()
-    elseif isDone then
-        r, g, b = GetCompletedRGB()
-    else
-        r, g, b = GetTitleRGB()
-    end
-    fs:SetTextColor(r, g, b)
-end
-
--- Skip all skinning work when the tracker is force-hidden (M+, raid, arena).
--- Uses the cached suppression flag only (set by ApplySuppression /
--- UpdateVisibility). No per-call API queries.
-local function ShouldSkipSkin()
-    return EQT.IsSuppressed and EQT.IsSuppressed()
-end
-
--- Hook block line-add APIs once per block instance. Catches every line
--- Blizzard creates or recycles without walking children.
-local function HookBlockLineMethods(block)
-    if _hookedBlocks[block] then return end
-    _hookedBlocks[block] = true
-
-    -- Blizzard changes the title text color on mouse enter (darkens it
-    -- as hover feedback). Reassert our color from a post-hook so whatever
-    -- gold/focus color we chose is what the player sees.
-    local function reassertTitle()
-        ApplyFocusHighlight(block)
-    end
-    if block.HookScript then
-        block:HookScript("OnEnter", reassertTitle)
-        block:HookScript("OnLeave", reassertTitle)
-    end
-    -- The HeaderButton (if present) often owns the hover script directly.
-    if block.HeaderButton and block.HeaderButton.HookScript then
-        block.HeaderButton:HookScript("OnEnter", reassertTitle)
-        block.HeaderButton:HookScript("OnLeave", reassertTitle)
-    end
-
-    -- REMOVED: an OnClick post-hook here used to call
-    -- C_SuperTrack.SetSuperTrackedQuestID(block.id) so a left-click also
-    -- super-tracked the quest. Setting the super-track from addon (tainted)
-    -- execution taints Blizzard's world-map super-track / AreaPOI refresh,
-    -- surfacing later as a blocked Frame:SetPropagateMouseClicks() when the map
-    -- builds POI pins (ADDON_ACTION_BLOCKED via QuestMapFrame_ShowQuestDetails).
-    -- Blizzard's native block click already super-tracks the quest securely, so
-    -- the hook was redundant; the focus highlight still follows the super-track
-    -- via the SUPER_TRACKING_CHANGED handler.
-
-    -- AddObjective / SetStringText hooks REMOVED (session 68 perf audit).
-    -- SkinBlock already styles all fontstrings via GetRegions() walk +
-    -- ProcessBlockChildren. These per-call hooks charged Blizzard's entire
-    -- AddObjective/SetStringText execution to our addon in the profiler
-    -- (11 + 14 = 25 calls per collapse, ~8ms attributed to us).
-end
-
--- Ornamental atlas keywords: textures with these substrings in their atlas
--- name are decorative and should be hidden. Lookup table avoids 9x string.find.
-local ORNAMENTAL_KEYWORDS = {
-    evergreen = true, toast = true, filigree = true, parchment = true,
-    bountiful = true, shimmer = true, sparkle = true, trackerheader = true,
-    jailerstower = true,
-}
-local _ornamentalCache = setmetatable({}, { __mode = "k" })
-local function IsOrnamentalAtlas(rg)
-    local cached = _ornamentalCache[rg]
-    if cached ~= nil then return cached end
-    local atlas = rg.GetAtlas and rg:GetAtlas()
-    if type(atlas) ~= "string" then _ornamentalCache[rg] = false; return false end
-    local l = atlas:lower()
-    for kw in pairs(ORNAMENTAL_KEYWORDS) do
-        if l:find(kw, 1, true) then _ornamentalCache[rg] = true; return true end
-    end
-    _ornamentalCache[rg] = false
-    return false
-end
-
--- Walk child frames of a block up to 3 levels deep. Strip ornamental
--- atlas textures and style objective fontstrings. Defined at file scope
--- so it's not recreated per SkinBlock call.
-local function ProcessBlockChildren(frame, depth)
-    if not frame or depth > 3 or not frame.GetChildren then return end
-
-    for _, child in ipairs({ frame:GetChildren() }) do
-        if child.GetObjectType then
-            local ok, otype = pcall(child.GetObjectType, child)
-            if ok then
-                if (otype == "Frame" or otype == "Button")
-                       and not child.Tooltip then
-                    if child.GetRegions then
-                        for _, rg in ipairs({ child:GetRegions() }) do
-                            local ot = rg.GetObjectType and rg:GetObjectType()
-                            if ot == "Texture" then
-                                if IsOrnamentalAtlas(rg) then rg:SetTexture("") end
-                            elseif ot == "FontString" then
-                                StyleObjectiveFS(rg)
-                            end
-                        end
-                    end
-                    ProcessBlockChildren(child, depth + 1)
-                end
-            end
-        end
-    end
-end
-
-local _suppressedPOIs = setmetatable({}, { __mode = "k" })
-
--- NEVER call :Hide() on a quest POI button, and never post-hook its :Show().
--- POIButtonTemplate wires <OnShow>/<OnHide> to POIButtonMixin, and those two
--- handlers do nothing but EventRegistry:RegisterCallback / UnregisterCallback
--- on "Supertracking.OnChanged". Running either from our (tainted) execution
--- writes into EventRegistry's shared callback table for that event, so every
--- other subscriber -- SuperTrackablePinMixin, VignetteDataProvider,
--- QuestDataProvider, WorldQuestDataProvider, DungeonEntranceDataProvider --
--- is then dispatched tainted on the next TriggerEvent. Observed fallout:
--- a blocked Frame:SetPropagateMouseClicks() while the world map acquires pins,
--- and secret-value errors when GameTooltip lays out a vignette widget set.
---
--- Alpha runs no script handler, so suppress with alpha + EnableMouse instead.
--- Blizzard's own UpdateButtonAlpha only touches NormalTexture/PushedTexture,
--- never the button frame, so it cannot undo this -- which is also why the old
--- Show hook is gone: Show() no longer un-suppresses anything.
-local function ApplyPOISuppression(pb)
-    pb:SetAlpha(0)
-    pb:EnableMouse(false)
-end
-
--- ObjectiveTrackerPOIButtonTemplate's AddAnim ends on alpha 1 (setToFinalAlpha),
--- and it is the only thing in Blizzard's code that writes the button frame's
--- alpha at all -- Pool_HideAndClearAnchors and POIButtonMixin:Reset() leave both
--- alpha and mouse state alone, so a pooled button is handed back out still
--- suppressed. That means current alpha says nothing about whether a fanfare is
--- about to un-hide the button, so queue the re-apply unconditionally and dedupe
--- on a pending timer instead. Re-arms itself if the animation is still running.
-local _poiRepair = setmetatable({}, { __mode = "k" })
-
-local function QueuePOIRepair(pb)
-    if _poiRepair[pb] then return end
-    _poiRepair[pb] = true
-    C_Timer.After(0.35, function()
-        _poiRepair[pb] = nil
-        if NativeIcons() then return end
-        ApplyPOISuppression(pb)
-        if pb.AddAnim and pb.AddAnim:IsPlaying() then QueuePOIRepair(pb) end
-    end)
-end
-
-local function SuppressPOI(block)
-    local pb = block and block.poiButton
-    if not pb then return end
-
-    if NativeIcons() then
-        -- Restore buttons we suppressed earlier in this session so flipping the
-        -- setting on takes effect without waiting for the reload prompt.
-        if _suppressedPOIs[pb] then
-            _suppressedPOIs[pb] = nil
-            pb:SetAlpha(1)
-            pb:EnableMouse(true)
-        end
-        return
-    end
-
-    _suppressedPOIs[pb] = true
-    ApplyPOISuppression(pb)
-    QueuePOIRepair(pb)
-end
-
--------------------------------------------------------------------------------
--- Hidden-tracker mouse suppression. Every alpha-0 state (the combat
--- auto-hide, the user's visibility rules, mouseover idle) left the pooled
--- block buttons clickable: a click meant for the world opened the quest log
--- instead. The tracker's click sinks are a finite, NAMED set hung off each
--- block, so they are switched off by field name -- never by walking children
--- -- and only frames that were ON go into the weak set, so the restore can
--- never mouse-enable something Blizzard left off (a mouse-enabled alpha-0
--- tracker frame would be a screen-sized click-catcher). EnableMouse runs no
--- script handler and writes no Lua field: taint-free, and legal in combat
--- since none of these frames is protected. Blocks Blizzard hands out or
--- re-enables while the tracker is hidden come back through the AddBlock hook
--- and the deferred Update sweep, which re-apply the current state.
--- Scenario / UI-widget trackers are headers-only here (see SharesWidgetPool).
-local _mouseOffSet = setmetatable({}, { __mode = "k" })
-
--- Records WHICH half was on (1 = clicks, 2 = motion, 3 = both) so the
--- restore puts back exactly that: an XML tooltip-only frame runs on motion
--- alone, and handing it clicks would make it a click sink it never was.
-local function MouseOff(f)
-    if not (f and f.IsMouseEnabled) or _mouseOffSet[f] then return end
-    local mode
-    if f.IsMouseClickEnabled and f.IsMouseMotionEnabled then
-        mode = (f:IsMouseClickEnabled() and 1 or 0) + (f:IsMouseMotionEnabled() and 2 or 0)
-    else
-        mode = f:IsMouseEnabled() and 3 or 0
-    end
-    if mode == 0 then return end
-    _mouseOffSet[f] = mode
-    f:EnableMouse(false)
-end
-
--- One block's click sinks: the block frame itself (bonus blocks), the header
--- button (the quest log click), the item, group-finder and POI buttons, the
--- objective lines (hyperlinks) and every right-edge region with its bar.
-local function ApplyBlockMouse(block)
-    MouseOff(block)
-    MouseOff(block.HeaderButton)
-    MouseOff(block.ItemButton)
-    MouseOff(block.poiButton)
-    local lines = block.usedLines
-    if type(lines) == "table" then
-        for _, line in pairs(lines) do
-            if type(line) == "table" then MouseOff(line) end
-        end
-    end
-    local regions = block.addedRegions
-    if type(regions) == "table" then
-        for region in pairs(regions) do
-            if type(region) == "table" then
-                MouseOff(region)
-                MouseOff(region.Bar)
-            end
-        end
-    end
-end
-
--- The scenario tracker's blocks are FIXED XML frames of the module
--- (parentArray FixedBlocks), not pool frames: the stage block carrying the
--- dungeon name and its tooltip, the objectives block, the challenge block
--- with its affix and status frames, the proving-grounds block, the maw and
--- delve buff containers, the scenario spell buttons. Switching THEIR mouse
--- off touches no shared-widget-pool frame; the UIWidget containers inside
--- them are left alone (see SharesWidgetPool).
-local function ApplyScenarioMouse(sc)
-    if not sc then return end
-    if sc.ObjectivesBlock then ApplyBlockMouse(sc.ObjectivesBlock) end
-    local stage = sc.StageBlock
-    if stage then
-        MouseOff(stage)
-        MouseOff(stage.findGroupButton)
-    end
-    local cm = sc.ChallengeModeBlock
-    if cm then
-        MouseOff(cm)
-        MouseOff(cm.StartedDepleted)
-        MouseOff(cm.TimesUpLootStatus)
-        MouseOff(cm.DeathCount)
-        local pool = cm.affixPool
-        if pool and pool.EnumerateActive then
-            for affix in pool:EnumerateActive() do MouseOff(affix) end
-        end
-    end
-    MouseOff(sc.ProvingGroundsBlock)
-    if sc.MawBuffsBlock then MouseOff(sc.MawBuffsBlock.Container) end
-    if sc.TieredEntranceTraitsBlock then MouseOff(sc.TieredEntranceTraitsBlock.Container) end
-    local spells = sc.spellFramePool
-    if spells and spells.EnumerateActive then
-        for sf in spells:EnumerateActive() do MouseOff(sf.SpellButton) end
-    end
-end
-
--- Raise the block's right-edge buttons (quest item / group finder) above the
--- block itself. Blizzard acquires both the block and its right-edge frames from
--- the same module pool, so they are siblings on ContentsFrame at the *same*
--- frame level; the block then wins hit-testing and swallows the button's clicks.
---
--- Only the quest item button is stored under a named field
--- (block.ItemButton, Blizzard_QuestObjectiveTracker.lua). The group finder
--- button has no named field at all -- block.rightEdgeFrame holds just the last
--- one added, which is the item button whenever a quest has both. The complete
--- set is block.addedRegions (ObjectiveTrackerBlockMixin:OnAddedRegion), so walk
--- that and raise every Button in it. Objective lines, timer bars and progress
--- bars are Frames and stay untouched.
-local function RaiseRightEdgeButtons(block)
-    local bl = block.GetFrameLevel and block:GetFrameLevel() or 0
-    if block.ItemButton and block.ItemButton.SetFrameLevel then
-        block.ItemButton:SetFrameLevel(bl + 5)
-    end
-    local regions = block.addedRegions
-    if type(regions) ~= "table" then return end
-    for region in pairs(regions) do
-        if type(region) == "table" and region.SetFrameLevel and region.GetObjectType
-           and region:GetObjectType() == "Button" then
-            region:SetFrameLevel(bl + 5)
-        end
-    end
-end
-
-local function SkinBlock(block)
-    if not block then return end
-    -- Stock styles: Blizzard's block art, fonts and POI icons stay untouched
-    -- (the stock title keeps its right-edge anchor, so the item and group
-    -- finder buttons need no raise either).
-    if STOCK or ShouldSkipSkin() then return end
-
-
-    -- Suppress POI on every entry -- Blizzard may assign a new pooled
-    -- poiButton to the block between skin passes.
-    SuppressPOI(block)
-
-    -- Also on every entry: a block can gain a right-edge button after it was
-    -- first skinned (a quest becomes groupable, an item is granted), and the
-    -- pooled Init/Reset paths reset the level back to the block's.
-    RaiseRightEdgeButtons(block)
-
-    -- Skip blocks already fully skinned. The heavy work (strip textures,
-    -- style fontstrings, walk children) only needs to happen once per block.
-    -- Quest type icons and focus highlight are cheap and re-applied below.
-    if _skinned[block] then
-        ApplyQuestTypeIcon(block)
-        ApplyFocusHighlight(block)
-        return
-    end
-
-    HookBlockLineMethods(block)
-
-    -- Strip named decorative textures by key.
-    for _, k in ipairs({
-        "Background", "HeaderBackground", "Stripe", "Sheen", "Glow",
-        "Highlight", "ShineTop", "ShineBottom",
-    }) do
-        local r = block[k]
-        if r and r.SetTexture then r:SetTexture("") end
-    end
-
-    -- Single GetRegions() walk: strip remaining textures AND style fontstrings
-    -- in one pass instead of two separate walks.
-    local myIcon = _blockIcons[block]
-    if block.GetRegions then
-        for _, rg in ipairs({ block:GetRegions() }) do
-            local ot = rg.GetObjectType and rg:GetObjectType()
-            if ot == "Texture" then
-                if rg ~= myIcon and rg.SetTexture then rg:SetTexture("") end
-            elseif ot == "FontString" then
-                StyleFontString(rg)
-            end
-        end
-    end
-
-    -- Item button (quest item) count FontString if present.
-    if block.itemButton and block.itemButton.Count then
-        StyleFontString(block.itemButton.Count)
-    end
-
-    -- Replace Blizzard's quest-type icon with ours, based on the quest's
-    -- classification / frequency / turn-in state.
-    ApplyQuestTypeIcon(block)
-
-    -- One-time title layout (font, anchor strip, width constraint).
-    SetupTitleLayout(block)
-
-    -- Focus color for super-tracked / completed / normal quest.
-    ApplyFocusHighlight(block)
-
-    -- Strip ornamental textures + style objective fontstrings on child frames.
-    ProcessBlockChildren(block, 0)
-
-    _skinned[block] = true
-end
-
-
--------------------------------------------------------------------------------
--- Re-skin every block a tracker has already populated. Safe to call any time
--- (idempotent via the _eqtBlockSkinned / _eqtBarSkinned flags on each frame).
--------------------------------------------------------------------------------
-local function SkinExistingBlocks(tracker)
-    if STOCK or not tracker then return end
-
-
-    -- Refresh the accent divider under this tracker's header on every pass
-    -- so collapsed/re-expanded states always keep a visible divider.
-    if tracker.Header then EnsureAccentDivider(tracker.Header) end
-
-    -- Never touch shared-widget-pool trackers' blocks (see SharesWidgetPool).
-    -- The header/divider above is safe; the block loop below is not.
-    if SharesWidgetPool(tracker) then return end
-
-    -- Collect the blocks in use. Blizzard's usedBlocks is keyed by template
-    -- string, and each entry is a sub-table keyed by blockID -> block. Iterate
-    -- two levels. No geometry reads here: block rects turn secret once our
-    -- execution is tainted, and nothing below depends on visual order.
-    local ordered = {}
-    if tracker.usedBlocks then
-        for _, byTemplate in pairs(tracker.usedBlocks) do
-            if type(byTemplate) == "table" then
-                for _, block in pairs(byTemplate) do
-                    if type(block) == "table" and block.GetTop then
-                        ordered[#ordered + 1] = block
-                    end
-                end
-            end
-        end
-
-        for _, block in ipairs(ordered) do
-            SkinBlock(block)
-        end
-
-        -- Style objective lines.
-        for _, block in ipairs(ordered) do
-            if block.lines then
-                for _, line in pairs(block.lines) do
-                    StyleObjectiveLine(line)
-                end
-            end
-        end
-    end
-end
-
--------------------------------------------------------------------------------
--- The custom topModulePadding write-and-fight system (TightenTopAnchor and its
--- successor) has been removed. We no longer touch
--- ObjectiveTrackerFrame.topModulePadding at all -- Blizzard's own default governs the
--- gap between the header and the first module, in and out of combat, with zero taint
--- surface. The master header is now skinned and shown in place instead of being
--- squeezed out, so there is nothing left to compensate for.
--------------------------------------------------------------------------------
-
--------------------------------------------------------------------------------
--- Master "All Objectives" header visibility. SkinHeader() above is always
--- applied to it in InitSkin(); this only controls visibility, driven by the
--- "hideAllObjectivesHeader" option so the user can opt into showing it.
--- Defaults to hidden (nil in DB reads as hidden) -- see ShouldHideMasterHeader.
---
--- Suppressed with alpha, never Hide() -- same pattern as ApplyPOISuppression above, and
--- layout-equivalent (the container spaces the first module by topModulePadding alone).
--- ObjectiveTrackerFrameMixin:Update() calls self.Header:Show() before the container layout,
--- so a Hide() must be fought from an OnShow script that taints the whole pass.
--- ScenarioObjectiveTracker lays out first, and its LayoutContents call to ShouldShowMawBuffs
--- -> C_UnitAuras.GetAuraDataByIndex hard-errors while tainted: the pass unwinds before
--- DirtiableMixin clears self.dirty, nothing schedules another, and it freezes until /reload.
--------------------------------------------------------------------------------
--- Default is "hidden" (true) when the DB key is unset. `~= false` treats
--- nil the same as true, while still honoring an explicit user choice of
--- false (i.e. "show it").
--- The stock styles default to shown, as Blizzard draws it: with no EllesmereUI
--- background behind the tracker, a hidden header would leave its reserved slot
--- as an empty band above the first section.
-local function ShouldHideMasterHeader()
-    local v = EQT.Cfg("hideAllObjectivesHeader")
-    if v == nil then return not EQT.Blizz() end
-    return v ~= false
-end
-EQT.ShouldHideMasterHeader = ShouldHideMasterHeader
-
-local function ApplyMasterHeaderVisibility()
-    local otf = _G.ObjectiveTrackerFrame
-    if not otf then return end
-    local header = otf.HeaderMenu or otf.Header
-    if not header then return end
-
-    local hide = ShouldHideMasterHeader()
-    header:SetAlpha(hide and 0 or 1)
-    -- The header frame takes no mouse input of its own, but the collapse-all
-    -- button would still be clickable while invisible.
-    local minBtn = header.MinimizeButton
-    -- Never back on while the tracker is alpha-hidden (EQT.ApplyTrackerMouse
-    -- brings it back with the tracker).
-    if minBtn and minBtn.EnableMouse then minBtn:EnableMouse(not hide and not EQT._trackerMouseOff) end
-
-    EnsureAccentDivider(header)
-end
-EQT.ApplyMasterHeaderVisibility = ApplyMasterHeaderVisibility
-
--------------------------------------------------------------------------------
--- Hook a single sub-tracker.
--------------------------------------------------------------------------------
-local function HookTracker(tracker)
-    if not tracker then return end
-    if _hookedTrackers[tracker] then return end
-    _hookedTrackers[tracker] = true
-
-    -- ScenarioObjectiveTracker and UIWidgetObjectiveTracker: only skin the
-    -- header. Their child frames (blocks, progress bars, widget containers)
-    -- share Blizzard's widget pool with tooltip/AreaPOI widgets. ANY method
-    -- call on those frames taints the pool, causing secret-value arithmetic
-    -- errors when GameTooltip processes widget sets later (LayoutFrame.lua
-    -- "attempt to compare a secret number value" via GameTooltip_ClearWidgetSet).
-    if SharesWidgetPool(tracker) then
-        if tracker.Header then SkinHeader(tracker.Header) end
-        if tracker.Update then
-            -- The divider work is DEFERRED, never run inside this post-hook: the
-            -- hook fires mid ObjectiveTrackerContainer:Update(), between module
-            -- updates, and inline texture creation/anchoring against the
-            -- Blizzard header left the rest of that container pass tainted --
-            -- ScenarioObjectiveTracker:LayoutContents then hit
-            -- ShouldShowMawBuffs -> GetAuraDataByIndex (RequiresUnitAuraAccess)
-            -- from tainted execution and hard-errored under aura secrecy,
-            -- aborting the flush before Blizzard cleared its dirty flag (the
-            -- tracker froze until /reload; Curse Surge field repro, isolated by
-            -- deferring only this call). Same dirty-flag + After(0) shape as the
-            -- generic branch below; QueueResize only touches our own bg frame.
-            local _dividerDirty = false
-            local _scMouseDirty = false
-            hooksecurefunc(tracker, "Update", function(self)
-                -- Hidden tracker: affix / spell frames this pass acquired come
-                -- out mouse-off too (deferred: no frame work inline in a
-                -- module Update post-hook).
-                if EQT._trackerMouseOff and tracker == _G.ScenarioObjectiveTracker and not _scMouseDirty then
-                    _scMouseDirty = true
-                    C_Timer.After(0, function()
-                        _scMouseDirty = false
-                        if EQT._trackerMouseOff then ApplyScenarioMouse(_G.ScenarioObjectiveTracker) end
-                    end)
-                end
-                -- Stock styles: no background to resize, no divider.
-                if STOCK or ShouldSkipSkin() then return end
-                if EQT.QueueResize then EQT.QueueResize() end
-                if self.Header and not _dividerDirty then
-                    _dividerDirty = true
-                    C_Timer.After(0, function()
-                        _dividerDirty = false
-                        if ShouldSkipSkin() then return end
-                        if self.Header then EnsureAccentDivider(self.Header) end
-                    end)
-                end
-            end)
-        end
-        return
-    end
-
-    if tracker.Header then
-        SkinHeader(tracker.Header)
-        -- The stock styles have nothing to re-apply on a toggle: headers are
-        -- fixed-size, so the hit rect set above holds. No hook, so none of our
-        -- code enters the collapse chain.
-        if tracker.Header.SetCollapsed and not STOCK then
-            hooksecurefunc(tracker.Header, "SetCollapsed", function(self)
-                if ShouldSkipSkin() then return end
-                SkinHeader(self)
-            end)
-        end
-    end
-
-    if tracker.AddBlock then
-        hooksecurefunc(tracker, "AddBlock", function(_, block)
-            -- A block handed out while the tracker is alpha-hidden must not
-            -- come out clickable; independent of the skin (runs suppressed too).
-            if block and EQT._trackerMouseOff then ApplyBlockMouse(block) end
-            if ShouldSkipSkin() then return end
-            if block then _skinned[block] = nil end
-            SkinBlock(block)
-        end)
-    end
-
-    -- tracker.Update hook REPLACED with lightweight dirty flag (session 68).
-    -- The old hooksecurefunc charged Blizzard's entire Update() (10 calls
-    -- per collapse, full layout pass each) to our addon in the profiler.
-    -- Now we just set a flag and defer the work to a single pass.
-    local _updateDirty = false
-    if tracker.Update then
-        hooksecurefunc(tracker, "Update", function()
-            if _updateDirty then return end
-            -- Suppressed (M+ / raid tools) or a stock style: no skin work, but
-            -- a hidden tracker still needs the blocks this pass touched mouse-off.
-            if (STOCK or ShouldSkipSkin()) and not EQT._trackerMouseOff then return end
-            _updateDirty = true
-            C_Timer.After(0, function()
-                _updateDirty = false
-                local skip = STOCK or ShouldSkipSkin()
-                local mouseOff = EQT._trackerMouseOff
-                if skip and not mouseOff then return end
-                if not skip then
-                    if tracker.Header then EnsureAccentDivider(tracker.Header) end
-                    if EQT.QueueResize then EQT.QueueResize() end
-                end
-                if tracker.usedBlocks then
-                    for _, byTemplate in pairs(tracker.usedBlocks) do
-                        if type(byTemplate) == "table" then
-                            for _, block in pairs(byTemplate) do
-                                if type(block) == "table" then
-                                    if not skip then SuppressPOI(block) end
-                                    -- Blizzard's own Update re-enables bonus
-                                    -- blocks; this lands after it.
-                                    if mouseOff then ApplyBlockMouse(block) end
-                                end
-                            end
-                        end
-                    end
-                end
-            end)
-        end)
-    end
-
-    -- ContentsFrame:HookScript("OnSizeChanged") REMOVED: HookScript injects
-    -- addon code into Blizzard's execution context, tainting ANY secure call
-    -- chain that triggers a layout resize (e.g. dropdown menus at M+ end).
-    -- The deferred tracker.Update hook + event handlers already call
-    -- QueueResize, so this was purely redundant belt-and-suspenders.
-
-    -- Skin blocks that already exist before our hooks were installed.
-    -- Run immediately for blocks already populated, then once more
-    -- deferred to catch late-populated blocks from Blizzard's init.
-    if STOCK then return end
-    SkinExistingBlocks(tracker)
-    C_Timer.After(0.5, function() SkinExistingBlocks(tracker) end)
-end
-
--------------------------------------------------------------------------------
--- Collect every tracker Blizzard exposes. Prefer the authoritative MODULES
--- table on ObjectiveTrackerFrame; fall back to named globals so late-loaded
--- sub-trackers are still caught.
--------------------------------------------------------------------------------
-local function EachTracker(fn)
-    local seen = {}
-
-    local otf = _G.ObjectiveTrackerFrame
-    local modules = otf and (otf.modules or otf.MODULES)
-    if modules then
-        for _, t in ipairs(modules) do
-            if t and not seen[t] then
-                seen[t] = true
-                fn(t)
-            end
-        end
-    end
-
-    for _, name in ipairs(SUB_TRACKERS) do
-        local t = _G[name]
-        if t and not seen[t] then
-            seen[t] = true
-            fn(t)
-        end
-    end
-end
-
--- Sweep all tracker blocks and suppress any unsuppressed POI buttons.
--- Called from SUPER_TRACKING_CHANGED (deferred) to catch fresh POIs
--- that Blizzard assigns when the player clicks a quest on the map.
-EQT._SuppressAllPOIs = function()
-    local mouseOff = EQT._trackerMouseOff
-    EachTracker(function(tracker)
-        -- Shared-widget-pool trackers have no quest POI buttons and touching
-        -- their blocks taints the tooltip widget pool (see SharesWidgetPool).
-        if SharesWidgetPool(tracker) then return end
-        if not tracker.usedBlocks then return end
-        for _, byTemplate in pairs(tracker.usedBlocks) do
-            if type(byTemplate) == "table" then
-                for _, block in pairs(byTemplate) do
-                    if type(block) == "table" then
-                        SuppressPOI(block)
-                        -- A POI freshly assigned to a hidden tracker.
-                        if mouseOff then ApplyBlockMouse(block) end
-                    end
-                end
-            end
-        end
-    end)
-end
-
--- One tracker's share of the mouse-off sweep: its header minimize button and
--- the blocks now in use (shared-widget-pool trackers: headers only, see
--- SharesWidgetPool).
-local function TrackerMouseOff(tracker)
-    local header = tracker.Header
-    if header then MouseOff(header.MinimizeButton) end
-    if SharesWidgetPool(tracker) or not tracker.usedBlocks then return end
-    for _, byTemplate in pairs(tracker.usedBlocks) do
-        if type(byTemplate) == "table" then
-            for _, block in pairs(byTemplate) do
-                if type(block) == "table" then ApplyBlockMouse(block) end
-            end
-        end
-    end
-end
-
--- Tracker-wide mouse switch, driven by the Visibility file on every alpha
--- edge (combat auto-hide, visibility rules, mouseover idle and hover). OFF
--- sweeps the blocks now in use plus the module and master header buttons;
--- later blocks ride the AddBlock hook and the Update sweep. ON restores
--- exactly the frames the weak set holds -- wherever Blizzard's pools moved
--- them since -- and nothing else; the master minimize button then follows
--- its own hide rule again (SkinHeader keeps it off while the header is
--- hidden by option). Both directions early-out when already applied, so a
--- visibility pass on an unchanged state costs one field read.
-EQT.ApplyTrackerMouse = function(on)
-    if on then
-        if not EQT._trackerMouseOff then return end
-        EQT._trackerMouseOff = nil
-        for f, mode in pairs(_mouseOffSet) do
-            _mouseOffSet[f] = nil
-            if mode == 3 or not f.SetMouseClickEnabled then
-                f:EnableMouse(true)
-            elseif mode == 1 then
-                pcall(f.SetMouseClickEnabled, f, true)
-            else
-                pcall(f.SetMouseMotionEnabled, f, true)
-            end
-        end
-        -- The master minimize button follows its own hide rule again (a
-        -- header pass while hidden may have found it already off).
-        local otf = _G.ObjectiveTrackerFrame
-        local master = otf and (otf.HeaderMenu or otf.Header)
-        local mb = master and master.MinimizeButton
-        if mb and mb.EnableMouse and EQT.ShouldHideMasterHeader then
-            mb:EnableMouse(not EQT.ShouldHideMasterHeader())
-        end
-        return
-    end
-    if EQT._trackerMouseOff then return end
-    EQT._trackerMouseOff = true
-    EachTracker(TrackerMouseOff)
-    ApplyScenarioMouse(_G.ScenarioObjectiveTracker)
-    local otf = _G.ObjectiveTrackerFrame
-    local master = otf and (otf.HeaderMenu or otf.Header)
-    if master then
-        MouseOff(master.MinimizeButton)
-        MouseOff(master.FilterButton)
-    end
-end
-
--------------------------------------------------------------------------------
--- Entry point called from the loader after Blizzard_ObjectiveTracker loads.
--------------------------------------------------------------------------------
+local inited = false
 function EQT.InitSkin()
-    STOCK = EQT.Blizz()
-    CLASSIC = EQT.Classic()
-    -- Stock styles (fixed until reload): the classify cache has no reader and
-    -- the super-track frame needs only SUPER_TRACKING_CHANGED (the hidden
-    -- tracker's POI mouse-off). Blanking their registration lists keeps
-    -- ResumeQTEvents from re-registering what is dropped here.
-    if STOCK and EQT._eventFrames then
-        local ci = EQT._classifyFrameIdx
-        local cf = ci and EQT._eventFrames[ci]
-        if cf then cf:UnregisterAllEvents(); EQT._eventRegistrations[ci] = {} end
-        local si = EQT._superTrackFrameIdx
-        local sf = si and EQT._eventFrames[si]
-        if sf then
-            sf:UnregisterEvent("PLAYER_ENTERING_WORLD")
-            EQT._eventRegistrations[si] = { "SUPER_TRACKING_CHANGED" }
-        end
-    end
-    local otf = _G.ObjectiveTrackerFrame
-    if otf then
-        -- Skin the master "All Objectives" header + minimize button the same
-        -- way section headers (Quests / Achievements / etc) are skinned,
-        -- instead of hiding it. Whether it's actually shown is a separate,
-        -- user-controlled toggle -- see ApplyMasterHeaderVisibility().
-        local masterHeader = otf.HeaderMenu or otf.Header
-        if masterHeader then
-            SkinHeader(masterHeader)
-            -- Blizzard's own MinimizeButton OnClick calls SetCollapsed(), which
-            -- reassigns the button's textures for the new collapsed/expanded state --
-            -- overwriting the look we just synced from Quests. hooksecurefunc fires
-            -- after that (possibly protected) call completes, back in normal addon
-            -- execution, so re-running SkinHeader here carries no taint (same pattern
-            -- HookTracker already uses for every per-section header below).
-            if masterHeader.SetCollapsed and not _masterHeaderCollapseHooked and not STOCK then
-                _masterHeaderCollapseHooked = true
-                hooksecurefunc(masterHeader, "SetCollapsed", function(self, collapsed)
-                    if ShouldSkipSkin() then return end
-                    SkinHeader(self, collapsed)
-                end)
-            end
-        end
-        ApplyMasterHeaderVisibility()
-
-        -- ApplyMasterHeaderVisibility() above ran before ObjectiveTrackerFrame has any
-        -- content -- otf:IsShown() is still false at InitSkin() time
-        -- (Blizzard_ObjectiveTracker has just loaded, no quest data yet), so
-        -- EnsureAccentDivider's active-check for the master header evaluates false and
-        -- the divider stays hidden. otf itself never actually goes through a Hide->Show
-        -- transition once populated (it's structurally shown throughout, just empty),
-        -- so an OnShow hook can't catch this. Re-run once after PLAYER_ENTERING_WORLD,
-        -- deferred so the tracker has had a chance to populate with real quest data
-        -- first. Mirrors the existing PLAYER_ENTERING_WORLD + C_Timer.After debounce
-        -- pattern used elsewhere in this file (see _refreshClassifyCache above).
-        do
-            local reentry = CreateFrame("Frame")
-            reentry:RegisterEvent("PLAYER_ENTERING_WORLD")
-            reentry:SetScript("OnEvent", function(self)
-                self:UnregisterEvent("PLAYER_ENTERING_WORLD")
-                C_Timer.After(0.25, ApplyMasterHeaderVisibility)
-            end)
-        end
-
-        -- Strip the parchment / nine-slice background behind the whole tracker.
-        -- The stock styles keep Blizzard's panel (Edit Mode Opacity drives it).
-        if not STOCK then
-            if otf.NineSlice then otf.NineSlice:Hide() end
-            StripTextures(otf)
-        end
-    end
-
-    EachTracker(HookTracker)
-
-    -- otf.modules is still empty here (Blizzard registers its container after
-    -- PLAYER_ENTERING_WORLD) and addons add their modules at any time, so hook
-    -- each module as it joins, one frame later so no work runs inside AddModule.
-    -- A module joining a hidden tracker comes out mouse-off like the rest.
-    if otf and otf.AddModule then
-        hooksecurefunc(otf, "AddModule", function(_, module)
-            if not module or _hookedTrackers[module] then return end
-            C_Timer.After(0, function()
-                HookTracker(module)
-                if EQT._trackerMouseOff then TrackerMouseOff(module) end
-            end)
-        end)
-    end
-
-    -- Re-skin on tracker refresh events. Each of these fires when Blizzard
-    -- re-populates blocks; we piggy-back to catch newly-pooled-but-not-yet-
-    -- hooked children and to reapply fonts/colors Blizzard just reset.
-    -- The stock styles build no background, so the frame is never created
-    -- (and never enrolled for ResumeQTEvents).
-    if not STOCK then
-    local evt = CreateFrame("Frame")
-    evt:RegisterEvent("QUEST_LOG_UPDATE")
-    evt:RegisterEvent("QUEST_WATCH_LIST_CHANGED")
-    evt:RegisterEvent("SCENARIO_UPDATE")
-    evt:RegisterEvent("SCENARIO_CRITERIA_UPDATE")
-    evt:RegisterEvent("TRACKED_ACHIEVEMENT_LIST_CHANGED")
-    evt:RegisterEvent("TRACKED_RECIPE_UPDATE")
-    evt:RegisterEvent("SUPER_TRACKING_CHANGED")
-    -- Quest events just need a BG resize. Block skinning is handled by
-    -- AddBlock/AddObjective/GetProgressBar/GetTimerBar hooks, so we no
-    -- longer need to walk the entire tracker tree on every event. No combat
-    -- catch-up event needed here either -- there is no addon-owned padding
-    -- state left to re-correct after PLAYER_REGEN_ENABLED.
-    evt:SetScript("OnEvent", function(_, event)
-        -- Resize only. A forced ObjectiveTrackerFrame:Update() used to run
-        -- here on SUPER_TRACKING_CHANGED; removed -- see the FORBIDDEN
-        -- comment near the top of this file. Focus-change layout staleness
-        -- self-heals on Blizzard's next natural update.
-        if EQT.QueueResize then EQT.QueueResize() end
-    end)
-    if not EQT._eventFrames then EQT._eventFrames = {} end
-    if not EQT._eventRegistrations then EQT._eventRegistrations = {} end
-    local idx = #EQT._eventFrames + 1
-    EQT._eventFrames[idx] = evt
-    EQT._eventRegistrations[idx] = { "QUEST_LOG_UPDATE", "QUEST_WATCH_LIST_CHANGED", "SCENARIO_UPDATE",
-        "SCENARIO_CRITERIA_UPDATE", "TRACKED_ACHIEVEMENT_LIST_CHANGED", "TRACKED_RECIPE_UPDATE", "SUPER_TRACKING_CHANGED" }
-    end -- not STOCK
-
-    -- OTF.Update / ObjectiveTracker_Update hooks REMOVED (session 68).
-    -- They only called QueueResize, which is already triggered by
-    -- the deferred tracker.Update dirty-flag and event handlers above.
-    -- Each hooksecurefunc charged Blizzard's full OTF:Update() to us.
-
-    EQT.RestyleAll = function()
-        -- Clear skin stamps so the full strip+restyle runs again
-        EachTracker(function(t)
-            if t.usedBlocks then
-                for _, byTemplate in pairs(t.usedBlocks) do
-                    if type(byTemplate) == "table" then
-                        for _, block in pairs(byTemplate) do
-                            if type(block) == "table" then _skinned[block] = nil end
-                        end
-                    end
-                end
-            end
-            if t.Header then SkinHeader(t.Header) end
-            SkinExistingBlocks(t)
-        end)
-        -- Master "All Objectives" header isn't part of EachTracker's module
-        -- list (it belongs to ObjectiveTrackerFrame itself), so re-skin it
-        -- explicitly to pick up header-color changes.
-        local otfMaster = _G.ObjectiveTrackerFrame
-        local masterHeader = otfMaster and (otfMaster.HeaderMenu or otfMaster.Header)
-        if masterHeader then SkinHeader(masterHeader) end
-        -- Font/color size changes resize existing FontStrings in place, so Blizzard's
-        -- cached block heights can be stale until its next natural relayout (any quest
-        -- event). We deliberately do NOT force an ObjectiveTrackerFrame:Update() -- see
-        -- the FORBIDDEN comment near the top of this file for the taint post-mortem.
-    end
-
-    -- Live-update headers, blocks and progress bar fills when the user
-    -- changes the UI accent color in Global Settings (nothing reads the
-    -- accent under the stock styles).
-    if not STOCK and EllesmereUI and EllesmereUI.RegAccent then
-        EllesmereUI.RegAccent({ type = "callback", fn = function()
-            if EQT.RestyleAll then EQT.RestyleAll() end
-        end })
-    end
+	if inited or not _G.WatchFrame then return end
+	inited = true
+	hooksecurefunc("WatchFrame_SetLine", OnSetLine)
+	hooksecurefunc("WatchFrame_Update", function()
+		ColorAllTitles()
+		EQT.RestyleHeader()
+		if EQT.OnTrackerUpdate then EQT.OnTrackerUpdate() end
+	end)
+	hooksecurefunc("WatchFrameLinkButtonTemplate_Highlight", OnHighlight)
+	-- Expand / collapse change what is shown (and the background size).
+	hooksecurefunc("WatchFrame_Collapse", function()
+		UpdateDivider()
+		if EQT.OnTrackerUpdate then EQT.OnTrackerUpdate() end
+	end)
+	-- Lines Blizzard already built keep the old font until the next update;
+	-- the quest log fires one soon after login.
+	EQT.RestyleHeader()
 end

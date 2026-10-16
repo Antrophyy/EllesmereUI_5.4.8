@@ -1,406 +1,397 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
---  EllesmereUIBlizzardSkin_WindowEngine.lua
---  Shared engine for the Blizzard Window Skins system: style-aware window
---  shells (EllesmereUI atlas style vs Modern flat color), the primitive
---  skinners every window pack builds from, and per-window boot orchestration
---  for load-on-demand Blizzard addons.
+--  EllesmereUIBlizzardSkin_WindowEngine.lua (5.4.8 port)
+--  Shared engine for the Blizzard Window Skins: style-aware window shells
+--  (EllesmereUI art backdrop vs Modern flat color), the primitive skinners
+--  every window pack builds from, and per-window boot for load-on-demand
+--  Blizzard addons. Port of retail EllesmereUIBlizzardSkin_WindowEngine.lua.
 --
---  Style model (per window, chosen on the Blizzard Window Skins options page):
---    "eui"    -> the dungeons-and-raids shell: modern_blizz atlas backdrop
---                (cover-fit) + black overlay, full opacity.
---    "modern" -> identical skin, but the shell backdrop is a flat user-set
---                color + opacity (one global Modern color, applied live).
+--  5.4.8 differences:
+--   - SetTexture(r, g, b, a) instead of SetColorTexture; no atlases
+--     (EllesmereUI TGA art or a 1px border instead).
+--   - Classic templates: 3-slice buttons ($parentLeft/Middle/Right),
+--     UIDropDownMenuTemplate, InputBoxTemplate, UIPanelScrollBarTemplate,
+--     HybridScrollBarTemplate, CharacterFrameTabButtonTemplate tabs.
+--   - ElvUI: a window whose ElvUI skin is on is left to ElvUI.
+--
+--  Style model (per window, Blizzard Skins > Window Skins):
+--    "eui"    -> modern_blizz art backdrop (cover-fit) + black overlay.
+--    "modern" -> the same skin on a flat user color (Global Options).
 --    "off"    -> the window pack never runs (reload-gated).
---  EUI vs Modern differ ONLY in the shell backdrop; every other element
---  (buttons, tabs, borders, insets) is identical. eui<->modern applies LIVE
---  via RefreshStyles(); only off<->on needs a reload.
 --
---  Safety rules (hard requirements, see CLAUDE.md):
---   - Per-frame state lives in a weak-keyed EXTERNAL table (FFD); we never
+--  Safety rules (from retail):
+--   - Per-frame state lives in a weak-keyed EXTERNAL table (FFD); never
 --     write custom keys onto Blizzard frames.
 --   - Visual-only: SetAlpha(0) on textures. Never Hide/Show/SetParent a
---     Blizzard frame, never EnableMouse walks, never SetScript on Blizzard
---     frames (HookScript/hooksecurefunc only).
---   - No reads of protected/secret data anywhere in the skin path.
---   - Each window pack is pcall-isolated: one window breaking can never stop
---     the others from skinning.
---   - Zero cost when a window is off: hooks install only for enabled windows.
+--     Blizzard frame, never SetScript on Blizzard frames (HookScript /
+--     hooksecurefunc only).
+--   - Each window pack is pcall-isolated.
 -------------------------------------------------------------------------------
-local ADDON_NAME, ns = ...
-local EUI = EllesmereUI
-local issecretvalue = issecretvalue or function() return false end
+local addonName = ...
+local ns = EllesmereUI
+local BS = ns.BlizzSkin
+local PP = BS.PP
 
 local WSkin = {}
 ns.WSkin = WSkin
+BS.WSkin = WSkin
 
--- Weak-keyed external state (prevents tainting Blizzard frames) ---------------
+local Forbidden = BS.Forbidden
+local WHITE = BS.WHITE
+local MEDIA = BS.MEDIA
+local CORE_MEDIA = (ns.MEDIA or "Interface\\AddOns\\EllesmereUI\\media\\")
+
+WSkin.CLOSE_TEX = MEDIA .. "charsheet\\eui-close.tga"
+WSkin.ARROW_DOWN_TEX = MEDIA .. "charsheet\\eui-arrow-down3.tga"
+WSkin.ARROW_UP_TEX = MEDIA .. "charsheet\\eui-arrow-up3.tga"
+WSkin.ARROW_RIGHT_TEX = CORE_MEDIA .. "ui\\eui-arrow-right.tga"
+WSkin.BG_TEX = MEDIA .. "modern_blizz.tga"
+
+-- Weak-keyed external state (keeps our keys off Blizzard frames) -------------
 local FFD = setmetatable({}, { __mode = "k" })
 local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
+	local d = FFD[frame]
+	if not d then
+		d = {}
+		FFD[frame] = d
+	end
+	return d
 end
 WSkin.GetFFD = GetFFD
 WSkin.FFD = FFD
 
--- Completion is separate from reentrancy: a failed setup can retry, while
--- a synchronous hook cannot enter the same control's unfinished setup.
 local setupInProgress = setmetatable({}, { __mode = "k" })
 function WSkin.CompleteSetup(frame, key, apply, ...)
-    local d = GetFFD(frame)
-    if d[key] or setupInProgress[frame] then return end
-    setupInProgress[frame] = true
-    local ok, err = pcall(apply, frame, d, ...)
-    setupInProgress[frame] = nil
-    if not ok then error(err, 0) end
-    d[key] = true
+	local d = GetFFD(frame)
+	if d[key] or setupInProgress[frame] then
+		return
+	end
+	setupInProgress[frame] = true
+	local ok, err = pcall(apply, frame, d, ...)
+	setupInProgress[frame] = nil
+	if not ok then
+		error(err, 0)
+	end
+	d[key] = true
 end
 
 -------------------------------------------------------------------------------
---  Theme tokens. Matches the dungeons-and-raids reskin so every window reads
---  as one family. Accent tracks the user's live accent color.
+--  Theme tokens (dungeons-and-raids reskin family).
 -------------------------------------------------------------------------------
 local Theme = {}
 WSkin.Theme = Theme
 local function ResolveTheme()
-    local EG = (EUI and EUI.ELLESMERE_GREEN) or { r = 0.047, g = 0.824, b = 0.616 }
-    Theme.accR, Theme.accG, Theme.accB = EG.r or 0.047, EG.g or 0.824, EG.b or 0.616
-    -- Neutral dark grays (no color cast): panel/button/dropdown fill and the
-    -- darker nested-inset variant.
-    Theme.bgR, Theme.bgG, Theme.bgB, Theme.bgA = 0.08, 0.08, 0.08, 0.92
-    Theme.insetR, Theme.insetG, Theme.insetB, Theme.insetA = 0.04, 0.04, 0.04, 0.85
-    Theme.brdR, Theme.brdG, Theme.brdB, Theme.brdA = 0.2, 0.2, 0.2, 1
-    Theme.fontPath = (EUI.GetFontPath("blizzardSkin")) or STANDARD_TEXT_FONT
-    Theme.fontFlag = (EUI.GetFontOutlineFlag("blizzardSkin")) or ""
-    -- Drop shadow only in no-outline mode, honoring the user's shadow toggle.
-    Theme.fontShadow = (Theme.fontFlag == "")
-        and (not (EUI and EUI.GetFontUseShadow) or EUI.GetFontUseShadow("blizzardSkin"))
+	local r, g, b = BS.Accent()
+	Theme.accR, Theme.accG, Theme.accB = r, g, b
+	Theme.bgR, Theme.bgG, Theme.bgB, Theme.bgA = 0.08, 0.08, 0.08, 0.92
+	Theme.insetR, Theme.insetG, Theme.insetB, Theme.insetA = 0.04, 0.04, 0.04, 0.85
+	Theme.brdR, Theme.brdG, Theme.brdB, Theme.brdA = 0.2, 0.2, 0.2, 1
+	Theme.fontPath = BS.FontPath()
+	Theme.fontFlag = BS.FontFlag()
+	Theme.fontShadow = (Theme.fontFlag == "")
 end
 WSkin.ResolveTheme = ResolveTheme
+ResolveTheme()
 
 local function SolidTex(parent, layer, r, g, b, a, sublevel)
-    local t = parent:CreateTexture(nil, layer, nil, sublevel)
-    t:SetColorTexture(r, g, b, a)
-    return t
+	return BS.SolidTex(parent, layer, r, g, b, a, sublevel)
 end
 WSkin.SolidTex = SolidTex
 
 local function AddBorder(frame, r, g, b, a)
-    if GetFFD(frame).border then return end
-    local PP = EUI and (EUI.PanelPP or EUI.PP)
-    if PP and PP.CreateBorder then
-        -- BORDER/-7 strips with the container demoted to the skinned frame's own
-        -- level: at equal frame levels regions interleave by draw layer, so text
-        -- and content on the frame render above the border (at the default +1
-        -- container level, frame level beats every layer and the border covers
-        -- bar text -- XP/reputation bar labels). Demotion is window-engine-only
-        -- on purpose: every other CreateBorder consumer keeps the +1 contract.
-        local c = PP.CreateBorder(frame, r or Theme.brdR, g or Theme.brdG, b or Theme.brdB, a or Theme.brdA, 1, "BORDER", -7)
-        if c and c.SetFrameLevel then c:SetFrameLevel(frame:GetFrameLevel()) end
-        GetFFD(frame).border = true
-    end
+	if GetFFD(frame).border then
+		return
+	end
+	local c = PP.CreateBorder(frame, r or Theme.brdR, g or Theme.brdG, b or Theme.brdB, a or Theme.brdA, 1, "BORDER", -7)
+	-- Same frame level as the skinned frame: its text draws above the border.
+	if c and c.SetFrameLevel then
+		c:SetFrameLevel(frame:GetFrameLevel())
+	end
+	GetFFD(frame).border = c
 end
 WSkin.AddBorder = AddBorder
 
 -------------------------------------------------------------------------------
---  Modern style storage. The enable booleans + style names live in the options
---  system; the engine only resolves the ONE global Modern backdrop color
---  (default #111111 at 97% opacity).
+--  Modern backdrop color (one global color + opacity, default #111111 97%).
 -------------------------------------------------------------------------------
 local MODERN_FALLBACK = { r = 0.067, g = 0.067, b = 0.067, a = 0.97 }
 function WSkin.GetModernBG()
-    local db = EllesmereUIDB
-    local c = db and db.blizzWindowModernDefault
-    if not (c and c.r) then c = MODERN_FALLBACK end
-    return c.r or MODERN_FALLBACK.r, c.g or MODERN_FALLBACK.g,
-           c.b or MODERN_FALLBACK.b, c.a or MODERN_FALLBACK.a
+	local c = BS.DB().blizzWindowModernDefault
+	if not (type(c) == "table" and c.r) then
+		c = MODERN_FALLBACK
+	end
+	return c.r or MODERN_FALLBACK.r, c.g or MODERN_FALLBACK.g,
+		c.b or MODERN_FALLBACK.b, c.a or MODERN_FALLBACK.a
 end
 
 function WSkin.GetStyle(winKey)
-    if EUI and EUI.GetBlizzWindowStyle then return EUI.GetBlizzWindowStyle(winKey) end
-    return "eui"
+	return BS.GetWindowStyle(winKey)
 end
 
 -------------------------------------------------------------------------------
---  FadeRegions: alpha-out every direct texture region on a frame (+ NineSlice).
---  `keep` is a set of texture objects to leave alone. Visual-only, no Hide().
+--  FadeRegions: alpha-out every direct texture region of a frame. `keep` is a
+--  set of textures to leave alone. Visual-only, no Hide().
 -------------------------------------------------------------------------------
--- Walks GetRegions' returns directly: every global Restrip (each loot open,
--- mail and calendar updates) runs this for every registered frame, so it must
--- not allocate.
 local function FadeTextures(keep, ...)
-    for i = 1, select("#", ...) do
-        local r = (select(i, ...))
-        if r and r.IsObjectType and r:IsObjectType("Texture") and not (keep and keep[r]) then
-            r:SetAlpha(0)
-        end
-    end
+	for i = 1, select("#", ...) do
+		local r = (select(i, ...))
+		if r and r.IsObjectType and r:IsObjectType("Texture") and not (keep and keep[r]) then
+			r:SetAlpha(0)
+		end
+	end
 end
 local function FadeRegions(frame, keep)
-    if not frame or frame:IsForbidden() then return end
-    FadeTextures(keep, frame:GetRegions())
-    if frame.NineSlice then FadeRegions(frame.NineSlice, keep) end
+	if not frame or Forbidden(frame) or not frame.GetRegions then
+		return
+	end
+	FadeTextures(keep, frame:GetRegions())
 end
 WSkin.FadeRegions = FadeRegions
 
--- NineSlice pieces get re-shown/re-laid-out by Blizzard on some updates; alpha
--- each named piece as well as the container so a relayout cannot resurrect it.
-local NINESLICE_PIECES = {
-    "TopLeftCorner", "TopRightCorner", "BottomLeftCorner", "BottomRightCorner",
-    "TopEdge", "BottomEdge", "LeftEdge", "RightEdge", "Center",
-}
-local function FadeNineSlice(nsl)
-    if not nsl then return end
-    FadeRegions(nsl)
-    for _, k in ipairs(NINESLICE_PIECES) do
-        local p = nsl[k]
-        if p and p.SetAlpha then p:SetAlpha(0) end
-    end
-    if nsl.SetAlpha then nsl:SetAlpha(0) end
+-- Named texture pieces: $parent<suffix> globals and parentKeys.
+function WSkin.FadeNamed(frame, suffixes)
+	if not frame then
+		return
+	end
+	local name = frame.GetName and frame:GetName()
+	for i = 1, #suffixes do
+		local k = suffixes[i]
+		local t = frame[k] or (name and _G[name .. k])
+		if type(t) == "table" and t.SetAlpha and t.IsObjectType and t:IsObjectType("Texture") then
+			t:SetAlpha(0)
+		end
+	end
 end
-WSkin.FadeNineSlice = FadeNineSlice
 
 -------------------------------------------------------------------------------
 --  Restrip registry: frames Blizzard repaints get re-faded on demand. Every
---  texture the engine itself created is protected via the frame's FFD entry.
+--  texture the engine created is protected via the frame's FFD entry.
 -------------------------------------------------------------------------------
 local _restrip = {}
 local _windowRestrips = {}
 local registrationWindow
 
--- Attribute registrations to a window while running its setup or a late
--- control callback. Restore the previous owner even when a callback fails.
 function WSkin.WindowCallback(winKey, fn)
-    return function(...)
-        if WSkin.GetStyle(winKey) == "off" then return end
-        local previous = registrationWindow
-        registrationWindow = winKey
-        local ok, err = pcall(fn, ...)
-        registrationWindow = previous
-        if not ok then error(err, 0) end
-    end
+	return function(...)
+		if WSkin.GetStyle(winKey) == "off" then
+			return
+		end
+		local previous = registrationWindow
+		registrationWindow = winKey
+		local ok, err = pcall(fn, ...)
+		registrationWindow = previous
+		if not ok then
+			error(err, 0)
+		end
+	end
 end
 
 local function Register(frame, keep)
-    if not frame then return end
-    _restrip[frame] = keep or true
-    if registrationWindow then
-        local frames = _windowRestrips[registrationWindow]
-        if not frames then
-            frames = {}
-            _windowRestrips[registrationWindow] = frames
-        end
-        frames[frame] = true
-    end
+	if not frame then
+		return
+	end
+	_restrip[frame] = keep or true
+	if registrationWindow then
+		local frames = _windowRestrips[registrationWindow]
+		if not frames then
+			frames = {}
+			_windowRestrips[registrationWindow] = frames
+		end
+		frames[frame] = true
+	end
 end
 WSkin.Register = Register
 
-local PROTECT_KEYS = { "bg", "bgOverlay", "modernBg", "hover", "selBar", "rightShade", "fill", "x", "topBar", "bottomBar", "arrow", "caret" }
+local PROTECT_KEYS = { "bg", "bgOverlay", "modernBg", "hover", "selBar", "rightShade", "fill", "x", "topBar", "bottomBar", "arrow", "caret", "label", "underline", "activeHL", "strip" }
 local function Restrip(winKey)
-    local frames = winKey and _windowRestrips[winKey] or _restrip
-    if winKey and not _windowRestrips[winKey] then return end
-    for frame in pairs(frames) do
-        local keep = _restrip[frame]
-        if frame and not frame:IsForbidden() then
-            local k = (type(keep) == "table") and keep or nil
-            local d = FFD[frame]
-            if d then
-                k = k or {}
-                for _, key in ipairs(PROTECT_KEYS) do
-                    if d[key] then k[d[key]] = true end
-                end
-            end
-            FadeRegions(frame, k)
-        end
-    end
+	local frames = winKey and _windowRestrips[winKey] or _restrip
+	if winKey and not _windowRestrips[winKey] then
+		return
+	end
+	for frame in pairs(frames) do
+		local keep = _restrip[frame]
+		if frame and not Forbidden(frame) then
+			local k = (type(keep) == "table") and keep or nil
+			local d = FFD[frame]
+			if d then
+				local merged = {}
+				if k then
+					for t in pairs(k) do
+						merged[t] = true
+					end
+				end
+				for _, key in ipairs(PROTECT_KEYS) do
+					if type(d[key]) == "table" then
+						merged[d[key]] = true
+					end
+				end
+				k = merged
+			end
+			FadeRegions(frame, k)
+		end
+	end
 end
 WSkin.Restrip = Restrip
 
 -------------------------------------------------------------------------------
---  Style-aware window shell. Creates BOTH backdrop variants on the frame and
---  shows the one matching the window's current style:
---    eui    -> modern_blizz atlas (cover-fit) + black 0.62 overlay
---    modern -> flat user color + opacity
---  All shells register here so RefreshStyles() can live-swap and recolor.
+--  Style-aware window shell: both backdrop variants on the frame, the one
+--  matching the window's style shown. RefreshStyles() live-swaps them.
 -------------------------------------------------------------------------------
-local _shells = {}   -- winKey -> { frame = f } (strong: permanent frames)
+local _shells = {}
 
 local BG_ASPECT = 561 / 433
 local BASE_L, BASE_R, BASE_T, BASE_B = 0.25, 1, 0, 0.75
 local BASE_U, BASE_V = BASE_R - BASE_L, BASE_B - BASE_T
 
 local function ApplyShellStyle(winKey)
-    local entry = _shells[winKey]
-    if not entry then return end
-    for frame in pairs(entry) do
-        local d = FFD[frame]
-        if d then
-            local style = WSkin.GetStyle(winKey)
-            if style == "modern" then
-                if d.bg then d.bg:SetAlpha(0) end
-                if d.bgOverlay then d.bgOverlay:SetAlpha(0) end
-                if d.modernBg then
-                    local r, g, b, a = WSkin.GetModernBG()
-                    d.modernBg:SetColorTexture(r, g, b, a)
-                    -- Re-raise the region alpha too: a foreign restrip pass may
-                    -- have zeroed it (color alpha and region alpha multiply).
-                    d.modernBg:SetAlpha(1)
-                end
-            else
-                if d.bg then d.bg:SetAlpha(1) end
-                -- Region alpha is show/hide only; the darken strength lives in
-                -- the overlay's color alpha (they multiply).
-                if d.bgOverlay then d.bgOverlay:SetAlpha(1) end
-                if d.modernBg then d.modernBg:SetColorTexture(0, 0, 0, 0) end
-            end
-        end
-    end
+	local entry = _shells[winKey]
+	if not entry then
+		return
+	end
+	local style = WSkin.GetStyle(winKey)
+	for frame in pairs(entry) do
+		local d = FFD[frame]
+		if d then
+			if style == "modern" then
+				if d.bg then d.bg:SetAlpha(0) end
+				if d.bgOverlay then d.bgOverlay:SetAlpha(0) end
+				if d.modernBg then
+					local r, g, b, a = WSkin.GetModernBG()
+					d.modernBg:SetTexture(r, g, b, a)
+					d.modernBg:SetAlpha(1)
+				end
+			else
+				if d.bg then d.bg:SetAlpha(1) end
+				if d.bgOverlay then d.bgOverlay:SetAlpha(1) end
+				if d.modernBg then d.modernBg:SetTexture(0, 0, 0, 0) end
+			end
+		end
+	end
 end
 
--- Outside painters that follow a window's style (the Friends module's own
--- window chrome) repaint on the same live refresh as the shells.
 local _styleCallbacks = {}
 function WSkin.OnStylesChanged(fn)
-    _styleCallbacks[#_styleCallbacks + 1] = fn
+	_styleCallbacks[#_styleCallbacks + 1] = fn
 end
 
--- Re-resolve every registered shell (style switches + Modern color edits apply
--- live; no reload). Exposed on EllesmereUI so the options page can call it.
 function WSkin.RefreshStyles()
-    for winKey in pairs(_shells) do ApplyShellStyle(winKey) end
-    for _, fn in ipairs(_styleCallbacks) do pcall(fn) end
+	for winKey in pairs(_shells) do
+		ApplyShellStyle(winKey)
+	end
+	for _, fn in ipairs(_styleCallbacks) do
+		pcall(fn)
+	end
 end
-if EUI then EUI._WSkinRefreshStyles = WSkin.RefreshStyles end
+ns._WSkinRefreshStyles = WSkin.RefreshStyles
 
--- Attach the style system to a frame that ALREADY has an atlas shell built.
--- Pass the shell's atlas texture + black overlay explicitly when they live in
--- another file's own state table (Character Sheet, Inspect, LFG shell).
 function WSkin.AdoptShell(winKey, frame, atlasTex, overlayTex)
-    if not frame then return end
-    local d = GetFFD(frame)
-    if atlasTex then d.bg = atlasTex end
-    if overlayTex then d.bgOverlay = overlayTex end
-    if not d.modernBg then
-        d.modernBg = frame:CreateTexture(nil, "BACKGROUND", nil, -6)
-        d.modernBg:SetColorTexture(0, 0, 0, 0)
-        d.modernBg:SetAllPoints(frame)
-    end
-    local entry = _shells[winKey]
-    if not entry then entry = {}; _shells[winKey] = entry end
-    entry[frame] = true
-    ApplyShellStyle(winKey)
+	if not frame then
+		return
+	end
+	local d = GetFFD(frame)
+	if atlasTex then d.bg = atlasTex end
+	if overlayTex then d.bgOverlay = overlayTex end
+	if not d.modernBg then
+		d.modernBg = frame:CreateTexture(nil, "BACKGROUND", nil, -6)
+		d.modernBg:SetTexture(0, 0, 0, 0)
+		d.modernBg:SetAllPoints(frame)
+	end
+	local entry = _shells[winKey]
+	if not entry then
+		entry = {}
+		_shells[winKey] = entry
+	end
+	entry[frame] = true
+	ApplyShellStyle(winKey)
 end
 
--- Cover-fit the shell backdrop into a fw x fh rect: native aspect 561x433,
--- centred crop of the overflow, never stretched. Pure, no hooks: Shell calls
--- it from its size hook; the Friends module calls it when it paints.
+-- Cover-fit the shell art into fw x fh: native aspect 561x433, centred crop.
 function WSkin.CoverFit(tex, fw, fh)
-    -- SECRECY TEST FIRST. `fw == 0` is itself a COMPARISON, so on a frame
-    -- whose size is secret (any window sized from widget content -- the
-    -- delve picker and the choice windows both are) it throws before a
-    -- later issecretvalue guard could reject it:
-    --   "attempt to compare local 'fw' (a secret number value)"
-    if issecretvalue(fw) or issecretvalue(fh) then return end
-    if not fw or fw == 0 or not fh or fh == 0 then return end
-    local fa = fw / fh
-    if fa > BG_ASPECT then
-        local visV = BASE_V * (BG_ASPECT / fa)
-        local trimV = (BASE_V - visV) / 2
-        tex:SetTexCoord(BASE_L, BASE_R, BASE_T + trimV, BASE_B - trimV)
-    else
-        local visU = BASE_U * (fa / BG_ASPECT)
-        local trimU = (BASE_U - visU) / 2
-        tex:SetTexCoord(BASE_L + trimU, BASE_R - trimU, BASE_T, BASE_B)
-    end
+	if not fw or fw == 0 or not fh or fh == 0 then
+		return
+	end
+	local fa = fw / fh
+	if fa > BG_ASPECT then
+		local visV = BASE_V * (BG_ASPECT / fa)
+		local trimV = (BASE_V - visV) / 2
+		tex:SetTexCoord(BASE_L, BASE_R, BASE_T + trimV, BASE_B - trimV)
+	else
+		local visU = BASE_U * (fa / BG_ASPECT)
+		local trimU = (BASE_U - visU) / 2
+		tex:SetTexCoord(BASE_L + trimU, BASE_R - trimU, BASE_T, BASE_B)
+	end
 end
 
--- Full shell build for a window pack: fade Blizzard art, lay both backdrop
--- variants, border it, apply the current style. opts.noBorder skips the frame
--- border (for frames whose rect extends past their visible panel).
+-- Full shell for a window: fade Blizzard art, lay both backdrops, border it.
+-- opts.noBorder, opts.noTopBar, opts.bottomBar (true or height),
+-- opts.inset = { left, top, right, bottom } when the frame rect is bigger
+-- than its visible panel (old 5.4.8 windows with transparent art margins).
 function WSkin.Shell(winKey, frame, opts)
-    if not frame or frame:IsForbidden() then return end
-    local d = GetFFD(frame)
-    local keep = {}
-    for _, key in ipairs(PROTECT_KEYS) do
-        if d[key] then keep[d[key]] = true end
-    end
-    FadeRegions(frame, keep)
-    Register(frame, true)
-    if not d.bg then
-        local bg = frame:CreateTexture(nil, "BACKGROUND", nil, -8)
-        bg:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\modern_blizz.png")
-        bg:SetAllPoints(frame)
-        d.bg = bg
-        local overlay = frame:CreateTexture(nil, "BACKGROUND", nil, -7)
-        overlay:SetColorTexture(0, 0, 0, 0.62)
-        overlay:SetAllPoints(frame)
-        d.bgOverlay = overlay
+	if not frame or Forbidden(frame) then
+		return
+	end
+	local d = GetFFD(frame)
+	local keep = {}
+	for _, key in ipairs(PROTECT_KEYS) do
+		if type(d[key]) == "table" then keep[d[key]] = true end
+	end
+	FadeRegions(frame, keep)
+	Register(frame, true)
+	if not d.bg then
+		-- The art host: the frame itself, or an inset child for old windows.
+		local host = frame
+		local ins = opts and opts.inset
+		if ins then
+			host = CreateFrame("Frame", nil, frame)
+			host:SetPoint("TOPLEFT", frame, "TOPLEFT", ins[1] or 0, -(ins[2] or 0))
+			host:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -(ins[3] or 0), ins[4] or 0)
+			host:SetFrameLevel(max(0, frame:GetFrameLevel() - 1))
+			d.host = host
+		end
+		local bg = host:CreateTexture(nil, "BACKGROUND", nil, -8)
+		bg:SetTexture(WSkin.BG_TEX)
+		bg:SetAllPoints(host)
+		d.bg = bg
+		local overlay = host:CreateTexture(nil, "BACKGROUND", nil, -7)
+		overlay:SetTexture(0, 0, 0, 0.62)
+		overlay:SetAllPoints(host)
+		d.bgOverlay = overlay
+		d.modernBg = host:CreateTexture(nil, "BACKGROUND", nil, -6)
+		d.modernBg:SetTexture(0, 0, 0, 0)
+		d.modernBg:SetAllPoints(host)
 
-        -- Cover-fit: crop the atlas so it fills the frame without stretching.
-        local function UpdateBgTexCoords()
-            WSkin.CoverFit(bg, frame:GetSize())
-        end
-        -- One script hook instead of three setter hooks: it also fires for
-        -- anchor-driven resizes the setters never saw.
-        frame:HookScript("OnSizeChanged", UpdateBgTexCoords)
-        UpdateBgTexCoords()
+		local function UpdateBgTexCoords()
+			WSkin.CoverFit(bg, host:GetSize())
+		end
+		host:HookScript("OnSizeChanged", UpdateBgTexCoords)
+		UpdateBgTexCoords()
 
-        -- Black top bar behind the window title. Sits above both style backdrops
-        -- (-8/-7/-6) and below all content and the border overlay. opts.noTopBar skips
-        -- it for shells with no title row of their own (loot toasts and other small
-        -- popups), where a 25px bar would just be a dark stripe across the top.
-        if not (opts and opts.noTopBar) then
-            local topBar = frame:CreateTexture(nil, "BACKGROUND", nil, -5)
-            topBar:SetColorTexture(0, 0, 0, 0.5)
-            topBar:SetPoint("TOPLEFT")
-            topBar:SetPoint("TOPRIGHT")
-            topBar:SetHeight(25)
-            d.topBar = topBar
-        end
-        -- Matching bar along the BOTTOM, opt-in via opts.bottomBar (pass a
-        -- number for a height other than the top bar's 25). For windows that
-        -- carry a footer strip -- a currency row, a total, an action bar --
-        -- so it reads as a deliberate band rather than content floating on
-        -- the backdrop. Same layer and color as the top bar, so the two match.
-        local bb = opts and opts.bottomBar
-        if bb then
-            local bottomBar = frame:CreateTexture(nil, "BACKGROUND", nil, -5)
-            bottomBar:SetColorTexture(0, 0, 0, 0.5)
-            bottomBar:SetPoint("BOTTOMLEFT")
-            bottomBar:SetPoint("BOTTOMRIGHT")
-            bottomBar:SetHeight(type(bb) == "number" and bb or 25)
-            d.bottomBar = bottomBar
-        end
-    end
-    if not (opts and opts.noBorder) then WSkin.AtlasBorder(frame) end
-    WSkin.AdoptShell(winKey, frame)
+		if not (opts and opts.noTopBar) then
+			local topBar = host:CreateTexture(nil, "BACKGROUND", nil, -5)
+			topBar:SetTexture(0, 0, 0, 0.5)
+			topBar:SetPoint("TOPLEFT")
+			topBar:SetPoint("TOPRIGHT")
+			topBar:SetHeight(type(opts and opts.topBar) == "number" and opts.topBar or 25)
+			d.topBar = topBar
+		end
+		local bb = opts and opts.bottomBar
+		if bb then
+			local bottomBar = host:CreateTexture(nil, "BACKGROUND", nil, -5)
+			bottomBar:SetTexture(0, 0, 0, 0.5)
+			bottomBar:SetPoint("BOTTOMLEFT")
+			bottomBar:SetPoint("BOTTOMRIGHT")
+			bottomBar:SetHeight(type(bb) == "number" and bb or 25)
+			d.bottomBar = bottomBar
+		end
+		if not (opts and opts.noBorder) then
+			AddBorder(host)
+		end
+	end
+	WSkin.AdoptShell(winKey, frame)
 end
 
--- Window border: AdventureMap_TopBorder is a complete window-frame atlas
--- (1002x668, transparent middle). It stretches to the window's size and lays
--- over the backdrop, replacing the 1px line border on shells. Falls back to
--- the 1px border if the atlas is ever missing.
-local BORDER_ATLAS = "AdventureMap_TopBorder"
+-- Retail's AtlasBorder (AdventureMap_TopBorder) has no 5.4.8 art: 1px border.
 function WSkin.AtlasBorder(frame)
-    if not frame or frame:IsForbidden() then return end
-    local d = GetFFD(frame)
-    if d.atlasBorder then return end
-    d.atlasBorder = true
-    local info = C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(BORDER_ATLAS)
-    if not info then
-        AddBorder(frame)
-        return
-    end
-
-    local ov = CreateFrame("Frame", nil, frame)
-    ov:SetAllPoints(frame)
-    ov:SetFrameLevel(frame:GetFrameLevel() + 6)
-    d.atlasBorderFrame = ov
-
-    local tex = ov:CreateTexture(nil, "OVERLAY", nil, 7)
-    tex:SetAtlas(BORDER_ATLAS)
-    tex:SetAllPoints(ov)
+	AddBorder(frame)
 end
 
 -------------------------------------------------------------------------------
@@ -410,1416 +401,1469 @@ end
 -- Flat solid panel. opts.noBg = strip only; opts.inset = darker nested fill;
 -- opts.noBorder = skip border; opts.shade = translucent black content wash.
 function WSkin.Panel(frame, opts)
-    if not frame or frame:IsForbidden() then return end
-    opts = opts or {}
-    local d = GetFFD(frame)
-    local keep = {}
-    if d.bg then keep[d.bg] = true end
-    FadeRegions(frame, keep)
-    Register(frame, true)
-    if not d.bg and not opts.noBg then
-        local r, g, b, a = Theme.bgR, Theme.bgG, Theme.bgB, Theme.bgA
-        if opts.inset then r, g, b, a = Theme.insetR, Theme.insetG, Theme.insetB, Theme.insetA end
-        if opts.shade then r, g, b, a = 0, 0, 0, 0.25 end
-        local bg = frame:CreateTexture(nil, "BACKGROUND", nil, -6)
-        bg:SetColorTexture(r, g, b, a)
-        bg:SetAllPoints(frame)
-        d.bg = bg
-    end
-    if not opts.noBorder then AddBorder(frame) end
+	if not frame or Forbidden(frame) then
+		return
+	end
+	opts = opts or {}
+	local d = GetFFD(frame)
+	local keep = {}
+	if d.bg then keep[d.bg] = true end
+	FadeRegions(frame, keep)
+	Register(frame, true)
+	if not d.bg and not opts.noBg then
+		local r, g, b, a = Theme.bgR, Theme.bgG, Theme.bgB, Theme.bgA
+		if opts.inset then r, g, b, a = Theme.insetR, Theme.insetG, Theme.insetB, Theme.insetA end
+		if opts.shade then r, g, b, a = 0, 0, 0, 0.25 end
+		local bg = frame:CreateTexture(nil, "BACKGROUND", nil, -6)
+		bg:SetTexture(r, g, b, a)
+		bg:SetAllPoints(frame)
+		d.bg = bg
+	end
+	if not opts.noBorder then
+		AddBorder(frame)
+	end
 end
 
--- Strip an InsetFrameTemplate child (Bg + rounded NineSlice box) so it blends
--- into the shell instead of showing a nested box.
+-- Strip an InsetFrameTemplate child (Bg + corner/edge textures).
+local INSET_PIECES = {
+	"Bg", "InsetBorderTop", "InsetBorderBottom", "InsetBorderLeft", "InsetBorderRight",
+	"InsetBorderTopLeft", "InsetBorderTopRight", "InsetBorderBottomLeft", "InsetBorderBottomRight",
+}
 function WSkin.Inset(inset)
-    if not inset or inset:IsForbidden() then return end
-    FadeRegions(inset)
-    if inset.Bg then inset.Bg:SetAlpha(0) end
-    if inset.NineSlice then FadeNineSlice(inset.NineSlice) end
-    Register(inset, true)
+	if not inset or Forbidden(inset) then
+		return
+	end
+	FadeRegions(inset)
+	WSkin.FadeNamed(inset, INSET_PIECES)
+	Register(inset, true)
 end
 
 function WSkin.Font(fs, r, g, b)
-    if not fs or not fs.GetFont or (fs.IsForbidden and fs:IsForbidden()) then return end
-    local _, size = fs:GetFont()
-    if size and issecretvalue(size) then return end
-    -- 12.0.7: shadows only render from a FontObject, never from instance
-    -- SetShadowOffset. Prime BEFORE SetFont (SetFont then restores the face).
-    EUI.PrimeFontShadow(fs, Theme.fontShadow)
-    fs:SetFont(Theme.fontPath, size or 12, Theme.fontFlag or "")
-    if r then fs:SetTextColor(r, g, b or r) end
+	if not fs or not fs.GetFont then
+		return
+	end
+	local _, size = fs:GetFont()
+	fs:SetFont(Theme.fontPath, size or 12, Theme.fontFlag or "")
+	if Theme.fontShadow then
+		fs:SetShadowOffset(1, -1)
+		fs:SetShadowColor(0, 0, 0, 1)
+	else
+		fs:SetShadowOffset(0, 0)
+	end
+	if r then
+		fs:SetTextColor(r, g, b or r)
+	end
 end
 
--- Force a FontString readable-white without touching its font file.
 function WSkin.White(fs, r, g, b)
-    if fs and fs.SetTextColor then fs:SetTextColor(r or 1, g or 1, b or 1) end
+	if fs and fs.SetTextColor then
+		fs:SetTextColor(r or 1, g or 1, b or 1)
+	end
 end
 
--- Generic action button -> flat dark block with a subtle white hover.
--- keepKeys preserves named regions (e.g. {"Icon"}).
+-- 3-slice / panel button pieces in 5.4.8 templates.
+local BUTTON_PIECES = { "Left", "Middle", "Right", "LeftSeparator", "RightSeparator", "Mid" }
+
 local function ApplyButton(btn, d, keepKeys)
-    local keep = {}
-    if d.bg then keep[d.bg] = true end
-    if d.hover then keep[d.hover] = true end
-    if keepKeys then
-        for _, k in ipairs(keepKeys) do
-            local r = btn[k]; if r then keep[r] = true end
-        end
-    end
-    FadeRegions(btn, keep)
-    for _, getter in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetDisabledTexture", "GetHighlightTexture" }) do
-        local fn = btn[getter]
-        local t = fn and fn(btn)
-        if t and not keep[t] then t:SetAlpha(0) end
-    end
-    for _, k in ipairs({ "Left", "Middle", "Right", "LeftSeparator", "RightSeparator" }) do
-        local r = btn[k]; if r and not keep[r] and r.SetAlpha then r:SetAlpha(0) end
-    end
+	local keep = {}
+	if d.bg then keep[d.bg] = true end
+	if d.hover then keep[d.hover] = true end
+	if keepKeys then
+		for _, k in ipairs(keepKeys) do
+			local r = btn[k]
+			if r then keep[r] = true end
+		end
+	end
+	FadeRegions(btn, keep)
+	for _, getter in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetDisabledTexture", "GetHighlightTexture" }) do
+		local fn = btn[getter]
+		local t = fn and fn(btn)
+		if t and not keep[t] then
+			t:SetAlpha(0)
+		end
+	end
+	local name = btn.GetName and btn:GetName()
+	for _, k in ipairs(BUTTON_PIECES) do
+		local r = btn[k] or (name and _G[name .. k])
+		if r and not keep[r] and r.SetAlpha then
+			r:SetAlpha(0)
+		end
+	end
 
-    local fill = d.bg
-    if not fill then
-        fill = btn:CreateTexture(nil, "BACKGROUND")
-        d.bg = fill
-    end
-    fill:SetColorTexture(Theme.bgR, Theme.bgG, Theme.bgB, Theme.bgA)
-    fill:SetAllPoints(btn)
-    AddBorder(btn)
+	local fill = d.bg
+	if not fill then
+		fill = btn:CreateTexture(nil, "BACKGROUND")
+		d.bg = fill
+	end
+	fill:SetTexture(Theme.bgR, Theme.bgG, Theme.bgB, Theme.bgA)
+	fill:SetAllPoints(btn)
+	AddBorder(btn)
 
-    local hover = d.hover
-    if not hover then
-        hover = btn:CreateTexture(nil, "HIGHLIGHT")
-        d.hover = hover
-    end
-    hover:SetColorTexture(1, 1, 1, 0.1)
-    hover:SetAllPoints(btn)
-
-    -- Label font stays Blizzard's (color-only text policy).
-    Register(btn, keep)
+	local hover = d.hover
+	if not hover then
+		hover = btn:CreateTexture(nil, "HIGHLIGHT")
+		d.hover = hover
+	end
+	hover:SetTexture(1, 1, 1, 0.1)
+	hover:SetAllPoints(btn)
+	Register(btn, keep)
 end
 
 function WSkin.Button(btn, keepKeys)
-    if not btn or btn:IsForbidden() then return end
-    WSkin.CompleteSetup(btn, "skinned", ApplyButton, keepKeys)
+	if not btn or Forbidden(btn) then
+		return
+	end
+	WSkin.CompleteSetup(btn, "skinned", ApplyButton, keepKeys)
 end
 
--- Force a button's label white (color only, font untouched). Many action
--- buttons render their enabled text in Blizzard gold; this is opt-in per call
--- (WSkin.Button leaves labels alone). Buttons re-apply their font object when
--- re-enabled, so re-white on every OnEnable as well as now.
 function WSkin.WhiteButtonLabel(btn)
-    if not btn or (btn.IsForbidden and btn:IsForbidden()) then return end
-    local lab = btn.Text or (btn.GetFontString and btn:GetFontString())
-    if not lab then return end
-    WSkin.White(lab)
-    local d = GetFFD(btn)
-    if not d.whiteHook then
-        d.whiteHook = true
-        if btn.HookScript then btn:HookScript("OnEnable", function() WSkin.White(lab) end) end
-    end
+	if not btn then
+		return
+	end
+	local lab = btn.Text or (btn.GetFontString and btn:GetFontString())
+	if not lab then
+		return
+	end
+	WSkin.White(lab)
+	local d = GetFFD(btn)
+	if not d.whiteHook then
+		d.whiteHook = true
+		if btn.HookScript then
+			btn:HookScript("OnEnable", function() WSkin.White(lab) end)
+		end
+	end
 end
 
--- Like WhiteButtonLabel, but the label mirrors the native enabled/disabled states:
--- white when clickable, gray when not (a plain white label leaves a disabled button
--- reading as active, since our color write overrides the disabled-font gray).
 function WSkin.StateButtonLabel(btn)
-    if not btn or (btn.IsForbidden and btn:IsForbidden()) then return end
-    local lab = btn.Text or (btn.GetFontString and btn:GetFontString())
-    if not lab then return end
-    local d = GetFFD(btn)
-    if d.stateHook then return end
-    d.stateHook = true
-    local function reflect()
-        if btn:IsEnabled() then WSkin.White(lab) else lab:SetTextColor(0.5, 0.5, 0.5) end
-    end
-    if btn.HookScript then
-        btn:HookScript("OnEnable", reflect)
-        btn:HookScript("OnDisable", reflect)
-    end
-    reflect()
+	if not btn then
+		return
+	end
+	local lab = btn.Text or (btn.GetFontString and btn:GetFontString())
+	if not lab then
+		return
+	end
+	local d = GetFFD(btn)
+	if d.stateHook then
+		return
+	end
+	d.stateHook = true
+	local function reflect()
+		if btn:IsEnabled() then
+			WSkin.White(lab)
+		else
+			lab:SetTextColor(0.5, 0.5, 0.5)
+		end
+	end
+	if btn.HookScript then
+		btn:HookScript("OnEnable", reflect)
+		btn:HookScript("OnDisable", reflect)
+	end
+	reflect()
 end
 
--- Search / input box -> near-black block, border, art gone.
--- opts.padInput = widen left + inset the text; opts.noBorder = skip border.
+-- Search / input box (InputBoxTemplate, SearchBoxTemplate) -> near-black
+-- block + border. opts.noBorder; opts.inset = { l, t, r, b } offsets of the
+-- block (InputBoxTemplate draws its art 5px left of the frame).
+local EDIT_PIECES = { "Left", "Right", "Middle", "Mid" }
 function WSkin.EditBox(eb, opts)
-    if not eb or eb:IsForbidden() then return end
-    local d = GetFFD(eb)
-    if d.bg then return end
-    FadeRegions(eb)
-    for _, k in ipairs({ "Left", "Right", "Middle", "Mid" }) do
-        local r = eb[k]; if r and r.SetAlpha then r:SetAlpha(0) end
-    end
-    if opts and opts.padInput and EllesmereUI._WSkinPadInput then EllesmereUI._WSkinPadInput(eb) end
-    local fill = SolidTex(eb, "BACKGROUND", 0.02, 0.02, 0.02, 1)
-    fill:SetAllPoints(eb)
-    d.bg = fill
-    -- Same border as WSkin.Button (theme defaults).
-    if not (opts and opts.noBorder) then AddBorder(eb) end
+	if not eb or Forbidden(eb) then
+		return
+	end
+	local d = GetFFD(eb)
+	if d.bg then
+		return
+	end
+	FadeRegions(eb)
+	WSkin.FadeNamed(eb, EDIT_PIECES)
+	local ins = opts and opts.inset or { -5, 0, 0, 0 }
+	local host = eb
+	if ins[1] ~= 0 or ins[2] ~= 0 or ins[3] ~= 0 or ins[4] ~= 0 then
+		host = CreateFrame("Frame", nil, eb)
+		host:SetPoint("TOPLEFT", eb, "TOPLEFT", ins[1], -ins[2])
+		host:SetPoint("BOTTOMRIGHT", eb, "BOTTOMRIGHT", -ins[3], ins[4])
+		host:SetFrameLevel(max(0, eb:GetFrameLevel() - 1))
+		d.host = host
+	end
+	local fill = SolidTex(host, "BACKGROUND", 0.02, 0.02, 0.02, 1)
+	fill:SetAllPoints(host)
+	d.bg = fill
+	if not (opts and opts.noBorder) then
+		AddBorder(host)
+	end
 end
 
--- Checkbox -> dark block + accent tick. opts.stockCheck leaves the checkmark
--- color to Blizzard (windows where check tint carries meaning, e.g. the
--- addon list's enabled states). opts.hover: a white hover wash of that alpha
--- over the box (the highlight texture is cleared).
+-- Checkbox -> dark block + accent tick. opts.stockCheck keeps the check
+-- color; opts.hover = alpha of a white hover wash.
 function WSkin.Checkbox(cb, opts)
-    if not cb or cb:IsForbidden() then return end
-    local d = GetFFD(cb)
-    if d.skinned then return end
-    d.skinned = true
-    if cb.SetNormalTexture then cb:SetNormalTexture("") end
-    if cb.SetPushedTexture then cb:SetPushedTexture("") end
-    if cb.SetHighlightTexture then cb:SetHighlightTexture("") end
-    -- Some checkbox templates draw the box border as a separate region rather
-    -- than the Normal texture, so fade every existing texture except the
-    -- checkmark before laying down our own flat box. (No-op for plain
-    -- checkboxes: they carry nothing beyond Normal/Pushed/Highlight/Checked.)
-    local checked = cb.GetCheckedTexture and cb:GetCheckedTexture()
-    local dchecked = cb.GetDisabledCheckedTexture and cb:GetDisabledCheckedTexture()
-    local regions = { cb:GetRegions() }
-    for i = 1, #regions do
-        local r = regions[i]
-        if r and r ~= checked and r ~= dchecked
-           and r.IsObjectType and r:IsObjectType("Texture") then
-            r:SetAlpha(0)
-        end
-    end
-    local fill = SolidTex(cb, "BACKGROUND", 0.02, 0.02, 0.02, 1)
-    fill:SetPoint("TOPLEFT", 4, -4)
-    fill:SetPoint("BOTTOMRIGHT", -4, 4)
-    d.bg = fill
-    if opts and opts.hover then
-        local hover = SolidTex(cb, "HIGHLIGHT", 1, 1, 1, opts.hover)
-        hover:SetPoint("TOPLEFT", 4, -4)
-        hover:SetPoint("BOTTOMRIGHT", -4, 4)
-        d.hover = hover
-    end
-    -- Border rides the checkbox frame by default; when the frame is larger
-    -- than its visible box (opts.borderInset), put the border on an inset
-    -- child so it hugs the actual box instead of sitting proud of it.
-    local bi = opts and opts.borderInset
-    if bi and bi > 0 then
-        local bh = CreateFrame("Frame", nil, cb)
-        bh:SetPoint("TOPLEFT", bi, -bi)
-        bh:SetPoint("BOTTOMRIGHT", -bi, bi)
-        bh:SetFrameLevel(cb:GetFrameLevel() + 1)
-        AddBorder(bh, 0.25, 0.25, 0.25, 1)
-        d.borderHost = bh
-    else
-        AddBorder(cb, 0.25, 0.25, 0.25, 1)
-    end
-    if checked and not (opts and opts.stockCheck) then
-        checked:SetVertexColor(Theme.accR, Theme.accG, Theme.accB, 1)
-    end
+	if not cb or Forbidden(cb) then
+		return
+	end
+	local d = GetFFD(cb)
+	if d.skinned then
+		return
+	end
+	d.skinned = true
+	if cb.SetNormalTexture then cb:SetNormalTexture("") end
+	if cb.SetPushedTexture then cb:SetPushedTexture("") end
+	if cb.SetHighlightTexture then cb:SetHighlightTexture("") end
+	local checked = cb.GetCheckedTexture and cb:GetCheckedTexture()
+	local dchecked = cb.GetDisabledCheckedTexture and cb:GetDisabledCheckedTexture()
+	local regions = { cb:GetRegions() }
+	for i = 1, #regions do
+		local r = regions[i]
+		if r and r ~= checked and r ~= dchecked and r.IsObjectType and r:IsObjectType("Texture") then
+			r:SetAlpha(0)
+		end
+	end
+	local inset = (opts and opts.fillInset) or 4
+	local fill = SolidTex(cb, "BACKGROUND", 0.02, 0.02, 0.02, 1)
+	fill:SetPoint("TOPLEFT", inset, -inset)
+	fill:SetPoint("BOTTOMRIGHT", -inset, inset)
+	d.bg = fill
+	if opts and opts.hover then
+		local hover = SolidTex(cb, "HIGHLIGHT", 1, 1, 1, opts.hover)
+		hover:SetPoint("TOPLEFT", inset, -inset)
+		hover:SetPoint("BOTTOMRIGHT", -inset, inset)
+		d.hover = hover
+	end
+	local bh = CreateFrame("Frame", nil, cb)
+	bh:SetPoint("TOPLEFT", inset, -inset)
+	bh:SetPoint("BOTTOMRIGHT", -inset, inset)
+	bh:SetFrameLevel(cb:GetFrameLevel() + 1)
+	AddBorder(bh, 0.25, 0.25, 0.25, 1)
+	d.borderHost = bh
+	if checked and not (opts and opts.stockCheck) then
+		checked:SetVertexColor(Theme.accR, Theme.accG, Theme.accB, 1)
+	end
 end
 
--- Modern dropdown / legacy selector -> flat block. Nil-guarded per template.
+-- UIDropDownMenuTemplate -> flat block + house arrow. The block covers the
+-- visible part (the template's frame has 16-20px art margins).
+-- "MENU" dropdowns (UIDropDownMenu_Initialize(..., "MENU")) are invisible
+-- anchors for a popup menu (EJ loot filter, difficulty), so they get no block.
+local dropdownMenuHooked
 function WSkin.Dropdown(dd)
-    if not dd or dd:IsForbidden() then return end
-    local d = GetFFD(dd)
-    if d.skinned then return end
-    d.skinned = true
-    FadeRegions(dd)
-    local name = dd.GetName and dd:GetName()
-    if name then
-        for _, suffix in ipairs({ "Left", "Middle", "Right" }) do
-            local r = _G[name .. suffix]; if r and r.SetAlpha then r:SetAlpha(0) end
-        end
-    end
-    if dd.Background then dd.Background:SetAlpha(0) end
-    if dd.Texture then dd.Texture:SetAlpha(0) end
-    local fill = SolidTex(dd, "BACKGROUND", Theme.bgR, Theme.bgG, Theme.bgB, Theme.bgA)
-    fill:SetAllPoints(dd)
-    d.bg = fill
-    AddBorder(dd, 0.25, 0.25, 0.25, 1)
-    -- Slight lighten on hover.
-    local hover = SolidTex(dd, "HIGHLIGHT", 1, 1, 1, 0.05)
-    hover:SetAllPoints(dd)
-    d.hover = hover
-    -- Our own arrow on the right (Blizzard's is faded with the rest).
-    -- Sized to the atlas's native 62x44 aspect.
-    local arrow = dd:CreateTexture(nil, "OVERLAY")
-    arrow:SetAtlas("Azerite-PointingArrow")
-    arrow:SetSize(14, 10)
-    arrow:SetPoint("RIGHT", dd, "RIGHT", -6, 0)
-    d.arrow = arrow
-    -- Label recolored white; the font itself stays Blizzard's.
-    local label = dd.Text or (dd.GetFontString and dd:GetFontString())
-    if label then WSkin.White(label) end
+	if not dd or Forbidden(dd) then
+		return
+	end
+	if not dropdownMenuHooked and _G.UIDropDownMenu_Initialize then
+		dropdownMenuHooked = true
+		hooksecurefunc("UIDropDownMenu_Initialize", function(frame, _, displayMode)
+			local fd = frame and FFD[frame]
+			if fd and fd.host and displayMode == "MENU" then
+				fd.host:Hide()
+			end
+		end)
+	end
+	if dd.displayMode == "MENU" then
+		return
+	end
+	local d = GetFFD(dd)
+	if d.skinned then
+		return
+	end
+	d.skinned = true
+	local name = dd.GetName and dd:GetName()
+	FadeRegions(dd)
+	WSkin.FadeNamed(dd, { "Left", "Middle", "Right", "Background", "Texture" })
+	local button = dd.Button or (name and _G[name .. "Button"])
+	local host = CreateFrame("Frame", nil, dd)
+	if button then
+		host:SetPoint("TOPLEFT", dd, "TOPLEFT", 18, -2)
+		host:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 2, -2)
+	else
+		host:SetAllPoints(dd)
+	end
+	host:SetFrameLevel(max(0, dd:GetFrameLevel()))
+	d.host = host
+	local fill = SolidTex(host, "BACKGROUND", Theme.bgR, Theme.bgG, Theme.bgB, Theme.bgA)
+	fill:SetAllPoints(host)
+	d.bg = fill
+	AddBorder(host, 0.25, 0.25, 0.25, 1)
+	if button then
+		local bd = GetFFD(button)
+		for _, g in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetDisabledTexture" }) do
+			local t = button[g] and button[g](button)
+			if t then t:SetAlpha(0) end
+		end
+		local hl = button.GetHighlightTexture and button:GetHighlightTexture()
+		if hl then
+			hl:SetTexture(1, 1, 1, 0.05)
+			hl:ClearAllPoints()
+			hl:SetAllPoints(host)
+		end
+		local arrow = button:CreateTexture(nil, "OVERLAY")
+		arrow:SetTexture(WSkin.ARROW_DOWN_TEX)
+		arrow:SetSize(12, 12)
+		arrow:SetPoint("CENTER", button, "CENTER", 0, 0)
+		bd.arrow = arrow
+		d.arrow = arrow
+	end
+	local label = dd.Text or (name and _G[name .. "Text"])
+	if label then
+		WSkin.White(label)
+	end
 end
 
--- AH-style click-to-sort header bar over a list's HeaderContainer: a 50% near-
--- black strip spanning the LIST's own width and riding the header row, column
--- 3-slice art flattened to invisible plates with white labels and a
--- full-strip-height hover. Re-run from the list's refresh / OnShow hook since
--- columns pool and rebuild. No wash dependency (unlike the AH pack's own
--- wash-relative seating) -- the strip spans the list rect directly.
-function WSkin.SortHeaderBar(list)
-    local hc = list and list.HeaderContainer
-    if not hc then return end
-    local sd = GetFFD(list)
-    if not sd.strip then
-        local sTex = list:CreateTexture(nil, "BACKGROUND", nil, 1)
-        sTex:SetColorTexture(0.02, 0.02, 0.02, 0.5)
-        sTex:SetHeight(24)
-        sd.strip = sTex
-        sd.fill = sTex   -- protected key so a Restrip never fades our own strip
-    end
-    sd.strip:SetAlpha(1)
-    local ll0, lr0 = list:GetLeft(), list:GetRight()
-    local hl0 = hc:GetLeft()
-    if ll0 and lr0 and hl0 then
-        sd.strip:ClearAllPoints()
-        sd.strip:SetPoint("TOPLEFT", hc, "TOPLEFT", ll0 - hl0, 2)
-        sd.strip:SetPoint("TOPRIGHT", hc, "TOPLEFT", lr0 - hl0, 2)
-    end
-    local children = { hc:GetChildren() }
-    for i = 1, #children do
-        local col = children[i]
-        if col and col.GetObjectType and col:GetObjectType() == "Button" then
-            local hd = GetFFD(col)
-            if not hd.bg then
-                for _, k2 in ipairs({ "Left", "Middle", "Right" }) do
-                    local t2 = col[k2]
-                    if t2 and t2.SetTexture then t2:SetTexture("") end
-                end
-                WSkin.FadeRegions(col)
-                local bg = SolidTex(col, "BACKGROUND", 0.02, 0.02, 0.02, 0)
-                bg:SetPoint("TOPLEFT", 1, -1)
-                bg:SetPoint("BOTTOMRIGHT", -1, 1)
-                hd.bg = bg
-                local hov = SolidTex(col, "HIGHLIGHT", 1, 1, 1, 0.1)
-                hov:SetAllPoints(col)
-                hd.hover = hov
-            end
-            local fs = col.GetFontString and col:GetFontString()
-            if fs then WSkin.White(fs) end
-            local strip = sd.strip
-            if hd.hover and strip and strip.GetTop then
-                local st, sbot = strip:GetTop(), strip:GetBottom()
-                local ct, cbot = col:GetTop(), col:GetBottom()
-                if st and sbot and ct and cbot then
-                    hd.hover:ClearAllPoints()
-                    hd.hover:SetPoint("TOPLEFT", col, "TOPLEFT", 0, st - ct)
-                    hd.hover:SetPoint("BOTTOMRIGHT", col, "BOTTOMRIGHT", 0, sbot - cbot)
-                end
-            end
-        end
-    end
+-- Old-style (UIPanelScrollBarTemplate / HybridScrollBarTemplate / Faux)
+-- scroll bar -> track art gone, slim 4px white thumb, flat arrow buttons.
+-- keepSteppers leaves the up/down buttons as Blizzard draws them.
+local SCROLL_PIECES = { "Top", "Bottom", "Middle", "Track", "BG", "Background", "ScrollBarTop", "ScrollBarBottom", "ScrollBarMiddle", "trackBG" }
+local function StepperButton(btn, up)
+	if not btn or GetFFD(btn).arrow then
+		return
+	end
+	local d = GetFFD(btn)
+	for _, g in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetDisabledTexture", "GetHighlightTexture" }) do
+		local t = btn[g] and btn[g](btn)
+		if t then t:SetAlpha(0) end
+	end
+	local arrow = btn:CreateTexture(nil, "OVERLAY")
+	arrow:SetTexture(up and WSkin.ARROW_UP_TEX or WSkin.ARROW_DOWN_TEX)
+	arrow:SetSize(10, 10)
+	arrow:SetPoint("CENTER")
+	arrow:SetVertexColor(1, 1, 1, 0.6)
+	d.arrow = arrow
+	btn:HookScript("OnEnter", function() arrow:SetVertexColor(1, 1, 1, 1) end)
+	btn:HookScript("OnLeave", function() arrow:SetVertexColor(1, 1, 1, 0.6) end)
+	local function reflect()
+		arrow:SetAlpha(btn:IsEnabled() and 1 or 0.3)
+	end
+	btn:HookScript("OnEnable", reflect)
+	btn:HookScript("OnDisable", reflect)
+	reflect()
 end
 
--- MinimalScrollBar -> strip track/arrows; the thumb becomes a slim 5px white
--- strip centered in the thumb's hit area (the house scrollbar look).
--- keepSteppers leaves the up/down arrows as Blizzard draws them; only the
--- track art and the thumb change, in place.
 function WSkin.ScrollBar(sb, keepSteppers)
-    if not sb or sb:IsForbidden() then return end
-    local d = GetFFD(sb)
-    if d.skinned then return end
-    d.skinned = true
-    if not keepSteppers then
-        for _, k in ipairs({ "Back", "Forward" }) do
-            local b = sb[k]
-            if b then
-                FadeRegions(b)
-                if b.Texture then b.Texture:SetAlpha(0) end
-            end
-        end
-    end
-    local track = sb.Track
-    if track then FadeRegions(track) end
-    local thumb = (track and track.Thumb) or (sb.GetThumb and sb:GetThumb())
-    if thumb and not GetFFD(thumb).bg then
-        FadeRegions(thumb)
-        local t = SolidTex(thumb, "ARTWORK", 1, 1, 1, 0.3)
-        t:SetPoint("TOP", thumb, "TOP", 0, 0)
-        t:SetPoint("BOTTOM", thumb, "BOTTOM", 0, 0)
-        t:SetWidth(4)
-        GetFFD(thumb).bg = t
-    end
+	if not sb or Forbidden(sb) then
+		return
+	end
+	local d = GetFFD(sb)
+	if d.skinned then
+		return
+	end
+	d.skinned = true
+	local name = sb.GetName and sb:GetName()
+	FadeRegions(sb)
+	WSkin.FadeNamed(sb, SCROLL_PIECES)
+	-- The track art of a UIPanelScrollFrameTemplate sits on the scroll frame.
+	local parent = sb:GetParent()
+	local pname = parent and parent.GetName and parent:GetName()
+	if pname then
+		for _, k in ipairs({ "Top", "Bottom", "Middle", "ScrollBarTop", "ScrollBarBottom", "ScrollBarMiddle" }) do
+			local t = _G[pname .. k]
+			if type(t) == "table" and t.SetAlpha and t.IsObjectType and t:IsObjectType("Texture") then
+				t:SetAlpha(0)
+			end
+		end
+	end
+	if not keepSteppers then
+		StepperButton(sb.ScrollUpButton or (name and _G[name .. "ScrollUpButton"]), true)
+		StepperButton(sb.ScrollDownButton or (name and _G[name .. "ScrollDownButton"]), false)
+	end
+	local thumb = (sb.GetThumbTexture and sb:GetThumbTexture()) or sb.thumbTexture or (name and _G[name .. "ThumbTexture"])
+	if thumb and not GetFFD(thumb).bg then
+		thumb:SetTexture(1, 1, 1, 0.3)
+		thumb:SetWidth(4)
+		GetFFD(thumb).bg = thumb
+		d.fill = thumb
+	end
 end
 
--- Recursively flatten any MinimalScrollBar under a frame. Shallow + one-time
--- (guarded per bar); used at skin time only, never in per-update hooks.
+local function IsScrollBar(frame)
+	if not frame.IsObjectType or not frame:IsObjectType("Slider") then
+		return false
+	end
+	local name = frame.GetName and frame:GetName()
+	return frame.ScrollUpButton or (name and _G[name .. "ScrollUpButton"]) or (name and name:find("ScrollBar$")) and true or false
+end
+WSkin.IsScrollBar = IsScrollBar
+
 function WSkin.ScrollBarsIn(frame, depth)
-    depth = depth or 0
-    if not frame or depth > 7 or frame:IsForbidden() then return end
-    local children = { frame:GetChildren() }
-    for i = 1, #children do
-        local child = children[i]
-        if child and not WSkin.IsForeignFrame(child, frame) then
-            if child.Track and (child.Back or child.Forward) then WSkin.ScrollBar(child) end
-            WSkin.ScrollBarsIn(child, depth + 1)
-        end
-    end
+	depth = depth or 0
+	if not frame or depth > 7 or Forbidden(frame) or not frame.GetChildren then
+		return
+	end
+	local children = { frame:GetChildren() }
+	for i = 1, #children do
+		local child = children[i]
+		if child and not WSkin.IsForeignFrame(child, frame) then
+			if IsScrollBar(child) then
+				WSkin.ScrollBar(child)
+			end
+			WSkin.ScrollBarsIn(child, depth + 1)
+		end
+	end
 end
 
--- Close (X) button -> strip art, draw the house close glyph.
+-- Close (X) button -> art gone, the house close glyph.
 function WSkin.CloseButton(btn)
-    if not btn or btn:IsForbidden() then return end
-    local d = GetFFD(btn)
-    if d.x then return end
-    if btn.SetNormalTexture then btn:SetNormalTexture("") end
-    if btn.SetPushedTexture then btn:SetPushedTexture("") end
-    if btn.SetHighlightTexture then btn:SetHighlightTexture("") end
-    if btn.SetDisabledTexture then btn:SetDisabledTexture("") end
-    FadeRegions(btn)
-    local x = btn:CreateTexture(nil, "OVERLAY")
-    x:SetAtlas("uitools-icon-close")
-    x:SetSize(14, 14)
-    x:SetPoint("CENTER", -2, 0)
-    x:SetVertexColor(1, 1, 1, 0.75)
-    d.x = x
-    btn:HookScript("OnEnter", function() if d.x then d.x:SetVertexColor(1, 1, 1, 1) end end)
-    btn:HookScript("OnLeave", function() if d.x then d.x:SetVertexColor(1, 1, 1, 0.75) end end)
+	if not btn or Forbidden(btn) then
+		return
+	end
+	local d = GetFFD(btn)
+	if d.x then
+		return
+	end
+	if btn.SetNormalTexture then btn:SetNormalTexture("") end
+	if btn.SetPushedTexture then btn:SetPushedTexture("") end
+	if btn.SetHighlightTexture then btn:SetHighlightTexture("") end
+	if btn.SetDisabledTexture then btn:SetDisabledTexture("") end
+	FadeRegions(btn)
+	local x = btn:CreateTexture(nil, "OVERLAY")
+	x:SetTexture(WSkin.CLOSE_TEX)
+	x:SetSize(14, 14)
+	x:SetPoint("CENTER", -2, 0)
+	x:SetVertexColor(1, 1, 1, 0.75)
+	d.x = x
+	btn:HookScript("OnEnter", function() if d.x then d.x:SetVertexColor(1, 1, 1, 1) end end)
+	btn:HookScript("OnLeave", function() if d.x then d.x:SetVertexColor(1, 1, 1, 0.75) end end)
 end
 
--- Active-filter reset "X": strips Blizzard's glyph, draws house
--- uitools-icon-close above the dropdown border (white 0.9->1 on hover).
--- `host` = the dropdown it rides (frame-level layering); idempotent via FFD.x.
--- The window packs' filter dropdowns and the Group Finder's search filter.
-function WSkin.FilterResetX(rb, host)
-    if not rb or rb:IsForbidden() then return end
-    local rd = GetFFD(rb)
-    if rd.x then return end
-    local regions = { rb:GetRegions() }
-    for i = 1, #regions do
-        local r = regions[i]
-        if r and r.IsObjectType and r:IsObjectType("Texture") then r:SetAlpha(0) end
-    end
-    for _, g in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetHighlightTexture" }) do
-        local t = rb[g] and rb[g](rb)
-        if t and t.SetAlpha then t:SetAlpha(0) end
-    end
-    if host then rb:SetFrameLevel(host:GetFrameLevel() + 5) end
-    local x = rb:CreateTexture(nil, "OVERLAY", nil, 7)
-    x:SetAtlas("uitools-icon-close", false)
-    x:SetSize(10, 10)
-    x:SetPoint("CENTER", rb, "CENTER", 0, 0)
-    x:SetVertexColor(1, 1, 1, 0.9)
-    rd.x = x
-    rb:HookScript("OnEnter", function() x:SetVertexColor(1, 1, 1, 1) end)
-    rb:HookScript("OnLeave", function() x:SetVertexColor(1, 1, 1, 0.9) end)
-end
-
--- Refresh button -> strip its art and draw the house white UI-RefreshButton
--- glyph (desaturated, white at 0.9, full on hover). The Group Finder, Auction
--- House, crafting orders and WoW Forever Looking For Group refresh buttons.
-function WSkin.RefreshGlyph(rb)
-    if not rb or rb:IsForbidden() then return end
-    local d = GetFFD(rb)
-    if d.refreshGlyph then return end
-    if not (C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo("UI-RefreshButton")) then return end
-    local regions = { rb:GetRegions() }
-    for i = 1, #regions do
-        local r = regions[i]
-        if r and r.IsObjectType and r:IsObjectType("Texture") then r:SetAlpha(0) end
-    end
-    for _, g in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetHighlightTexture", "GetDisabledTexture" }) do
-        local t = rb[g] and rb[g](rb)
-        if t and t.SetAlpha then t:SetAlpha(0) end
-    end
-    local glyph = rb:CreateTexture(nil, "OVERLAY")
-    glyph:SetAtlas("UI-RefreshButton", false)
-    glyph:SetSize(16, 16)
-    glyph:SetPoint("CENTER")
-    glyph:SetDesaturated(true)
-    glyph:SetVertexColor(1, 1, 1, 0.9)
-    d.refreshGlyph = glyph
-    rb:HookScript("OnEnter", function() glyph:SetVertexColor(1, 1, 1, 1) end)
-    rb:HookScript("OnLeave", function() glyph:SetVertexColor(1, 1, 1, 0.9) end)
-end
-
--- Page-nav / arrow button -> flat block with a house arrow texture
--- (falls back to a text glyph for unmapped characters).
-local PAGE_ARROWS = {
-    ["<"] = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-left.png",
-    [">"] = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-right.png",
-}
+-- Page-nav / arrow button -> flat block + house arrow ("<" / ">" / "^" / "v").
 function WSkin.PageButton(btn, ch, size)
-    if not btn or btn:IsForbidden() then return end
-    local d = GetFFD(btn)
-    if d.block then return end
-    d.block = true
-    for _, g in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetDisabledTexture", "GetHighlightTexture" }) do
-        local fn = btn[g]; local t = fn and fn(btn)
-        if t and t.SetAlpha then t:SetAlpha(0) end
-    end
-    local bg = SolidTex(btn, "BACKGROUND", Theme.bgR, Theme.bgG, Theme.bgB, Theme.bgA)
-    bg:SetAllPoints(btn)
-    d.bg = bg
-    AddBorder(btn)
-    local tex = PAGE_ARROWS[ch]
-    if tex then
-        local arrow = btn:CreateTexture(nil, "OVERLAY")
-        arrow:SetTexture(tex)
-        local s = size or 14
-        arrow:SetSize(s, s)
-        arrow:SetPoint("CENTER")
-        arrow:SetAlpha(0.9)
-        d.arrow = arrow
-    else
-        local fs = btn:CreateFontString(nil, "OVERLAY")
-        fs:SetFont(Theme.fontPath, size or 14, Theme.fontFlag or "")
-        fs:SetPoint("CENTER")
-        fs:SetText(ch)
-        fs:SetTextColor(1, 1, 1, 0.9)
-        d.arrow = fs
-    end
-    local hover = SolidTex(btn, "HIGHLIGHT", 1, 1, 1, 0.1)
-    hover:SetAllPoints(btn)
-    d.hover = hover
-    -- Disabled (can't page further) -> whole block at half opacity.
-    local function reflect()
-        btn:SetAlpha(btn:IsEnabled() and 1 or 0.5)
-    end
-    btn:HookScript("OnEnable", reflect)
-    btn:HookScript("OnDisable", reflect)
-    reflect()
+	if not btn or Forbidden(btn) then
+		return
+	end
+	local d = GetFFD(btn)
+	if d.block then
+		return
+	end
+	d.block = true
+	for _, g in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetDisabledTexture", "GetHighlightTexture" }) do
+		local fn = btn[g]
+		local t = fn and fn(btn)
+		if t and t.SetAlpha then t:SetAlpha(0) end
+	end
+	local bg = SolidTex(btn, "BACKGROUND", Theme.bgR, Theme.bgG, Theme.bgB, Theme.bgA)
+	bg:SetAllPoints(btn)
+	d.bg = bg
+	AddBorder(btn)
+	local s = size or 14
+	local arrow = btn:CreateTexture(nil, "OVERLAY")
+	if ch == "<" or ch == ">" then
+		arrow:SetTexture(WSkin.ARROW_RIGHT_TEX)
+		if ch == "<" then
+			arrow:SetTexCoord(1, 0, 0, 1)
+		end
+	elseif ch == "^" then
+		arrow:SetTexture(WSkin.ARROW_UP_TEX)
+	else
+		arrow:SetTexture(WSkin.ARROW_DOWN_TEX)
+	end
+	arrow:SetSize(s, s)
+	arrow:SetPoint("CENTER")
+	arrow:SetAlpha(0.9)
+	d.arrow = arrow
+	local hover = SolidTex(btn, "HIGHLIGHT", 1, 1, 1, 0.1)
+	hover:SetAllPoints(btn)
+	d.hover = hover
+	local function reflect()
+		btn:SetAlpha(btn:IsEnabled() and 1 or 0.5)
+	end
+	btn:HookScript("OnEnable", reflect)
+	btn:HookScript("OnDisable", reflect)
+	reflect()
 end
 
--- Find PrevPageButton/NextPageButton anywhere shallow under a frame.
+-- PrevPageButton / NextPageButton (or $parentPrevPageButton) under a frame.
 function WSkin.PagingIn(frame, depth)
-    depth = depth or 0
-    if not frame or depth > 8 or not frame.GetChildren or frame:IsForbidden() then return end
-    if depth > 0 and WSkin.IsForeignFrame(frame) then return end
-    if frame.PrevPageButton then WSkin.PageButton(frame.PrevPageButton, "<") end
-    if frame.NextPageButton then WSkin.PageButton(frame.NextPageButton, ">") end
-    local children = { frame:GetChildren() }
-    for i = 1, #children do
-        WSkin.PagingIn(children[i], depth + 1)
-    end
+	depth = depth or 0
+	if not frame or depth > 8 or not frame.GetChildren or Forbidden(frame) then
+		return
+	end
+	if depth > 0 and WSkin.IsForeignFrame(frame) then
+		return
+	end
+	local name = frame.GetName and frame:GetName()
+	local prev = frame.PrevPageButton or (name and _G[name .. "PrevPageButton"])
+	local nextB = frame.NextPageButton or (name and _G[name .. "NextPageButton"])
+	if prev then WSkin.PageButton(prev, "<") end
+	if nextB then WSkin.PageButton(nextB, ">") end
+	local children = { frame:GetChildren() }
+	for i = 1, #children do
+		WSkin.PagingIn(children[i], depth + 1)
+	end
 end
 
 -- 1px black frame around a texture region (squared icons).
 function WSkin.BorderRegion(parent, region)
-    if not (parent and region) then return end
-    local d = GetFFD(region)
-    if d.bordered then return end
-    d.bordered = true
-    local function line()
-        local t = parent:CreateTexture(nil, "OVERLAY")
-        t:SetColorTexture(0, 0, 0, 1)
-        return t
-    end
-    local t, b, l, r = line(), line(), line(), line()
-    t:SetPoint("TOPLEFT", region, "TOPLEFT", -1, 1);        t:SetPoint("TOPRIGHT", region, "TOPRIGHT", 1, 1);        t:SetHeight(1)
-    b:SetPoint("BOTTOMLEFT", region, "BOTTOMLEFT", -1, -1); b:SetPoint("BOTTOMRIGHT", region, "BOTTOMRIGHT", 1, -1); b:SetHeight(1)
-    l:SetPoint("TOPLEFT", region, "TOPLEFT", -1, 1);        l:SetPoint("BOTTOMLEFT", region, "BOTTOMLEFT", -1, -1);  l:SetWidth(1)
-    r:SetPoint("TOPRIGHT", region, "TOPRIGHT", 1, 1);       r:SetPoint("BOTTOMRIGHT", region, "BOTTOMRIGHT", 1, -1); r:SetWidth(1)
+	if not (parent and region) then
+		return
+	end
+	local d = GetFFD(region)
+	if d.bordered then
+		return
+	end
+	d.bordered = true
+	local host = CreateFrame("Frame", nil, parent)
+	host:SetPoint("TOPLEFT", region, "TOPLEFT", -1, 1)
+	host:SetPoint("BOTTOMRIGHT", region, "BOTTOMRIGHT", 1, -1)
+	host:SetFrameLevel(parent:GetFrameLevel() + 2)
+	PP.CreateBorder(host, 0, 0, 0, 1, 1, "OVERLAY", 7)
+	d.borderHost = host
 end
 
 -------------------------------------------------------------------------------
---  SQUARE QUALITY BORDERS for item tiles.
---
---  Blizzard's own quality ring, `IconBorder`, is ROUNDED. Every pack that
---  squares an icon therefore strips it -- it defeats the square crop
---  underneath and reads as the "border that keeps coming back" -- and until
---  now nothing replaced it, which left reward tiles with no rarity cue at all.
---
---  This draws the same 1px square edge the LOOT WINDOW already ships:
---  PP.CreateBorder, whose strips are integer physical thickness and immune to
---  pixel snapping, so no side can round away to 0 at a fractional UI scale.
---  A plain 4-texture border does round away, which is why this does not simply
---  extend WSkin.BorderRegion above.
---
---  The COLOR is read back off Blizzard's ring rather than re-derived from an
---  itemID. Deriving it would mean C_Item quality lookups on items whose data
---  may not be cached yet -- an async load, a second source of truth, and a
---  guaranteed drift from whatever Blizzard decided. The ring already holds the
---  answer: shown iff the quality has a color, vertex-colored to it.
+--  Square quality borders for item tiles: the square edge follows Blizzard's
+--  (round) quality ring color; black when the item has no rarity color.
 -------------------------------------------------------------------------------
-
--- Uncommon and up ONLY, matched to what the loot window already shipped so the
--- surfaces cannot drift apart. Poor and common rings are achromatic (grey,
--- white) while every quality from green up is saturated, so a CHROMA test
--- sorts them with no item-quality lookup at all. Returns nil for "no rarity to
--- show", which the caller renders as the ordinary black edge.
 local QUALITY_CHROMA = 0.1
 function WSkin.RingQuality(ring)
-    if not (ring and ring.IsShown and ring.GetVertexColor) then return end
-    -- SHOWN, not alpha: the packs alpha these rings to 0 to hide the rounded
-    -- art, and Blizzard drives visibility with SetShown. Testing alpha here
-    -- would read our own edit and call every item common.
-    if not ring:IsShown() then return end
-    local r, g, b = ring:GetVertexColor()
-    if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then return end
-    if (math.max(r, g, b) - math.min(r, g, b)) <= QUALITY_CHROMA then return end
-    return r, g, b
+	if not (ring and ring.IsShown and ring.GetVertexColor) then
+		return
+	end
+	if not ring:IsShown() then
+		return
+	end
+	local r, g, b = ring:GetVertexColor()
+	if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then
+		return
+	end
+	if (math.max(r, g, b) - math.min(r, g, b)) <= QUALITY_CHROMA then
+		return
+	end
+	return r, g, b
 end
 
--- Tiles whose border follows Blizzard's ring, so the hook below knows which
--- buttons are its business. Weak: a pooled tile going away takes its entry.
+-- Quality from an item link (5.4.8 item buttons rarely carry IconBorder).
+function WSkin.LinkQuality(link)
+	if not link then
+		return
+	end
+	local _, _, quality = GetItemInfo(link)
+	if quality and quality >= 2 then
+		local r, g, b = GetItemQualityColor(quality)
+		return r, g, b
+	end
+end
+
 local _qTiles = setmetatable({}, { __mode = "k" })
-local _qHooked = false
-
 local function PaintQuality(btn)
-    local host = _qTiles[btn]
-    if not host then return end
-    local PP = EUI and (EUI.PanelPP or EUI.PP)
-    if not (PP and PP.SetBorderColor) then return end
-    -- The border stays up on an EMPTY slot, black, and that is deliberate.
-    --
-    -- It was briefly hidden when the icon was (Blizzard hides an item button's
-    -- icon when the slot is empty), on the theory that a grid of empty outlined
-    -- boxes looked broken. The opposite turned out to be true in game: those
-    -- boxes ARE the slot -- they show where an item can be dropped -- and with
-    -- them gone the trade window read as having no item slots at all. Empty is
-    -- black, filled is the rarity.
-    local r, g, b = WSkin.RingQuality(btn.IconBorder)
-    -- No rarity -> BLACK, not hidden: every other icon in the suite carries a
-    -- 1px black edge, so a common drop should look like the rest of them
-    -- rather than like a tile that lost its border.
-    PP.SetBorderColor(host, r or 0, g or 0, b or 0, 1)
+	local host = _qTiles[btn]
+	if not host then
+		return
+	end
+	local name = btn.GetName and btn:GetName()
+	local ring = btn.IconBorder or (name and _G[name .. "IconBorder"])
+	local r, g, b = WSkin.RingQuality(ring)
+	PP.SetBorderColor(host, r or 0, g or 0, b or 0, 1)
 end
+WSkin.PaintQuality = PaintQuality
 
--- Runs inside Blizzard's call stack, from bag and bank updates as well as ours.
--- The registry test comes FIRST so an unrelated item button costs one weak
--- table lookup and nothing else, and the paint is pcall'd so a throw here can
--- never surface as an error inside their update.
---
--- Painting immediately is correct, unlike the widget-bar covers: hooksecurefunc
--- runs AFTER the original, and SetItemButtonQuality has already shown and
--- vertex-colored the ring by the time it returns, so there is nothing to wait
--- for.
-local function OnItemButtonQuality(btn)
-    if not _qTiles[btn] then return end
-    pcall(PaintQuality, btn)
-end
-
--- Give `icon` a square 1px border on `owner`, colored by item quality.
---
--- With no explicit color the border FOLLOWS Blizzard's ring, repainting
--- whenever SetItemButtonQuality touches the button -- which is what makes
--- pooled tiles correct without any pack having to guess when Blizzard
--- repopulates them. Pass r,g,b for surfaces that have no ring to read
--- (the loot roll popups carry quality in an ATLAS NAME instead).
+-- Square 1px border on `owner` around `icon`. With r, g, b: that color;
+-- without: follows the button's IconBorder ring when it has one (else black;
+-- call WSkin.SetQualityColor to paint it from an item link).
 function WSkin.QualityBorder(owner, icon, r, g, b)
-    if not (owner and icon) then return end
-    -- Same hazard as every other frame-creating helper here: CreateFrame on a
-    -- forbidden owner THROWS, and callers are pcall-isolated per WINDOW, so an
-    -- unguarded throw takes out the rest of that window's pass rather than one
-    -- icon's border.
-    if owner.IsForbidden and owner:IsForbidden() then return end
-    if icon.IsForbidden and icon:IsForbidden() then return end
-    local PP = EUI and (EUI.PanelPP or EUI.PP)
-    if not (PP and PP.CreateBorder) then
-        -- Older EllesmereUI without the pixel-perfect border API: fall back to
-        -- the plain black edge rather than leaving the tile with nothing.
-        WSkin.BorderRegion(owner, icon)
-        return
-    end
-    local d = GetFFD(owner)
-    local host = d.qBorder
-    if not host then
-        -- Its OWN frame, anchored to the ICON rather than the button: the
-        -- button rect is larger than its icon on most of these templates, and
-        -- PP.CreateBorder spans whatever frame it is handed.
-        host = CreateFrame("Frame", nil, owner)
-        -- ONE PIXEL OUTSIDE the icon, not on its edge. Sitting exactly on the
-        -- rect put the strips on the same pixels the icon draws, so the icon
-        -- won and the border looked like it was being clipped through --
-        -- visible on any icon with light content at the edge. Outset by 1 it
-        -- rings the icon and nothing can overlap it.
-        host:SetPoint("TOPLEFT", icon, "TOPLEFT", -1, 1)
-        host:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 1, -1)
-        -- ...and well clear of the button's own layers. Item buttons stack
-        -- icon, overlays, quest markers and an alert frame, and some templates
-        -- raise their own level (trade calls RaiseFrameLevelByTwo).
-        if owner.GetFrameLevel then
-            host:SetFrameLevel(owner:GetFrameLevel() + 6)
-        end
-        PP.CreateBorder(host, 0, 0, 0, 1, 1, "OVERLAY", 7)
-        d.qBorder = host
-    end
-    if r then
-        _qTiles[owner] = nil
-        if PP.SetBorderColor then PP.SetBorderColor(host, r, g, b, 1) end
-        return
-    end
-    _qTiles[owner] = host
-
-    -- TWO ways Blizzard sets a quality, and one of them the global hook below
-    -- cannot see.
-    --
-    -- The global SetItemButtonQuality delegates to `button:SetItemButtonQuality`
-    -- whenever the button has that method -- so a caller that invokes the
-    -- METHOD directly never passes through the global at all. MerchantFrame is
-    -- exactly that caller (`self.ItemButton:SetItemButtonQuality(...)`), which
-    -- is why a vendor tile would otherwise sit on a stale color forever while
-    -- quest rewards and loot worked fine.
-    --
-    -- Hooking the instance covers both routes at once: the global's own
-    -- delegation lands here too. Marked in FFD, since a pooled tile is
-    -- re-skinned on every pass and must not stack hooks.
-    if type(owner.SetItemButtonQuality) == "function" and not d.qMethodHook then
-        d.qMethodHook = true
-        pcall(hooksecurefunc, owner, "SetItemButtonQuality", OnItemButtonQuality)
-    end
-    -- Still needed for buttons with NO method, where the global does the work
-    -- itself (SetItemButtonQuality_Base).
-    if not _qHooked and type(_G.SetItemButtonQuality) == "function" then
-        _qHooked = true
-        hooksecurefunc("SetItemButtonQuality", OnItemButtonQuality)
-    end
-    PaintQuality(owner)
+	if not (owner and icon) then
+		return
+	end
+	local d = GetFFD(owner)
+	local host = d.qBorder
+	if not host then
+		host = CreateFrame("Frame", nil, owner)
+		host:SetPoint("TOPLEFT", icon, "TOPLEFT", -1, 1)
+		host:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 1, -1)
+		host:SetFrameLevel(owner:GetFrameLevel() + 6)
+		PP.CreateBorder(host, 0, 0, 0, 1, 1, "OVERLAY", 7)
+		d.qBorder = host
+	end
+	if r then
+		_qTiles[owner] = nil
+		PP.SetBorderColor(host, r, g, b, 1)
+		return
+	end
+	_qTiles[owner] = host
+	PaintQuality(owner)
 end
 
--- One quest-style reward tile: drop the parchment name plate and every ring
--- stacked on the icon, white the name, square the icon and give it the rarity
--- border.
---
--- Lives here rather than in a pack because THREE places need the identical
--- treatment -- the NPC quest window, the map/quest-log rewards frame, and the
--- lazy-creation hook on QuestInfo_GetRewardButton -- and WindowPacks has no
--- headroom for another file-scope local.
---
--- NameFrame is the box round the name; IconBorder is the ROUNDED quality ring,
--- stripped because it defeats the square crop, with its colour read back onto
--- the square border by SquareIcon's `quality` flag.
-local REWARD_TILE_ART = { "NameFrame", "IconBorder", "IconOverlay",
-                          "IconOverlay2", "IconBorder2" }
-function WSkin.QuestRewardTile(btn)
-    if not btn or (btn.IsForbidden and btn:IsForbidden()) then return end
-    -- parentKey OR global name. LargeItemButtonTemplate declares these with
-    -- both (`name="$parentNameFrame" parentKey="NameFrame"`), but the small
-    -- quest template and the trade window's own tiles declare the same art
-    -- with NO parentKey -- and a lookup that only tries the key silently finds
-    -- nothing and leaves the plate up.
-    local n = btn.GetName and btn:GetName()
-    for i = 1, #REWARD_TILE_ART do
-        local k = REWARD_TILE_ART[i]
-        local t = btn[k] or (n and _G[n .. k])
-        if t and t.SetAlpha and t.IsObjectType and t:IsObjectType("Texture") then
-            t:SetAlpha(0)
-        end
-    end
-    if btn.Name and btn.Name.SetTextColor then btn.Name:SetTextColor(1, 1, 1) end
-    WSkin.SquareIcon(btn.Icon, btn, true)
+-- Paint a tile's square border from an item link (nil link = black).
+function WSkin.SetQualityColor(owner, link)
+	local d = FFD[owner]
+	local host = d and d.qBorder
+	if not host then
+		return
+	end
+	local r, g, b = WSkin.LinkQuality(link)
+	PP.SetBorderColor(host, r or 0, g or 0, b or 0, 1)
 end
 
--- Every reward tile under `frame`, named or not.
---
--- RewardButtons alone is NOT enough. A /framestack over the "may have
--- additional rewards" tile shows it as `MapQuestInfoRewardsFrame.<hex>` -- an
--- ANONYMOUS child. QuestInfo_GetRewardButton NAMES the buttons it creates
--- ($parentQuestInfoItem1...), so an unnamed tile did not come from there and
--- is never in RewardButtons; it comes from one of the frame's own pools.
---
--- So the named list is walked first and then the CHILDREN, with anything
--- carrying a reward tile's shape treated as one. Every probe is pcall'd: a
--- quest rewards frame can hold widget-backed children whose field access
--- throws, and one of those must not take the pass down.
-local function LooksLikeRewardTile(f)
-    return (f.NameFrame ~= nil) or (f.Icon ~= nil)
-end
--- Children as a TABLE, passed BY ARGUMENT to pcall. The obvious spelling,
--- pcall(function() return { f:GetChildren() } end), allocates a fresh CLOSURE
--- on every call -- the exact thing this file's own KidsOf helpers exist to
--- avoid, and this runs on every quest display.
-local function RewardKids(f)
-    return { f:GetChildren() }
-end
-function WSkin.QuestRewardTiles(frame)
-    if not frame or (frame.IsForbidden and frame:IsForbidden()) then return end
-    local rb = frame.RewardButtons
-    if rb then
-        for i = 1, #rb do WSkin.QuestRewardTile(rb[i]) end
-    end
-    if not frame.GetChildren then return end
-    local okKids, kids = pcall(RewardKids, frame)
-    if not okKids or not kids then return end
-    for i = 1, #kids do
-        local ch = kids[i]
-        local okShape, isTile = pcall(LooksLikeRewardTile, ch)
-        if okShape and isTile then WSkin.QuestRewardTile(ch) end
-    end
-end
-
--- Square an icon texture (crop the baked bevel) and optionally border it.
---
--- `quality` true asks for the rarity-colored border above instead of the plain
--- black one. Routed through here rather than called alongside it so the MASK
--- GUARDS below stay the single authority: a masked icon renders as a shape,
--- and a square border drawn round it is exactly as wrong as a square crop.
---
--- Returns true when the crop actually happened, so a caller that needs to
--- border a masked-icon surface itself can tell whether it may.
+-- Square an icon (crop the baked bevel) and optionally border it.
 function WSkin.SquareIcon(icon, parent, quality)
-    if not icon or not icon.SetTexCoord then return end
-    -- A texture with a MaskTexture rejects SetTexCoord outright (hard Lua
-    -- error, e.g. the special first-catch loot toast masks its icon). Leave
-    -- masked icons fully native -- no crop, and no square border drawn
-    -- around what the mask renders as a shape.
-    if icon.GetNumMaskTextures and icon:GetNumMaskTextures() > 0 then return end
-    -- The count sees only AddMaskTexture masks; a legacy SetMask() mask is
-    -- invisible to it and still rejects SetTexCoord (field: fishing loot
-    -- toast on a build that already carried the count guard). The call
-    -- itself is the only reliable probe -- on rejection the icon stays
-    -- native, same as the counted case.
-    if not pcall(icon.SetTexCoord, icon, 0.08, 0.92, 0.08, 0.92) then return end
-    if parent then
-        if quality then
-            WSkin.QualityBorder(parent, icon)
-        else
-            WSkin.BorderRegion(parent, icon)
-        end
-    end
-    return true
+	if not icon or not icon.SetTexCoord then
+		return
+	end
+	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	if parent then
+		if quality then
+			WSkin.QualityBorder(parent, icon)
+		else
+			WSkin.BorderRegion(parent, icon)
+		end
+	end
+	return true
 end
 
--- Remove a PortraitFrameTemplate's corner portrait.
+-- One quest-style reward tile (QuestInfoItem / QuestInfoRewardItem): name
+-- plate gone, white name, square icon + rarity border.
+local REWARD_TILE_ART = { "NameFrame", "IconBorder", "IconOverlay" }
+function WSkin.QuestRewardTile(btn)
+	if not btn then
+		return
+	end
+	local n = btn.GetName and btn:GetName()
+	for i = 1, #REWARD_TILE_ART do
+		local k = REWARD_TILE_ART[i]
+		local t = btn[k] or (n and _G[n .. k])
+		if type(t) == "table" and t.SetAlpha and t.IsObjectType and t:IsObjectType("Texture") then
+			t:SetAlpha(0)
+		end
+	end
+	local name = btn.Name or (n and _G[n .. "Name"])
+	if name and name.SetTextColor then
+		name:SetTextColor(1, 1, 1)
+	end
+	local icon = btn.Icon or (n and _G[n .. "IconTexture"])
+	WSkin.SquareIcon(icon, btn, true)
+end
+
+-- Remove the round corner portrait of a ButtonFrameTemplate /
+-- PortraitFrameTemplate window.
 function WSkin.RemovePortrait(frame)
-    if not frame then return end
-    local pc = frame.PortraitContainer
-    if pc then
-        FadeRegions(pc)
-        Register(pc, true)
-        if pc.portrait and pc.portrait.SetAlpha then pc.portrait:SetAlpha(0) end
-    end
-    if frame.portrait and frame.portrait.SetAlpha then frame.portrait:SetAlpha(0) end
+	if not frame then
+		return
+	end
+	local name = frame.GetName and frame:GetName()
+	for _, k in ipairs({ "portrait", "Portrait", "PortraitFrame", "portraitFrame", "PortraitOverlay" }) do
+		local t = frame[k] or (name and _G[name .. k])
+		if type(t) == "table" and t.SetAlpha then t:SetAlpha(0) end
+	end
 end
 
 -------------------------------------------------------------------------------
---  Tabs. One shared PanelTemplates hook keeps selection state fresh across all
---  skinned tabs (bottom tabs and TabSystem top tabs both flow through here).
+--  Tabs. One PanelTemplates hook keeps selection state fresh on all skinned
+--  tabs (CharacterFrameTabButtonTemplate, TabButtonTemplate, top tabs).
 -------------------------------------------------------------------------------
 local _skinnedTabs = setmetatable({}, { __mode = "k" })
 
-local TAB_BG      = { 0.068, 0.056, 0.052 }
+local TAB_BG = { 0.068, 0.056, 0.052 }
 local TAB_BG_DARK = { 0.03, 0.03, 0.03 }
 
 local function TabIsSelected(tab)
-    -- FFD override first: windows with nonstandard tab systems (auction house
-    -- displayMode) sync selection into FFD themselves -- never onto the Blizzard tab.
-    local od = FFD[tab]
-    if od and od.selOverride ~= nil then return od.selOverride end
-    -- The tab system's selectedTabID is authoritative. Pool-rebuilt tab rows
-    -- (housing content tabs) can carry a stale isSelected=false after their
-    -- system re-inits them, so the per-button flag is only a fallback.
-    local parent = tab:GetParent()
-    if parent and parent.selectedTabID ~= nil and tab.tabID ~= nil then
-        return parent.selectedTabID == tab.tabID
-    end
-    if tab.isSelected ~= nil then return tab.isSelected and true or false end
-    if parent and PanelTemplates_GetSelectedTab and tab.GetID then
-        local ok, s = pcall(PanelTemplates_GetSelectedTab, parent)
-        if ok and s ~= nil then return s == tab:GetID() end
-    end
-    return false
+	local od = FFD[tab]
+	if od and od.selOverride ~= nil then
+		return od.selOverride
+	end
+	if od and od.selFn then
+		local ok, v = pcall(od.selFn, tab)
+		if ok then return v and true or false end
+	end
+	-- PanelTemplates disable the selected tab (5.4.8).
+	if tab.IsEnabled and od and od.panelTab then
+		return not tab:IsEnabled()
+	end
+	local parent = tab:GetParent()
+	if parent and PanelTemplates_GetSelectedTab and tab.GetID then
+		local ok, s = pcall(PanelTemplates_GetSelectedTab, parent)
+		if ok and s ~= nil then
+			return s == tab:GetID()
+		end
+	end
+	return false
 end
 
 local function UpdateTabVisual(tab)
-    local d = FFD[tab]
-    if not d or not d.underline then return end
-    local sel = TabIsSelected(tab)
-    if d.label then d.label:SetTextColor(1, 1, 1, sel and 1 or 0.5) end
-    d.underline:SetShown(sel and WSkin.AccentBarShown())
-    -- darkActive tabs deepen the fill when selected instead of the additive
-    -- lighten wash.
-    if d.activeHL then d.activeHL:SetShown(sel and not d.darkActive) end
-    if d.bg and d.darkActive then
-        local c = sel and TAB_BG_DARK or TAB_BG
-        d.bg:SetColorTexture(c[1], c[2], c[3], 1)
-    end
+	local d = FFD[tab]
+	if not d or not d.underline then
+		return
+	end
+	local sel = TabIsSelected(tab)
+	-- PanelTemplates swap the tab's font object on every select / enable,
+	-- which brings Blizzard's label back: hide it again on every update.
+	if d.blizLabel and d.blizLabel.SetAlpha then
+		d.blizLabel:SetAlpha(0)
+		if d.blizLabel.SetTextColor then d.blizLabel:SetTextColor(0, 0, 0, 0) end
+	end
+	if d.label then
+		d.label:SetTextColor(1, 1, 1, sel and 1 or 0.5)
+	end
+	d.underline:SetShown(sel and WSkin.AccentBarShown())
+	if d.activeHL then
+		d.activeHL:SetShown(sel and not d.darkActive)
+	end
+	if d.bg and d.darkActive then
+		local c = sel and TAB_BG_DARK or TAB_BG
+		d.bg:SetTexture(c[1], c[2], c[3], 1)
+	end
 end
 
 local function UpdateAllTabs()
-    for tab in pairs(_skinnedTabs) do
-        if not tab:IsForbidden() then UpdateTabVisual(tab) end
-    end
+	for tab in pairs(_skinnedTabs) do
+		UpdateTabVisual(tab)
+	end
 end
 WSkin.UpdateAllTabs = UpdateAllTabs
 
--- Visual selection only; nil returns to the native tab system's selection.
--- Keep the override outside the frame so Blizzard's tab state stays untouched.
 function WSkin.SetTabSelection(tab, selected)
-    if not tab or tab:IsForbidden() then return end
-    GetFFD(tab).selOverride = selected
-    UpdateTabVisual(tab)
+	if not tab then
+		return
+	end
+	GetFFD(tab).selOverride = selected
+	UpdateTabVisual(tab)
 end
 
 local _tabHooked = false
 local function EnsureTabHooks()
-    if _tabHooked then return end
-    _tabHooked = true
-    if PanelTemplates_SetTab then hooksecurefunc("PanelTemplates_SetTab", UpdateAllTabs) end
-    if PanelTemplates_UpdateTabs then hooksecurefunc("PanelTemplates_UpdateTabs", UpdateAllTabs) end
+	if _tabHooked then
+		return
+	end
+	_tabHooked = true
+	for _, fn in ipairs({ "PanelTemplates_SetTab", "PanelTemplates_UpdateTabs", "PanelTemplates_SelectTab", "PanelTemplates_DeselectTab", "PanelTemplates_EnableTab", "PanelTemplates_DisableTab" }) do
+		if _G[fn] then
+			hooksecurefunc(fn, UpdateAllTabs)
+		end
+	end
 end
 
--- Tab -> the dungeons-and-raids tab pattern, copied exactly: native art
--- cleared permanently (SetTexture, so tabs never need a re-strip pass), flat
--- dark block, our own 11px label mirroring Blizzard's text, a faint additive
--- wash + a pixel-perfect full-width accent underline on the active tab.
--- Works for PanelTabButtonTemplate and TabSystem buttons.
+local TAB_PIECES = { "Left", "Middle", "Right", "LeftDisabled", "MiddleDisabled", "RightDisabled",
+	"HighlightTexture", "LeftHighlight", "MiddleHighlight", "RightHighlight", "LeftActive", "MiddleActive", "RightActive" }
+
+-- Tab -> flat dark block, our own 11px label mirroring Blizzard's text, a
+-- faint wash + an accent underline on the active tab.
+-- opts.darkActive: darker fill on the active tab instead of the wash.
+-- opts.isSelected = function(tab) for tabs outside PanelTemplates.
+-- opts.keepIcon: leave tab.Icon / $parentIcon alone (icon side tabs).
 function WSkin.Tab(tab, opts)
-    if not tab or tab:IsForbidden() then return end
-    local d = GetFFD(tab)
-    if opts and opts.darkActive then d.darkActive = true end
-    if d.bg then
-        UpdateTabVisual(tab)
-        if d.label and d.blizLabel and d.blizLabel.GetText then
-            d.label:SetText(d.blizLabel:GetText() or "")
-        end
-        return
-    end
-    d.skinned = true   -- keeps the generic ButtonsIn sweep off skinned tabs
-    -- TabSystem windows swap tabs with no PanelTemplates call, and keybind /
-    -- programmatic swaps never click a tab either -- every one of those paths funnels
-    -- through the system's SetTabVisuallySelected (it is also the writer of the
-    -- selectedTabID field TabIsSelected reads). Hook it once per tab system so the
-    -- underline tracks selection from every path (field report: swapping PlayerSpells
-    -- tabs via keybind while the frame was open left the underline on the old tab).
-    local sys = tab:GetParent()
-    if sys and not sys:IsForbidden()
-        and type(sys.SetTabVisuallySelected) == "function" then
-        local sd = GetFFD(sys)
-        if not sd.visSelHooked then
-            sd.visSelHooked = true
-            hooksecurefunc(sys, "SetTabVisuallySelected", UpdateAllTabs)
-        end
-    end
-    -- Icon tabs carry their label in Icon; retain its clipping mask as well.
-    local regions = { tab:GetRegions() }
-    for j = 1, #regions do
-        local r = regions[j]
-        if r and r ~= tab.Icon and r ~= tab.IconMask and r:IsObjectType("Texture") then
-            r:SetTexture("")
-            if r.SetAtlas then r:SetAtlas("") end
-        end
-    end
-    for _, k in ipairs({ "Left", "Middle", "Right", "LeftDisabled", "MiddleDisabled", "RightDisabled" }) do
-        if tab[k] and tab[k].SetTexture then tab[k]:SetTexture("") end
-    end
-    local hl = tab.GetHighlightTexture and tab:GetHighlightTexture()
-    if hl then hl:SetTexture("") end
+	if not tab or Forbidden(tab) then
+		return
+	end
+	local d = GetFFD(tab)
+	if opts and opts.darkActive then d.darkActive = true end
+	if opts and opts.isSelected then d.selFn = opts.isSelected end
+	if d.bg then
+		UpdateTabVisual(tab)
+		if d.label and d.blizLabel and d.blizLabel.GetText then
+			d.label:SetText(d.blizLabel:GetText() or "")
+		end
+		return
+	end
+	d.skinned = true
+	d.panelTab = not (opts and opts.isSelected) and tab:GetParent() and tab:GetParent().numTabs ~= nil
+	local name = tab.GetName and tab:GetName()
+	local icon = tab.Icon or (name and _G[name .. "Icon"])
+	local regions = { tab:GetRegions() }
+	for j = 1, #regions do
+		local r = regions[j]
+		if r and r ~= icon and r.IsObjectType and r:IsObjectType("Texture") then
+			r:SetTexture("")
+		end
+	end
+	for _, k in ipairs(TAB_PIECES) do
+		local t = tab[k] or (name and _G[name .. k])
+		if t and t.SetTexture then t:SetTexture("") end
+	end
+	local hl = tab.GetHighlightTexture and tab:GetHighlightTexture()
+	if hl then hl:SetTexture("") end
 
-    d.bg = SolidTex(tab, "BACKGROUND", 0.068, 0.056, 0.052, 1)
-    d.bg:SetAllPoints()
+	d.bg = SolidTex(tab, "BACKGROUND", TAB_BG[1], TAB_BG[2], TAB_BG[3], 1)
+	-- 5.4.8 bottom tabs keep transparent art margins: the block sits on the
+	-- visible part of the tab.
+	local ins = opts and opts.inset
+	if ins then
+		d.bg:SetPoint("TOPLEFT", tab, "TOPLEFT", ins[1], -ins[2])
+		d.bg:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", -ins[3], ins[4])
+	else
+		d.bg:SetAllPoints()
+	end
 
-    local activeHL = tab:CreateTexture(nil, "ARTWORK", nil, -6)
-    activeHL:SetAllPoints()
-    activeHL:SetColorTexture(1, 1, 1, 0.02)
-    activeHL:SetBlendMode("ADD")
-    activeHL:Hide()
-    d.activeHL = activeHL
+	local activeHL = tab:CreateTexture(nil, "ARTWORK", nil, -6)
+	activeHL:SetAllPoints(d.bg)
+	activeHL:SetTexture(1, 1, 1, 0.02)
+	activeHL:SetBlendMode("ADD")
+	activeHL:Hide()
+	d.activeHL = activeHL
 
-    local blizLabel = tab.Text or (tab.GetFontString and tab:GetFontString())
-    local labelText = (blizLabel and blizLabel.GetText and blizLabel:GetText()) or ""
-    if blizLabel and blizLabel.SetTextColor then blizLabel:SetTextColor(0, 0, 0, 0) end
-    if tab.SetPushedTextOffset then tab:SetPushedTextOffset(0, 0) end
+	local hover = tab:CreateTexture(nil, "HIGHLIGHT")
+	hover:SetAllPoints(d.bg)
+	hover:SetTexture(1, 1, 1, 0.05)
+	d.hover = hover
 
-    local label = tab:CreateFontString(nil, "OVERLAY")
-    label:SetFont(Theme.fontPath, 11, Theme.fontFlag or "")
-    label:SetPoint("CENTER", tab, "CENTER", 0, 0)
-    label:SetText(labelText)
-    d.label = label
-    d.blizLabel = blizLabel
-    -- Mirror the live Blizzard text onto our label. Read it back off the (hidden)
-    -- original after each write so dynamic updates land -- some labels carry a trailing
-    -- count like "Public Orders (4)" set via SetFormattedText or a direct
-    -- FontString:SetText, neither of which routes through the button's SetText.
-    local function SyncLabel()
-        if d.label and d.blizLabel and d.blizLabel.GetText then
-            d.label:SetText(d.blizLabel:GetText() or "")
-        end
-    end
-    hooksecurefunc(tab, "SetText", SyncLabel)
-    if blizLabel then
-        hooksecurefunc(blizLabel, "SetText", SyncLabel)
-        if blizLabel.SetFormattedText then hooksecurefunc(blizLabel, "SetFormattedText", SyncLabel) end
-    end
+	local blizLabel = tab.Text or (name and _G[name .. "Text"]) or (tab.GetFontString and tab:GetFontString())
+	local labelText = (blizLabel and blizLabel.GetText and blizLabel:GetText()) or ""
+	if blizLabel and blizLabel.SetAlpha then
+		blizLabel:SetAlpha(0)
+	end
+	if tab.SetPushedTextOffset then tab:SetPushedTextOffset(0, 0) end
 
-    local underline = tab:CreateTexture(nil, "OVERLAY", nil, 6)
-    if EUI and EUI.PanelPP and EUI.PanelPP.DisablePixelSnap then
-        EUI.PanelPP.DisablePixelSnap(underline)
-        underline:SetHeight(EUI.PanelPP.mult or 1)
-    else
-        underline:SetHeight(1)
-    end
-    underline:SetPoint("BOTTOMLEFT", tab, "BOTTOMLEFT", 0, 0)
-    underline:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", 0, 0)
-    -- Color resolves from the Global Options accent-bar setting; the engine's
-    -- looks refresh (not per-texture accent registration) keeps it current.
-    local ur, ug, ub = WSkin.AccentBarColor()
-    underline:SetColorTexture(ur, ug, ub, 1)
-    underline:Hide()
-    d.underline = underline
+	local label = tab:CreateFontString(nil, "OVERLAY")
+	label:SetFont(Theme.fontPath, 11, Theme.fontFlag or "")
+	if Theme.fontShadow then
+		label:SetShadowOffset(1, -1)
+		label:SetShadowColor(0, 0, 0, 1)
+	end
+	label:SetPoint("CENTER", d.bg, "CENTER", 0, 0)
+	label:SetText(labelText)
+	d.label = label
+	d.blizLabel = blizLabel
+	local function SyncLabel()
+		if d.label and d.blizLabel and d.blizLabel.GetText then
+			d.label:SetText(d.blizLabel:GetText() or "")
+		end
+	end
+	hooksecurefunc(tab, "SetText", SyncLabel)
+	if blizLabel and blizLabel ~= tab then
+		hooksecurefunc(blizLabel, "SetText", SyncLabel)
+		if blizLabel.SetFormattedText then
+			hooksecurefunc(blizLabel, "SetFormattedText", SyncLabel)
+		end
+	end
 
-    _skinnedTabs[tab] = true
-    EnsureTabHooks()
-    -- TabSystem buttons do not flow through PanelTemplates_SetTab; refresh all
-    -- skinned tabs one frame after any tab click.
-    tab:HookScript("OnClick", function()
-        if C_Timer then C_Timer.After(0, UpdateAllTabs) else UpdateAllTabs() end
-    end)
-    UpdateTabVisual(tab)
+	local underline = tab:CreateTexture(nil, "OVERLAY", nil, 6)
+	underline:SetHeight(PP.mult or 1)
+	underline:SetPoint("BOTTOMLEFT", d.bg, "BOTTOMLEFT", 0, 0)
+	underline:SetPoint("BOTTOMRIGHT", d.bg, "BOTTOMRIGHT", 0, 0)
+	local ur, ug, ub = WSkin.AccentBarColor()
+	underline:SetTexture(ur, ug, ub, 1)
+	underline:Hide()
+	d.underline = underline
+
+	_skinnedTabs[tab] = true
+	EnsureTabHooks()
+	tab:HookScript("OnClick", function()
+		BS.After(0, UpdateAllTabs)
+	end)
+	tab:HookScript("OnShow", function() UpdateTabVisual(tab) end)
+	tab:HookScript("OnEnable", function() UpdateTabVisual(tab) end)
+	tab:HookScript("OnDisable", function() UpdateTabVisual(tab) end)
+	UpdateTabVisual(tab)
 end
 
--- Force a row of skinned tabs to a uniform one-physical-pixel seam. Each Blizzard tab
--- template bakes in its own transparent art padding + anchor offsets, so once the art
--- is replaced by an edge-to-edge flat block the raw frame gaps (2-5px on some
--- templates) show through as inconsistent spacing. Re-chain each tab to the previous
--- tab's right edge + 1px, matching the tight seam a TabSystem produces. The first tab
--- keeps Blizzard's seat; because the chain is relative, it reflows automatically when
--- Blizzard resizes a tab. `tabs` is an ordered (left-to-right) array;
--- nil/missing/hidden entries are skipped so a conditionally-hidden tab (group finder,
--- encounter journal) never leaves a gap in the chain.
-function WSkin.NormalizeTabRow(tabs)
-    if not tabs then return end
-    -- One physical pixel in the TAB's own coordinate space. Blizzard windows
-    -- run at UIParent scale, NOT the EUI options-panel scale, so PanelPP.mult
-    -- is the wrong multiplier -- it lands the gap between 1 and 2 physical
-    -- pixels and rounds inconsistently. PP.perfect (= 1 physical pixel at
-    -- scale 1) divided by the tab's effective scale is exact at any scale.
-    local PP = EUI and EUI.PP
-    -- Shave a few px off every skinned tab's height, ONCE per tab (guarded in
-    -- the WSkin FFD so repeated re-skins never shrink it cumulatively). Applied
-    -- here so every window's bottom tab row gets the same shorter profile.
-    local TAB_TRIM_H = 2
-    local prev
-    for i = 1, #tabs do
-        local t = tabs[i]
-        if t and t.IsForbidden and not t:IsForbidden()
-           and (not t.IsShown or t:IsShown()) then
-            local d = GetFFD(t)
-            if not d.heightTrimmed and t.SetHeight and t.GetHeight then
-                d.heightTrimmed = true
-                local h = t:GetHeight() or 0
-                if h > TAB_TRIM_H then t:SetHeight(h - TAB_TRIM_H) end
-            end
-            if prev then
-                local gap = (PP and PP.mult) or 1
-                local es = t.GetEffectiveScale and t:GetEffectiveScale()
-                -- Bound-check es: a corrupted near-zero scale (left behind by
-                -- another addon) would blow this up into a huge, wrong gap.
-                if PP and PP.perfect and es and es > 0.1 and es < 10 then
-                    gap = PP.perfect / es
-                end
-                t:ClearAllPoints()
-                t:SetPoint("LEFT", prev, "RIGHT", gap, 0)
-            end
-            prev = t
-        end
-    end
+-- Re-chain a row of skinned tabs with a 1px seam (first tab keeps its seat).
+function WSkin.NormalizeTabRow(tabs, gap)
+	if not tabs then
+		return
+	end
+	local prev
+	for i = 1, #tabs do
+		local t = tabs[i]
+		if t and (not t.IsShown or t:IsShown()) then
+			if prev then
+				t:ClearAllPoints()
+				t:SetPoint("LEFT", prev, "RIGHT", gap or 1, 0)
+			end
+			prev = t
+		end
+	end
 end
 
--- Flatten every Button child of a TabSystemTemplate.
-function WSkin.TabSystem(tsys, opts)
-    if not tsys then return end
-    -- Programmatic tab switches (SetTab) never pass through the
-    -- PanelTemplates hooks or a tab's OnClick; repaint on them directly.
-    local d = GetFFD(tsys)
-    if tsys.SetTab and not d.setTabHook then
-        d.setTabHook = true
-        hooksecurefunc(tsys, "SetTab", UpdateAllTabs)
-    end
-    local children = { tsys:GetChildren() }
-    for i = 1, #children do
-        local child = children[i]
-        if child and child.GetObjectType and child:GetObjectType() == "Button" then
-            WSkin.Tab(child, opts)
-        end
-    end
+-- Tabs of a frame that uses PanelTemplates ($parentTab1..numTabs).
+function WSkin.TabsOf(frame, prefix, opts)
+	local name = prefix or (frame and frame.GetName and frame:GetName())
+	if not name then
+		return {}
+	end
+	local tabs = {}
+	local n = (frame and frame.numTabs) or 10
+	for i = 1, n do
+		local t = _G[name .. "Tab" .. i]
+		if not t then
+			break
+		end
+		WSkin.Tab(t, opts)
+		tabs[#tabs + 1] = t
+	end
+	return tabs
 end
 
 -------------------------------------------------------------------------------
---  Global look settings (Blizzard Window Skins -> Global Options). Central
---  EllesmereUIDB keys, nil = defaults: accent bar shown + accent colored, bar
---  fills accent at full opacity, links accent colored. Accent-mode elements
---  re-resolve from the LIVE accent color; a RegAccent callback keeps them in
---  sync on accent changes, and RefreshLooks() applies option edits live.
+--  Global look settings (Window Skins > Global Options). nil = defaults:
+--  accent bar shown + accent colored, bar fills accent, links accent.
 -------------------------------------------------------------------------------
 local function LiveAccent()
-    local EG = EUI and EUI.ELLESMERE_GREEN
-    if EG then return EG.r or 0.047, EG.g or 0.824, EG.b or 0.616 end
-    return 0.047, 0.824, 0.616
+	return BS.Accent()
 end
 
 function WSkin.AccentBarShown()
-    local c = EllesmereUIDB and EllesmereUIDB.blizzWinAccentBar
-    return not (c and c.enabled == false)
+	local c = BS.DB().blizzWinAccentBar
+	return not (type(c) == "table" and c.enabled == false)
 end
 
--- Custom mode with no stored color resolves to WHITE -- the same fallback
--- the custom swatch displays. (Requiring a stored color made a fresh switch
--- to custom silently fall back to accent until the picker first saved one.)
 function WSkin.AccentBarColor()
-    local c = EllesmereUIDB and EllesmereUIDB.blizzWinAccentBar
-    if c and c.useCustom then
-        local col = c.color
-        if col then return col.r or 1, col.g or 1, col.b or 1 end
-        return 1, 1, 1
-    end
-    return LiveAccent()
+	local c = BS.DB().blizzWinAccentBar
+	if type(c) == "table" and c.useCustom then
+		local col = c.color
+		if col then return col.r or 1, col.g or 1, col.b or 1 end
+		return 1, 1, 1
+	end
+	return LiveAccent()
 end
 
 function WSkin.BarFillColor()
-    local c = EllesmereUIDB and EllesmereUIDB.blizzWinBarFill
-    local a = (c and c.alpha) or 0.95
-    if c and c.useCustom then
-        local col = c.color
-        if col then return col.r or 1, col.g or 1, col.b or 1, a end
-        return 1, 1, 1, a
-    end
-    local r, g, b = LiveAccent()
-    return r * 0.8, g * 0.8, b * 0.8, a
+	local c = BS.DB().blizzWinBarFill
+	local a = (type(c) == "table" and c.alpha) or 0.95
+	if type(c) == "table" and c.useCustom then
+		local col = c.color
+		if col then return col.r or 1, col.g or 1, col.b or 1, a end
+		return 1, 1, 1, a
+	end
+	local r, g, b = LiveAccent()
+	return r * 0.8, g * 0.8, b * 0.8, a
 end
 
 function WSkin.LinkColor()
-    local c = EllesmereUIDB and EllesmereUIDB.blizzWinLinks
-    if c and c.useCustom then
-        local col = c.color
-        if col then return col.r or 1, col.g or 1, col.b or 1 end
-        return 1, 1, 1
-    end
-    return LiveAccent()
+	local c = BS.DB().blizzWinLinks
+	if type(c) == "table" and c.useCustom then
+		local col = c.color
+		if col then return col.r or 1, col.g or 1, col.b or 1 end
+		return 1, 1, 1
+	end
+	return LiveAccent()
 end
 
 function WSkin.LinkColorHex()
-    local r, g, b = WSkin.LinkColor()
-    return string.format("%02x%02x%02x",
-        math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5))
+	local r, g, b = WSkin.LinkColor()
+	return string.format("%02x%02x%02x",
+		math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5))
 end
 
--- Bar fills (flat accent progress bars) + tab underlines owned by files
--- outside the engine register here so option edits and accent changes
--- recolor them without a reload.
 local _fillBars = setmetatable({}, { __mode = "k" })
 local _extUnderlines = setmetatable({}, { __mode = "k" })
 local _lookCallbacks = {}
 
+-- Flat accent progress bar fill (StatusBar).
 function WSkin.ApplyBarFill(bar)
-    if not bar or not bar.SetStatusBarColor then return end
-    _fillBars[bar] = true
-    local r, g, b, a = WSkin.BarFillColor()
-    bar:SetStatusBarColor(r, g, b, a)
+	if not bar or not bar.SetStatusBarColor then
+		return
+	end
+	_fillBars[bar] = true
+	if bar.SetStatusBarTexture then
+		bar:SetStatusBarTexture(WHITE)
+	end
+	local r, g, b, a = WSkin.BarFillColor()
+	bar:SetStatusBarColor(r, g, b, a)
 end
 
 function WSkin.RegisterAccentUnderline(tex)
-    if tex then _extUnderlines[tex] = true end
+	if tex then _extUnderlines[tex] = true end
 end
 
 function WSkin.OnLooksChanged(fn)
-    _lookCallbacks[#_lookCallbacks + 1] = fn
+	_lookCallbacks[#_lookCallbacks + 1] = fn
 end
 
 function WSkin.RefreshLooks()
-    local ur, ug, ub = WSkin.AccentBarColor()
-    for tab in pairs(_skinnedTabs) do
-        local d = FFD[tab]
-        if d and d.underline then d.underline:SetColorTexture(ur, ug, ub, 1) end
-        if not tab:IsForbidden() then UpdateTabVisual(tab) end
-    end
-    for tex in pairs(_extUnderlines) do
-        tex:SetColorTexture(ur, ug, ub, 1)
-    end
-    local br, bgr, bb, ba = WSkin.BarFillColor()
-    for bar in pairs(_fillBars) do
-        if bar.SetStatusBarColor and not bar:IsForbidden() then
-            bar:SetStatusBarColor(br, bgr, bb, ba)
-        end
-    end
-    for _, fn in ipairs(_lookCallbacks) do pcall(fn) end
+	ResolveTheme()
+	local ur, ug, ub = WSkin.AccentBarColor()
+	for tab in pairs(_skinnedTabs) do
+		local d = FFD[tab]
+		if d and d.underline then d.underline:SetTexture(ur, ug, ub, 1) end
+		UpdateTabVisual(tab)
+	end
+	for tex in pairs(_extUnderlines) do
+		tex:SetTexture(ur, ug, ub, 1)
+	end
+	local br, bgr, bb, ba = WSkin.BarFillColor()
+	for bar in pairs(_fillBars) do
+		if bar.SetStatusBarColor then
+			bar:SetStatusBarColor(br, bgr, bb, ba)
+		end
+	end
+	for _, fn in ipairs(_lookCallbacks) do
+		pcall(fn)
+	end
 end
-if EUI then EUI._WSkinRefreshLooks = WSkin.RefreshLooks end
-EUI.RegAccent({ type = "callback", fn = function() WSkin.RefreshLooks() end })
+ns._WSkinRefreshLooks = WSkin.RefreshLooks
+BS.OnAccentChanged(function() WSkin.RefreshLooks() end)
+BS.OnApply(function()
+	WSkin.RefreshLooks()
+	WSkin.RefreshStyles()
+end)
 
 -------------------------------------------------------------------------------
---  Targeted art sweeps. Used at SKIN TIME (or debounced repaint hooks), never
---  per-frame-update. Depth-capped; icons/models/our textures always survive.
+--  Targeted art sweeps (skin time / debounced hooks only).
 -------------------------------------------------------------------------------
--- Content subtrees a window pack wants left alone (backgrounds that ARE the
--- content, e.g. the Adventure Guide Tutorials pane). Every recursive art
--- sweep skips an exempt frame and everything under it.
 function WSkin.ExemptArt(frame)
-    if frame then GetFFD(frame).artExempt = true end
+	if frame then GetFFD(frame).artExempt = true end
 end
 function WSkin.IsArtExempt(frame)
-    local d = FFD[frame]
-    return d and d.artExempt or false
+	local d = FFD[frame]
+	return d and d.artExempt or false
 end
 
--- Frame provenance: is this frame Blizzard's, or was it parented into the window by
--- another addon? Every recursive DISCOVERY sweep (art fades, button flattening,
--- control/scrollbar/paging finds) skips foreign frames and their whole subtree, so
--- third-party panels riding a Blizzard window keep their own look. Explicit primitive
--- calls (WSkin.Button(frame), Panel, ...) stay ungated: naming a frame is opting in.
---
--- The signal: Blizzard's secure code leaves SECURE references behind -- a named frame's
--- global, or the parentKey slot on its parent -- while frames created by any addon
--- leave tainted ones. issecurevariable reads taint without spreading it, so the whole
--- check is side-effect free. Frames with no name and no reference on their parent
--- (pooled list rows) stay treated as Blizzard's; only confirmed-foreign verdicts cache
--- (a frame could gain its addon-written reference key after we first see it).
+-- Frame provenance: Blizzard's frames leave SECURE references (their global
+-- name, their parentKey); frames another addon parented into a Blizzard
+-- window leave tainted ones. Recursive discovery sweeps skip foreign frames.
 local _foreign = setmetatable({}, { __mode = "k" })
-
 function WSkin.IsForeignFrame(frame, parent)
-    if _foreign[frame] then return true end
-    local name = frame.GetName and frame:GetName()
-    if name and _G[name] == frame then
-        if issecurevariable(name) then return false end
-        _foreign[frame] = true
-        return true
-    end
-    parent = parent or (frame.GetParent and frame:GetParent())
-    if not parent then return false end
-    local insecureRef = false
-    for k, v in pairs(parent) do
-        if type(k) == "string" and not issecretvalue(v) and v == frame then
-            if issecurevariable(parent, k) then return false end
-            insecureRef = true
-        end
-    end
-    if insecureRef then
-        _foreign[frame] = true
-        return true
-    end
-    return false
+	if _foreign[frame] then
+		return true
+	end
+	local name = frame.GetName and frame:GetName()
+	if name and _G[name] == frame then
+		if issecurevariable(name) then
+			return false
+		end
+		_foreign[frame] = true
+		return true
+	end
+	parent = parent or (frame.GetParent and frame:GetParent())
+	if not parent then
+		return false
+	end
+	local insecureRef = false
+	for k, v in pairs(parent) do
+		if type(k) == "string" and v == frame then
+			if issecurevariable(parent, k) then
+				return false
+			end
+			insecureRef = true
+		end
+	end
+	if insecureRef then
+		_foreign[frame] = true
+		return true
+	end
+	return false
 end
 
 local BG_ART_KEYS = {
-    "CustomBG", "InfoBackground", "BackgroundTexture", "DungeonBackground",
-    "Background", "background", "Bg", "bg", "WaterMark", "Watermark",
-    "BackgroundOverlay", "Backplate", "CategoriesBG", "BackgroundTile",
-    "TopFiligree", "BottomFiligree", "FilligreeOverlay",
-    "BorderTopLeft", "BorderTopMiddle", "BorderTopRight",
-    "BorderLeftMiddle", "BorderRightMiddle",
-    "BorderBottomLeft", "BorderBottomMiddle", "BorderBottomRight",
+	"CustomBG", "InfoBackground", "BackgroundTexture", "DungeonBackground",
+	"Background", "background", "Bg", "bg", "BG", "WaterMark", "Watermark",
+	"BackgroundOverlay", "Backplate", "CategoriesBG", "BackgroundTile",
+	"TopFiligree", "BottomFiligree", "FilligreeOverlay",
+	"BorderTopLeft", "BorderTopMiddle", "BorderTopRight",
+	"BorderLeftMiddle", "BorderRightMiddle",
+	"BorderBottomLeft", "BorderBottomMiddle", "BorderBottomRight",
+	"TopTileStreaks", "TopLeftCorner", "TopRightCorner", "BotLeftCorner", "BotRightCorner",
+	"TopBorder", "BottomBorder", "LeftBorder", "RightBorder", "BtnCornerLeft", "BtnCornerRight", "ButtonBottomBorder",
 }
 function WSkin.FadeKeyedArt(frame, depth)
-    depth = depth or 0
-    if not frame or depth > 6 or frame:IsForbidden() then return end
-    if WSkin.IsArtExempt(frame) then return end
-    if depth > 0 and WSkin.IsForeignFrame(frame) then return end
-    for _, key in ipairs(BG_ART_KEYS) do
-        local t = frame[key]
-        if t and t.IsObjectType and t:IsObjectType("Texture") then t:SetAlpha(0) end
-    end
-    if not frame.GetChildren then return end
-    local children = { frame:GetChildren() }
-    for i = 1, #children do
-        WSkin.FadeKeyedArt(children[i], depth + 1)
-    end
+	depth = depth or 0
+	if not frame or depth > 6 or Forbidden(frame) then
+		return
+	end
+	if WSkin.IsArtExempt(frame) then
+		return
+	end
+	if depth > 0 and WSkin.IsForeignFrame(frame) then
+		return
+	end
+	local name = frame.GetName and frame:GetName()
+	for _, key in ipairs(BG_ART_KEYS) do
+		local t = frame[key] or (name and _G[name .. key])
+		if type(t) == "table" and t.IsObjectType and t:IsObjectType("Texture") then
+			t:SetAlpha(0)
+		end
+	end
+	if not frame.GetChildren then
+		return
+	end
+	local children = { frame:GetChildren() }
+	for i = 1, #children do
+		WSkin.FadeKeyedArt(children[i], depth + 1)
+	end
 end
 
 local ART_KEYWORDS = {
-    "background", "corner", "parchment", "watermark", "shadow",
-    "divider", "nineslice", "wood", "metal", "modelbackground",
-    "-bg", "bg-", "frametexture", "sheen", "plaque", "tile",
-    "marble", "stone", "filigree",
+	"background", "corner", "parchment", "watermark", "shadow",
+	"divider", "wood", "metal", "modelbackground", "-bg", "bg-", "_bg",
+	"frametexture", "sheen", "plaque", "tile", "marble", "stone", "filigree",
+	"ui-frame", "uiframe", "ui-panel", "border", "paper", "bookbg",
 }
 local function texIsIcon(hay)
-    return hay and (hay:find("interface\\icons", 1, true) or hay:find("interface/icons", 1, true))
+	return hay and (hay:find("interface\\icons", 1, true) or hay:find("interface/icons", 1, true))
 end
 local function texHay(tex)
-    local atlas = tex.GetAtlas and tex:GetAtlas()
-    if atlas and not issecretvalue(atlas) then return atlas:lower() end
-    local file = tex.GetTexture and tex:GetTexture()
-    if type(file) == "string" then return file:lower() end
-    return nil
+	local file = tex.GetTexture and tex:GetTexture()
+	if type(file) == "string" then
+		return file:lower()
+	end
+	return nil
 end
 WSkin.TexHay = texHay
 WSkin.TexIsIcon = texIsIcon
 
--- Alpha decorative art under a frame by keyword, keeping icons and our own
--- textures. Depth-capped; call at skin time or from debounced hooks only.
+-- Alpha decorative art under a frame by texture path keyword, keeping icons
+-- and our own textures. Depth-capped.
 function WSkin.FadeArtIn(frame, depth)
-    depth = depth or 0
-    if not frame or depth > 9 or not frame.GetRegions or frame:IsForbidden() then return end
-    if WSkin.IsArtExempt(frame) then return end
-    if depth > 0 and WSkin.IsForeignFrame(frame) then return end
-    local mybg = FFD[frame] and FFD[frame].bg
-    local regions = { frame:GetRegions() }
-    for i = 1, #regions do
-        local r = regions[i]
-        if r and r ~= mybg and r.IsObjectType and r:IsObjectType("Texture") and (r:GetAlpha() or 0) > 0 then
-            local hay = texHay(r)
-            if hay and not texIsIcon(hay) then
-                for _, kw in ipairs(ART_KEYWORDS) do
-                    if hay:find(kw, 1, true) then r:SetAlpha(0); break end
-                end
-            end
-        end
-    end
-    local children = { frame:GetChildren() }
-    for i = 1, #children do
-        WSkin.FadeArtIn(children[i], depth + 1)
-    end
+	depth = depth or 0
+	if not frame or depth > 9 or not frame.GetRegions or Forbidden(frame) then
+		return
+	end
+	if WSkin.IsArtExempt(frame) then
+		return
+	end
+	if depth > 0 and WSkin.IsForeignFrame(frame) then
+		return
+	end
+	local fd = FFD[frame]
+	local regions = { frame:GetRegions() }
+	for i = 1, #regions do
+		local r = regions[i]
+		if r and r.IsObjectType and r:IsObjectType("Texture") and (r:GetAlpha() or 0) > 0 then
+			local mine = false
+			if fd then
+				for _, key in ipairs(PROTECT_KEYS) do
+					if fd[key] == r then mine = true break end
+				end
+			end
+			if not mine then
+				local hay = texHay(r)
+				if hay and not texIsIcon(hay) and not hay:find("white8x8", 1, true) then
+					for _, kw in ipairs(ART_KEYWORDS) do
+						if hay:find(kw, 1, true) then
+							r:SetAlpha(0)
+							break
+						end
+					end
+				end
+			end
+		end
+	end
+	local children = { frame:GetChildren() }
+	for i = 1, #children do
+		WSkin.FadeArtIn(children[i], depth + 1)
+	end
 end
 
--- Flatten classic 3-slice buttons (Left+Middle+Right) under a frame. Never
--- touches icon buttons. One-time per button; call at skin time.
+-- Flatten 3-slice buttons (UIPanelButtonTemplate etc.) under a frame. Never
+-- touches icon buttons.
+local function IsPanelButton(btn)
+	if not btn.GetObjectType or btn:GetObjectType() ~= "Button" then
+		return false
+	end
+	if btn.Left and btn.Middle and btn.Right then
+		return true
+	end
+	local name = btn.GetName and btn:GetName()
+	if name and _G[name .. "Left"] and _G[name .. "Middle"] and _G[name .. "Right"] and not _G[name .. "Icon"] then
+		return true
+	end
+	-- UIPanelButtonTemplate: its Normal texture is the red button art.
+	local nt = btn.GetNormalTexture and btn:GetNormalTexture()
+	local hay = nt and texHay(nt)
+	return hay and hay:find("ui-panel-button", 1, true) and true or false
+end
+WSkin.IsPanelButton = IsPanelButton
+
 function WSkin.ButtonsIn(frame, depth)
-    depth = depth or 0
-    if not frame or depth > 9 or not frame.GetChildren or frame:IsForbidden() then return end
-    local children = { frame:GetChildren() }
-    for i = 1, #children do
-        local child = children[i]
-        if child and not WSkin.IsForeignFrame(child, frame) then
-            if child.GetObjectType and child:GetObjectType() == "Button"
-               and not GetFFD(child).skinned and not GetFFD(child).x
-               and child.Left and child.Middle and child.Right then
-                WSkin.Button(child)
-            end
-            WSkin.ButtonsIn(child, depth + 1)
-        end
-    end
+	depth = depth or 0
+	if not frame or depth > 9 or not frame.GetChildren or Forbidden(frame) then
+		return
+	end
+	local children = { frame:GetChildren() }
+	for i = 1, #children do
+		local child = children[i]
+		if child and not WSkin.IsForeignFrame(child, frame) then
+			local cd = FFD[child]
+			if not (cd and (cd.skinned or cd.x or cd.block)) and IsPanelButton(child) then
+				WSkin.Button(child)
+			end
+			WSkin.ButtonsIn(child, depth + 1)
+		end
+	end
 end
 
--- Search boxes and filter/sort dropdowns are created with a parentKey and no
--- global name, so they are found by their parent's field name. EditBoxes get
--- the input treatment, everything else the flat dropdown block + house arrow.
+-- Search boxes, edit boxes and UIDropDownMenus under a frame, by parentKey
+-- or by their template art.
 local CONTROL_KEYS = {
-    "SearchBox", "searchBox", "FilterDropdown", "FilterButton",
-    "TypeDropdown", "Dropdown", "ClassDropdown", "WeaponDropdown",
+	"SearchBox", "searchBox", "FilterDropdown", "FilterButton", "TypeDropdown", "Dropdown", "ClassDropdown",
 }
+local function IsDropDown(f)
+	local name = f.GetName and f:GetName()
+	return name and _G[name .. "Button"] and _G[name .. "Text"] and _G[name .. "Middle"] and true or false
+end
+WSkin.IsDropDown = IsDropDown
 function WSkin.ControlsIn(frame, depth)
-    depth = depth or 0
-    if not frame or depth > 9 or not frame.GetChildren or frame:IsForbidden() then return end
-    if depth > 0 and WSkin.IsForeignFrame(frame) then return end
-    for _, key in ipairs(CONTROL_KEYS) do
-        local el = frame[key]
-        if el and el.IsObjectType and el.GetObjectType then
-            if el:IsObjectType("EditBox") then WSkin.EditBox(el) else WSkin.Dropdown(el) end
-        end
-    end
-    local children = { frame:GetChildren() }
-    for i = 1, #children do
-        WSkin.ControlsIn(children[i], depth + 1)
-    end
+	depth = depth or 0
+	if not frame or depth > 9 or not frame.GetChildren or Forbidden(frame) then
+		return
+	end
+	if depth > 0 and WSkin.IsForeignFrame(frame) then
+		return
+	end
+	for _, key in ipairs(CONTROL_KEYS) do
+		local el = frame[key]
+		if el and el.IsObjectType then
+			if el:IsObjectType("EditBox") then
+				WSkin.EditBox(el)
+			elseif IsDropDown(el) then
+				WSkin.Dropdown(el)
+			end
+		end
+	end
+	local children = { frame:GetChildren() }
+	for i = 1, #children do
+		local c = children[i]
+		if c.IsObjectType and c:IsObjectType("EditBox") then
+			local n = c.GetName and c:GetName()
+			if c.Left or (n and _G[n .. "Left"]) then
+				WSkin.EditBox(c)
+			end
+		elseif IsDropDown(c) then
+			WSkin.Dropdown(c)
+		end
+		WSkin.ControlsIn(c, depth + 1)
+	end
 end
 
--- Common chrome for a framed panel: close button, search/filter controls,
--- page nav, scroll bars.
+-- Common chrome for a framed window: close button, search/filter controls,
+-- page nav, scroll bars, a centered title.
 function WSkin.CommonChrome(frame, prefix, explicitControls)
-    if frame.CloseButton then WSkin.CloseButton(frame.CloseButton) end
-    -- Newer templates hang the X off the title bar (or name it ClosePanelButton)
-    -- instead of putting it on the frame -- the loot window is one of them, and
-    -- it kept Blizzard's red X until these two paths were added.
-    if frame.TitleContainer and frame.TitleContainer.CloseButton then
-        WSkin.CloseButton(frame.TitleContainer.CloseButton)
-    end
-    if frame.ClosePanelButton then WSkin.CloseButton(frame.ClosePanelButton) end
-    if prefix then
-        local cb = _G[prefix .. "CloseButton"]
-        if cb then WSkin.CloseButton(cb) end
-    end
-    if not explicitControls then
-        WSkin.ControlsIn(frame)
-        WSkin.PagingIn(frame)
-        WSkin.ScrollBarsIn(frame)
-    end
-    -- Re-center the title: PortraitFrameTemplate anchors it relative to the
-    -- (removed) portrait + close button, so it lands a few px off the frame's
-    -- true center. Center it on the shell top bar instead. One-shot.
-    local d = GetFFD(frame)
-    if not d.titleCentered and d.topBar then
-        local title = (frame.TitleContainer and frame.TitleContainer.TitleText)
-            or frame.TitleText
-            or (prefix and _G[prefix .. "TitleText"])
-        if title and title.ClearAllPoints then
-            d.titleCentered = true
-            title:ClearAllPoints()
-            title:SetPoint("CENTER", d.topBar, "CENTER", 0, 0)
-            if title.SetJustifyH then title:SetJustifyH("CENTER") end
-        end
-    end
+	prefix = prefix or (frame.GetName and frame:GetName())
+	if frame.CloseButton then WSkin.CloseButton(frame.CloseButton) end
+	if prefix then
+		local cb = _G[prefix .. "CloseButton"]
+		if cb then WSkin.CloseButton(cb) end
+	end
+	if not explicitControls then
+		WSkin.ControlsIn(frame)
+		WSkin.PagingIn(frame)
+		WSkin.ScrollBarsIn(frame)
+	end
+	local d = GetFFD(frame)
+	if not d.titleCentered and d.topBar then
+		local title = frame.TitleText or (prefix and (_G[prefix .. "TitleText"] or _G[prefix .. "Title"]))
+		if title and title.ClearAllPoints and title.IsObjectType and title:IsObjectType("FontString") then
+			d.titleCentered = true
+			title:ClearAllPoints()
+			title:SetPoint("CENTER", d.topBar, "CENTER", 0, 0)
+			if title.SetJustifyH then title:SetJustifyH("CENTER") end
+			WSkin.White(title)
+		end
+	end
 end
 
--- One-time re-skin hook on a frame's Show (visual repaint catch-all).
 function WSkin.HookShow(frame, fn)
-    local d = GetFFD(frame)
-    if d.showHook then return end
-    d.showHook = true
-    frame:HookScript("OnShow", fn)
+	local d = GetFFD(frame)
+	if d.showHook then
+		return
+	end
+	d.showHook = true
+	frame:HookScript("OnShow", fn)
 end
 
--- A common-sidetab side tab (the WoW Forever Looking For Group and Progress
--- Legacy windows): the gold frame and glow go, the icon stays. A black copy of
--- the hover art is the idle border; hover (gold) and active (soft white) draw over it.
+-- Side tab (SpellBookSkillLineTab, PetJournal side tabs): gold frame gone,
+-- the icon stays squared with a black edge; checked = accent edge.
 function WSkin.SideTab(tab)
-    if not tab then return end
-    if tab.Background then tab.Background:SetAlpha(0) end
-    if tab.TabGlow then tab.TabGlow:SetAlpha(0) end
-    local st = tab.SelectedTexture
-    if not st then return end
-    local d = GetFFD(tab)
-    if not d.tabBorder then
-        local b = tab:CreateTexture(nil, "OVERLAY", nil, -1)
-        b:SetAtlas("common-sidetab-hover")
-        b:SetAllPoints(st)
-        b:SetVertexColor(0, 0, 0)
-        d.tabBorder = b
-    end
-    st:SetVertexColor(0.90, 0.90, 0.92)
+	if not tab then
+		return
+	end
+	local d = GetFFD(tab)
+	if d.sideTab then
+		return
+	end
+	d.sideTab = true
+	local name = tab.GetName and tab:GetName()
+	local regions = { tab:GetRegions() }
+	-- Guild bank tabs keep the icon in "<name>IconTexture" (their normal
+	-- texture is the quickslot frame); spellbook tabs use the normal texture.
+	local icon = tab.icon or tab.Icon or (name and (_G[name .. "IconTexture"] or _G[name .. "Icon"]))
+	if not (icon and icon.IsObjectType and icon:IsObjectType("Texture")) then
+		icon = tab.GetNormalTexture and tab:GetNormalTexture()
+	end
+	for i = 1, #regions do
+		local r = regions[i]
+		if r ~= icon and r.IsObjectType and r:IsObjectType("Texture") then
+			r:SetAlpha(0)
+		end
+	end
+	if icon then
+		icon:ClearAllPoints()
+		icon:SetPoint("TOPLEFT", 2, -2)
+		icon:SetPoint("BOTTOMRIGHT", -2, 2)
+		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	end
+	local pushed = tab.GetPushedTexture and tab:GetPushedTexture()
+	if pushed then pushed:SetAlpha(0) end
+	local hl = tab.GetHighlightTexture and tab:GetHighlightTexture()
+	if hl then
+		hl:SetTexture(1, 1, 1, 0.15)
+		hl:ClearAllPoints()
+		hl:SetPoint("TOPLEFT", 2, -2)
+		hl:SetPoint("BOTTOMRIGHT", -2, 2)
+	end
+	local ct = tab.GetCheckedTexture and tab:GetCheckedTexture()
+	if ct then ct:SetTexture("") end
+	local host = CreateFrame("Frame", nil, tab)
+	host:SetPoint("TOPLEFT", 1, -1)
+	host:SetPoint("BOTTOMRIGHT", -1, 1)
+	host:SetFrameLevel(tab:GetFrameLevel() + 2)
+	PP.CreateBorder(host, 0, 0, 0, 1, 1, "OVERLAY", 7)
+	d.borderHost = host
+	local function reflect()
+		local on = tab.GetChecked and tab:GetChecked()
+		if on then
+			local r, g, b = WSkin.AccentBarColor()
+			PP.SetBorderColor(host, r, g, b, 1)
+		else
+			PP.SetBorderColor(host, 0, 0, 0, 1)
+		end
+	end
+	d.reflect = reflect
+	if tab.SetChecked then
+		hooksecurefunc(tab, "SetChecked", reflect)
+	end
+	reflect()
 end
 
--- Debounce: collapse many hook fires in one frame into a single pass.
+-- An item / action slot button (ItemButtonTemplate-style): art gone, dark
+-- block, square icon + border. opts.quality: rarity border.
+function WSkin.ItemButton(btn, opts)
+	if not btn or Forbidden(btn) then
+		return
+	end
+	local d = GetFFD(btn)
+	if d.itemSkinned then
+		return
+	end
+	d.itemSkinned = true
+	local name = btn.GetName and btn:GetName()
+	local icon = btn.icon or btn.Icon or (name and (_G[name .. "IconTexture"] or _G[name .. "Icon"]))
+	local nt = btn.GetNormalTexture and btn:GetNormalTexture()
+	if nt then nt:SetAlpha(0) end
+	local pt = btn.GetPushedTexture and btn:GetPushedTexture()
+	if pt then pt:SetTexture(1, 1, 1, 0.15) end
+	local hl = btn.GetHighlightTexture and btn:GetHighlightTexture()
+	if hl then
+		hl:SetTexture(1, 1, 1, 0.12)
+		if icon then hl:SetAllPoints(icon) end
+	end
+	local bg = SolidTex(btn, "BACKGROUND", 0.02, 0.02, 0.02, 0.6, -1)
+	if icon then bg:SetAllPoints(icon) else bg:SetAllPoints(btn) end
+	d.bg = bg
+	if icon then
+		WSkin.SquareIcon(icon, btn, opts and opts.quality)
+	end
+end
+
+-- Debounce: many hook fires in one frame -> one pass.
 function WSkin.Debounce(fn)
-    if registrationWindow then fn = WSkin.WindowCallback(registrationWindow, fn) end
-    local pending = false
-    return function()
-        if pending then return end
-        pending = true
-        if C_Timer then
-            C_Timer.After(0, function() pending = false; fn() end)
-        else
-            pending = false
-            fn()
-        end
-    end
+	if registrationWindow then
+		fn = WSkin.WindowCallback(registrationWindow, fn)
+	end
+	local pending = false
+	return function()
+		if pending then
+			return
+		end
+		pending = true
+		BS.After(0, function()
+			pending = false
+			fn()
+		end)
+	end
 end
 
 -------------------------------------------------------------------------------
---  Per-window boot. Packs register { key, addons = {...}, apply = fn } and the
---  engine applies them when their Blizzard addon loads (or at login for ones
---  already loaded). Gated on the window style ("off" = never runs) and
---  pcall-isolated so one pack can never break another.
+--  Per-window boot. Packs register
+--    { key, label, description, order, addons = { [name] = true }, elvui = "<E.private.skins.blizzard key>", apply = fn }
+--  and the engine applies them when their Blizzard addon loads (or at login
+--  for ones already loaded). Gated on the window style ("off" = never runs),
+--  on ElvUI's own skin for that window, and pcall-isolated.
 -------------------------------------------------------------------------------
 local _windows = {}
+WSkin.windows = _windows
 
-local function WindowOn(winKey)
-    return WSkin.GetStyle(winKey) ~= "off"
+-- Window list for the settings page: one entry per key (first one with a
+-- label wins), sorted by order then label.
+function WSkin.WindowList()
+	local seen, list = {}, {}
+	for _, e in ipairs(_windows) do
+		if e.label and not seen[e.key] then
+			seen[e.key] = true
+			list[#list + 1] = e
+		end
+	end
+	table.sort(list, function(a, b)
+		local oa, ob = a.order or 500, b.order or 500
+		if oa ~= ob then return oa < ob end
+		return a.label < b.label
+	end)
+	return list
+end
+
+-- True when ElvUI skins this window itself (our pack stands down).
+function WSkin.ElvUIOwns(winKey)
+	for _, e in ipairs(_windows) do
+		if e.key == winKey and e.elvui and BS.ElvUISkins(e.elvui) then
+			return true
+		end
+	end
+	return false
+end
+
+local function WindowOn(entry)
+	if WSkin.GetStyle(entry.key) == "off" then
+		return false
+	end
+	if entry.elvui and BS.ElvUISkins(entry.elvui) then
+		return false
+	end
+	return true
 end
 
 local function TryApply(entry)
-    if not WindowOn(entry.key) then return end
-    if not Theme.fontPath then ResolveTheme() end
-    local ok, err = pcall(entry.apply)
-    if not ok and err then
-        -- Surface through the normal error pipeline (respects scriptErrors)
-        -- without stopping the other window packs.
-        geterrorhandler()(err)
-    end
+	if entry.applied or not WindowOn(entry) then
+		return
+	end
+	entry.applied = true
+	ResolveTheme()
+	local previous = registrationWindow
+	registrationWindow = entry.key
+	local ok, err = pcall(entry.apply)
+	registrationWindow = previous
+	if not ok and err then
+		geterrorhandler()(err)
+	end
 end
 
 function WSkin.RegisterWindow(entry)
-    _windows[#_windows + 1] = entry
+	_windows[#_windows + 1] = entry
+	-- A pack registered after login (late file) whose addon is in already.
+	if IsLoggedIn and IsLoggedIn() then
+		local ready = true
+		if entry.addons then
+			for addon in pairs(entry.addons) do
+				if not IsAddOnLoaded(addon) then ready = false break end
+			end
+		end
+		if ready then TryApply(entry) end
+	end
 end
 
 local boot = CreateFrame("Frame")
 boot:RegisterEvent("PLAYER_LOGIN")
 boot:RegisterEvent("ADDON_LOADED")
 boot:SetScript("OnEvent", function(_, event, name)
-    if event == "PLAYER_LOGIN" then
-        ResolveTheme()
-        for _, entry in ipairs(_windows) do
-            -- Immediate windows (no LoD addon) and any LoD addon that is
-            -- already loaded get skinned now.
-            local ready = true
-            if entry.addons then
-                for addon in pairs(entry.addons) do
-                    if not (C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded(addon)) then
-                        ready = false
-                        break
-                    end
-                end
-            end
-            if ready then TryApply(entry) end
-        end
-        WSkin.RefreshStyles()
-    elseif event == "ADDON_LOADED" then
-        for _, entry in ipairs(_windows) do
-            if entry.addons and entry.addons[name] then TryApply(entry) end
-        end
-    end
+	if event == "PLAYER_LOGIN" then
+		ResolveTheme()
+		for _, entry in ipairs(_windows) do
+			local ready = true
+			if entry.addons then
+				for addon in pairs(entry.addons) do
+					if not IsAddOnLoaded(addon) then
+						ready = false
+						break
+					end
+				end
+			end
+			if ready then
+				TryApply(entry)
+			end
+		end
+		WSkin.RefreshStyles()
+	elseif event == "ADDON_LOADED" and IsLoggedIn() then
+		for _, entry in ipairs(_windows) do
+			if entry.addons and entry.addons[name] then
+				local ready = true
+				for addon in pairs(entry.addons) do
+					if not IsAddOnLoaded(addon) then ready = false break end
+				end
+				if ready then
+					TryApply(entry)
+				end
+			end
+		end
+	end
 end)

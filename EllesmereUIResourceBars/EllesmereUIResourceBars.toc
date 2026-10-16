@@ -1,24 +1,18 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Resource Bars
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
-## Notes: Custom Resource Bars with thresholds, hash lines and more.
-## Author: Ellesmere
-## Version: 9.5.5
+## Notes: Custom Resource Bars with thresholds, hash lines and more (EllesmereUI Resource Bars, 5.4.8 port).
+## Author: EllesmereUI port
+## Version: 3.9.0
 ## Dependencies: EllesmereUI
+## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia
 ## SavedVariables: EllesmereUIResourceBarsDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
-
-# Main Luas
-EUI_ResourceBars_HealthIndicators.lua
+# Defaults, saved settings, the Mists resource map, shared helpers
 EllesmereUIResourceBars.lua
-EUI_ResourceBars_EbonMight121.lua
-EUI_ResourceBars_ArcaneSoul.lua
-EUI_ResourceBars_SwingTimer.lua
-EUI_ResourceBars_ForeverDruidMana.lua
-EUI_ResourceBars_CallTotemBar.lua
-EUI_ResourceBars_WarriorCharges.lua
-EUI_ResourceBars_BlizzClassArt.lua
-
-# Options
-EUI_ResourceBars_Helpers.lua
+# Health, power and class resource bars, visibility, Unlock Mode
+EUI_ResourceBars_Bars.lua
+# Player cast bar and GCD bar
+EUI_ResourceBars_CastBar.lua
+# Totem bar
+EUI_ResourceBars_TotemBar.lua
+# Start-up and /erb
+EUI_ResourceBars_Init.lua

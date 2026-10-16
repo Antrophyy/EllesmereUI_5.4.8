@@ -1,1067 +1,419 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
---  EllesmereUIChat_Tabs.lua
+--  EllesmereUIChat_Tabs.lua  (5.4.8 port of EllesmereUIChat_Tabs.lua)
 --
---  Ghost tab visuals over Blizzard's REAL tab strip.
+--  EllesmereUI tabs drawn over Blizzard's tabs. Blizzard's tabs stay the
+--  working buttons (click, drag to undock, tab menu, whisper windows); their
+--  art and label are emptied and a "ghost" (our frame, a child of the tab)
+--  paints the EllesmereUI tab: background color or texture, label, active
+--  underline, border, separator and the whisper alert glow. Being the tab's
+--  child, a ghost follows it everywhere, also into the dock's scroll area.
 --
---  Blizzard's tabs stay fully alive as the interaction plane: every click,
---  drag-reorder, context menu action (rename, font size, new window, close),
---  and the whole temp-whisper lifecycle is a hardware event on a Blizzard
---  frame, so every dock/selection write stays SECURE. This module never
---  selects, closes, creates, renames, or reorders a window from Lua -- an
---  insecure FCFDock_SelectWindow call taints dock.selected/isDirty, and the
---  secure whisper-window creation chain reads those slots (FCF_DockUpdate ->
---  FCFDock_UpdateTabs) and then dies on secret header math in UpdateHeader.
---  Field-measured via taintLog 2; do not reintroduce ANY management call.
---
---  The stock strip is invisible but clickable: GeneralDockManager:SetAlpha(0)
---  -- alpha does not disable mouse input, the slot is written by nothing in
---  Blizzard code (field-proven by the old skin's dock fade), and per-tab
---  alphas (which FCFTab_UpdateAlpha rewrites constantly) multiply against it
---  to zero. ZERO writes of any kind go to the tabs themselves: no texture
---  strips, no text recolors, no anchors, no children, no fields.
---
---  Our pixels live on GHOSTS: mouse-disabled frames anchored TO each tab
---  (anchor-only, the sanctioned shape -- never parented to them). Anchors
---  resolve in the same render pass, so ghosts track Blizzard's layout
---  pixel-for-pixel with no one-frame lag, including mid-drag, and we never
---  measure a tab or a (possibly secret) label. Ghost text is display-only:
---  SetText accepts secrets; the fontstring is edge-anchored so long names
---  ellipsis-truncate instead of being measured.
---
---  Undocked windows and minimized pills keep their stock Blizzard tabs
---  visible and functional (native drag-to-redock, native menus); only the
---  docked strip is ghosted.
+--  Tab width: the label width plus Inner Padding X on each side (General and
+--  Combat Log; whisper tabs keep Blizzard's dock sizes).
 -------------------------------------------------------------------------------
-local _, ns = ...
-local EUI = _G.EllesmereUI
-if not EUI then return end
+local _, P = ...
+local ECHAT = P.ECHAT
+local DB = P.DB
+local FD = P.FD
 
-local ECHAT = ns.ECHAT
-if not ECHAT then return end
+local floor, min, max = math.floor, math.min, math.max
 
-local CFD = EUI._chatCFD
-if not CFD then return end
-
-local issecretvalue = _G.issecretvalue
-
-local function DB()
-    return ECHAT.DB()
-end
-
--- Style page (latched by the module root). Blizzard Style reveals Blizzard's
--- real docked tabs, so the docked ghosts stand down and the float ghosts stay
--- only as invisible motion catchers. Classic keeps the ghosts over the
--- invisible strip and paints them with the vanilla tab sheet at its native
--- 32px height (the strip's clip rect is raised to fit it).
-local function BlizzTabs() return ns.ChatBlizzTabs and ns.ChatBlizzTabs() end
-local function ClassicTabs() return ns.ChatStyle and ns.ChatStyle() == "classic" end
-local CLASSIC_TAB_H    = 32
-local CLASSIC_CLIP_UP  = CLASSIC_TAB_H - 26   -- the dock manager is 26 tall
-local CLASSIC_LABEL_Y  = -5                   -- the sheet's label seat
-local CLASSIC_IDLE_A   = 0.75                 -- an unselected tab's art
--- WoW Forever: ghosts wear the kit's bronze tab (EllesmereUIChat_Forever.lua)
--- at their own height, the strip's clip raised to fit it like Classic's.
-local function FvTabs() return ns.ChatForever and ns.ChatForever() end
-local FV_TAB_H   = 28
-local FV_CLIP_UP = FV_TAB_H - 26
-local FV_LABEL_Y = -2
-local FV_LABEL_Y_HEAVY = -1   -- Border Style Heavy Bronze: the heavy tab's label seat
-
-local function TabHeight()
-    if ClassicTabs() then return CLASSIC_TAB_H end
-    if FvTabs() then return FV_TAB_H end
-    return DB().tabHeight or 24
-end
+-- Blizzard tab -> its ghost (only chat tabs are in here).
+local ghostOf = {}
 
 local function TabFontPath()
-    local cfg = DB()
-    local fontKey = cfg.tabFont or "__global"
-    if fontKey == "__global" then
-        return (EUI.GetFontPath("chat")) or STANDARD_TEXT_FONT
-    end
-    return (EUI.ResolveFontName(fontKey)) or STANDARD_TEXT_FONT
+	return P.ResolveFont(DB().tabFont)
 end
 
--- Outline flag for the tab labels: the chat module's own resolver first (the Chat
--- page's Outline Mode picker overrides the module/global mode, same as the bubbles),
--- then the module font entry, then none.
 local function TabFontFlag()
-    return (ECHAT.GetOutlineFlag and ECHAT.GetOutlineFlag())
-        or (EUI.GetFontOutlineFlag("chat")) or ""
-end
-
--- Resolve a color table honoring the shared custom/accent/class mode keys.
-local function ResolveModeColor(mode, stored, fallback)
-    if mode == "accent" and EUI.GetAccentColor then
-        local r, g, b = EUI.GetAccentColor()
-        return r, g, b, (stored and stored.a) or fallback.a or 1
-    end
-    if mode == "class" then
-        local _, class = UnitClass("player")
-        local c = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
-        if c then return c.r, c.g, c.b, (stored and stored.a) or fallback.a or 1 end
-    end
-    local c = stored or fallback
-    local a = c.a
-    if a == nil then a = fallback.a end
-    if a == nil then a = 1 end
-    return c.r or 1, c.g or 1, c.b or 1, a
-end
-
-local function SelectedWindow()
-    return GENERAL_CHAT_DOCK and FCFDock_GetSelectedWindow
-        and FCFDock_GetSelectedWindow(GENERAL_CHAT_DOCK)
+	return ECHAT.GetOutlineFlag()
 end
 
 -------------------------------------------------------------------------------
---  Strip: a pure visual layer mirroring the dock manager's rect. It hosts the
---  ghosts (clipping them exactly where Blizzard clips scrolled-out tabs),
---  carries the module fade via _ApplyAlpha, and arms the interaction follower
---  through motion-only mouse flags -- clicks pass through to the real tabs.
+--  Ghost
 -------------------------------------------------------------------------------
-local strip = CreateFrame("Frame", nil, UIParent)
-strip:SetFrameStrata("MEDIUM")
--- Level 100, like the old tab hosts: the panel border frame occupies MEDIUM
--- levels 96-98 across this exact band and must never draw over the tabs.
-strip:SetFrameLevel(100)
-strip:SetClipsChildren(true)
-if strip.SetMouseClickEnabled then
-    strip:SetMouseClickEnabled(false)
-    strip:SetMouseMotionEnabled(true)
-    -- A motion-enabled frame still participates in click hit-testing and
-    -- would swallow clicks meant for the (invisible) tabs beneath; propagate
-    -- sends them through. Field-measured: without this, only the sliver of
-    -- tab above the strip's rect was clickable.
-    if strip.SetPropagateMouseClicks then
-        strip:SetPropagateMouseClicks(true)
-    end
-    -- Motion propagates too: the tab under the cursor must keep receiving
-    -- OnEnter/OnLeave (stock tab tooltip). Field-measured: without this the
-    -- tooltip died the moment the cursor crossed into the strip's rect.
-    if strip.SetPropagateMouseMotion then
-        strip:SetPropagateMouseMotion(true)
-    end
-else
-    strip:EnableMouse(false)
-end
-strip:SetScript("OnEnter", function()
-    if ECHAT.FollowArm then ECHAT.FollowArm() end
-    -- The strip sits above the idle-fade peek overlay and captures motion
-    -- over the tab band; hovering the tabs counts as chat interaction.
-    if ECHAT.ResetIdleTimer then ECHAT.ResetIdleTimer() end
-end)
-strip:SetScript("OnLeave", function()
-    if ECHAT.FollowRelease then ECHAT.FollowRelease() end
-end)
-strip:Hide()
-ns._chatTabStrip = strip
-
-local ghosts = {}      -- pooled ghost frames, index = dock display order
-local floatGhosts = {} -- per-window-id ghosts for undocked windows
-
--- LibChatAnims compat (DBM embeds it, among others): the lib REPLACES
--- Blizzard's tab-flash machinery to sidestep the UIFrameFlash shared-registry
--- taint, keeps alert state in its OWN table, and never writes tab.alerting --
--- IsAlerting(tab) is its published accessor for exactly this integration.
--- Lazily fetched: nil until some addon loads the lib (LibStub registry entry
--- is identity-stable across minor upgrades, so caching the ref is safe).
-local lcaLib
-local function TabAlerting(tab)
-    if tab.alerting then return true end
-    -- Retail since 12.1.5 and WoW Forever keep the alert state off the tab,
-    -- so a tainted message filter cannot taint it, and never write
-    -- tab.alerting: ChatFrameUtil.IsTabAlerting is its reader there.
-    local util = ChatFrameUtil
-    if util and util.IsTabAlerting and util.IsTabAlerting(tab) then return true end
-    lcaLib = lcaLib or (LibStub and LibStub("LibChatAnims", true))
-    return lcaLib and lcaLib:IsAlerting(tab) and true or false
-end
-local floatSeen = {}   -- wiped scratch set for the float surplus sweep
-
--- Scroll-region tabs live inside the dock's scroll window: on overflow
--- Blizzard SCROLLS them left and the scroll frame clips them at its left
--- edge (which sits at the last pinned tab's right edge). That region holds
--- EVERY docked tab except the pinned static pair (General, Combat Log) --
--- whisper tabs AND user-created persistent windows alike. Their ghosts must
--- clip at exactly the same edge, or a scrolled-out ghost renders on top of
--- the pinned tabs. This sub-container mirrors the scroll frame's horizontal
--- bounds with the strip's vertical bounds, live-anchored, so ghost clipping
--- tracks Blizzard's -- including partial clips during the scroll animation.
-local dynClip = CreateFrame("Frame", nil, strip)
-dynClip:SetClipsChildren(true)
-dynClip:EnableMouse(false)
-local dynClipAnchored = false
-local function EnsureDynClip()
-    if dynClipAnchored then return true end
-    local dock = _G.GENERAL_CHAT_DOCK
-    local sf = dock and dock.scrollFrame
-    if not sf then return false end
-    dynClip:SetPoint("TOP", strip, "TOP", 0, 0)
-    dynClip:SetPoint("BOTTOM", strip, "BOTTOM", 0, 0)
-    dynClip:SetPoint("LEFT", sf, "LEFT", 0, 0)
-    dynClip:SetPoint("RIGHT", sf, "RIGHT", 0, 0)
-    dynClipAnchored = true
-    return true
+local function Pulse(g, elapsed)
+	g.pulse = (g.pulse or 0) + elapsed
+	local t = (g.pulse % 1) * 2
+	if t > 1 then
+		t = 2 - t
+	end
+	g.glow:SetAlpha(0.25 + 0.5 * t)
 end
 
-local RequestRefresh -- forward declaration
-
--------------------------------------------------------------------------------
---  Ghost pool
--------------------------------------------------------------------------------
-local function BuildGhost()
-    local g = CreateFrame("Frame", nil, strip)
-    g:EnableMouse(false)
-
-    local bg = g:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints()
-    g._bg = bg
-
-    local fs = g:CreateFontString(nil, "OVERLAY")
-    -- Edge-anchored: the label is clamped to the ghost's (= tab's) width and
-    -- ellipsis-truncates. Nothing is ever measured -- widths are Blizzard's,
-    -- and whisper labels can be SECRET values.
-    fs:SetWordWrap(false)
-    fs:SetJustifyH("CENTER")
-    -- A bare fontstring has NO font: SetText before a SetFont is a hard error.
-    fs:SetFont(TabFontPath(), DB().tabFontSize or 11, TabFontFlag())
-    g._fs = fs
-
-    local PP = EUI.PP
-    local onePx = (PP and PP.mult) or 1
-
-    local underline = g:CreateTexture(nil, "OVERLAY", nil, 7)
-    underline:SetHeight(onePx)
-    underline:SetPoint("BOTTOMLEFT", g, "BOTTOMLEFT", 0, 0)
-    underline:SetPoint("BOTTOMRIGHT", g, "BOTTOMRIGHT", 0, 0)
-    underline:Hide()
-    if PP and PP.DisablePixelSnap then PP.DisablePixelSnap(underline) end
-    g._underline = underline
-
-    local sep = g:CreateTexture(nil, "OVERLAY", nil, 7)
-    sep:SetWidth(onePx)
-    sep:SetPoint("TOPLEFT", g, "TOPRIGHT", 0, 0)
-    sep:SetPoint("BOTTOMLEFT", g, "BOTTOMRIGHT", 0, 0)
-    sep:Hide()
-    if PP and PP.DisablePixelSnap then PP.DisablePixelSnap(sep) end
-    g._sep = sep
-
-    local borderHost = CreateFrame("Frame", nil, g)
-    borderHost:SetAllPoints()
-    borderHost:EnableMouse(false)
-    g._borderHost = borderHost
-
-    -- Whisper alert: Blizzard's own art and cadence. Stock breathes the
-    -- tab.glow texture (ChatFrameTab-NewMessage, ADD blend) via
-    -- UIFrameFlash(1s in, 1s out, infinite); this is a copy on OUR texture
-    -- driven by OUR AnimationGroup -- never their region (their flash
-    -- machinery writes it) and never UIFrameFlash (shared registry).
-    local glow = g:CreateTexture(nil, "OVERLAY", nil, 6)
-    glow:SetTexture("Interface\\ChatFrame\\ChatFrameTab-NewMessage")
-    glow:SetBlendMode("ADD")
-    -- Desaturated so StyleGhost's vertex color tints it cleanly to the
-    -- tab's text color instead of multiplying against the orange art.
-    glow:SetDesaturated(true)
-    glow:SetPoint("TOPLEFT", g, "TOPLEFT", 8, -11)
-    glow:SetPoint("BOTTOMRIGHT", g, "BOTTOMRIGHT", -8, 0)
-    glow:Hide()
-    g._glow = glow
-    -- Zero idle cost: the group runs C-side only while flashing; Start/Stop
-    -- are guarded so repeat alerts never restart the animation.
-    local flasher = glow:CreateAnimationGroup()
-    flasher:SetLooping("BOUNCE")
-    local a = flasher:CreateAnimation("Alpha")
-    a:SetFromAlpha(0.25)
-    a:SetToAlpha(0.75)
-    a:SetDuration(0.5)
-    g._flasher = flasher
-
-    function g:StartFlash()
-        if not self._flasher:IsPlaying() then
-            self._glow:Show()
-            self._flasher:Play()
-        end
-    end
-    function g:StopFlash()
-        if self._flasher:IsPlaying() then self._flasher:Stop() end
-        self._glow:Hide()
-    end
-
-    return g
+local function StartFlash(g)
+	if not g.flashing then
+		g.flashing = true
+		g.pulse = 0
+		g.glow:Show()
+		g:SetScript("OnUpdate", Pulse)
+	end
 end
 
-local function AcquireGhost(index)
-    local g = ghosts[index]
-    if g then return g end
-    g = BuildGhost()
-    ghosts[index] = g
-    return g
+local function StopFlash(g)
+	if g.flashing then
+		g.flashing = nil
+		g:SetScript("OnUpdate", nil)
+	end
+	g.glow:Hide()
+end
+
+local function BuildGhost(tab)
+	local g = CreateFrame("Frame", nil, tab)
+	g:EnableMouse(false)
+	g.bg = g:CreateTexture(nil, "BACKGROUND")
+	g.bg:SetAllPoints()
+	g.fs = g:CreateFontString(nil, "OVERLAY")
+	P.SetFont(g.fs, TabFontPath(), DB().tabFontSize or 11, TabFontFlag())
+	g.fs:SetWordWrap(false)
+	g.fs:SetJustifyH("CENTER")
+	-- Measures the label's natural width (the visible label is edge-clamped).
+	g.measure = g:CreateFontString(nil, "OVERLAY")
+	P.SetFont(g.measure, TabFontPath(), DB().tabFontSize or 11, TabFontFlag())
+	g.measure:Hide()
+	g.underline = g:CreateTexture(nil, "OVERLAY", nil, 7)
+	g.underline:SetPoint("BOTTOMLEFT")
+	g.underline:SetPoint("BOTTOMRIGHT")
+	g.underline:Hide()
+	g.sep = g:CreateTexture(nil, "OVERLAY", nil, 7)
+	g.sep:SetPoint("TOPLEFT", g, "TOPRIGHT", 0, 0)
+	g.sep:SetPoint("BOTTOMLEFT", g, "BOTTOMRIGHT", 0, 0)
+	g.sep:Hide()
+	g.edges = P.CreateEdges(g, g, "BORDER", 1)
+	-- Whisper alert: Blizzard's art, tinted with the label color.
+	g.glow = g:CreateTexture(nil, "OVERLAY", nil, 6)
+	g.glow:SetTexture("Interface\\ChatFrame\\ChatFrameTab-NewMessage")
+	g.glow:SetBlendMode("ADD")
+	g.glow:SetDesaturated(true)
+	g.glow:SetPoint("TOPLEFT", g, "TOPLEFT", 8, -11)
+	g.glow:SetPoint("BOTTOMRIGHT", g, "BOTTOMRIGHT", -8, 0)
+	g.glow:Hide()
+	return g
+end
+
+-- Blizzard's tab label (GetRegions does not always return a Button's text
+-- in 5.4.8, so it is hidden by name too, on every refresh).
+local function HideBlizzardLabel(tab)
+	local fs = tab.GetFontString and tab:GetFontString()
+	if fs then
+		fs:SetAlpha(0)
+	end
+	local named = _G[tab:GetName() .. "Text"]
+	if named and named ~= fs then
+		named:SetAlpha(0)
+	end
+end
+
+local function TabLabel(tab)
+	local text = tab.GetText and tab:GetText()
+	if not text or text == "" then
+		local fs = _G[tab:GetName() .. "Text"]
+		text = fs and fs:GetText()
+	end
+	return text or ""
+end
+
+-- Blizzard's tab art and label emptied; the ghost paints instead.
+function ECHAT.SkinTab(cf)
+	local tab = _G[cf:GetName() .. "Tab"]
+	if not tab then
+		return
+	end
+	local td = FD(tab)
+	if td.ghost then
+		return
+	end
+	for _, r in ipairs({ tab:GetRegions() }) do
+		local t = r.GetObjectType and r:GetObjectType()
+		if t == "Texture" then
+			r:SetTexture(nil)
+			r:SetAlpha(0)
+		elseif t == "FontString" then
+			r:SetAlpha(0)
+		end
+	end
+	HideBlizzardLabel(tab)
+	local flash = _G[tab:GetName() .. "Flash"]
+	if flash then
+		P.HideRegionsOf(flash)
+	end
+	td.cf = cf
+	td.ghost = BuildGhost(tab)
+	ghostOf[tab] = td.ghost
+	-- Tab alpha: docked tabs ride the dock's alpha (the chat fade), so they
+	-- stay at 1; undocked tabs take the chat fade directly.
+	hooksecurefunc(tab, "SetAlpha", function(self, a)
+		if td.settingAlpha then
+			return
+		end
+		local want = cf.isDocked and 1 or (P.alphaCur or 1)
+		if a ~= want then
+			td.settingAlpha = true
+			self:SetAlpha(want)
+			td.settingAlpha = false
+		end
+	end)
+	tab:SetAlpha(1)
+	if ECHAT.RequestTabRefresh then
+		ECHAT.RequestTabRefresh()
+	end
 end
 
 -------------------------------------------------------------------------------
---  Undocked tabs: no container sits between them and UIParent, and per-tab
---  FRAME alpha is rewritten constantly by FCFTab_UpdateAlpha -- but nothing
---  in Blizzard code writes the REGIONS' own alpha channel (the frame alpha
---  and SetTextColor ride different slots). One-way region SetAlpha(0) is the
---  same suppression class as the FontStringContainer: C-state only, nothing
---  secure ever reads it, re-asserted by the sweep in case a vertex-color
---  path ever touches an art texture's alpha slot.
+--  Styling
 -------------------------------------------------------------------------------
-local function SuppressTabRegions(tab)
-    local regions = { tab:GetRegions() }
-    for i = 1, #regions do
-        local region = regions[i]
-        -- GetAlpha reads secret on chat-roleset widgets in lockdown; a
-        -- secret skips the compare and re-asserts.
-        local a = region and region.SetAlpha and region:GetAlpha()
-        if a and ((issecretvalue and issecretvalue(a)) or a ~= 0) then
-            region:SetAlpha(0)
-        end
-    end
-end
+local function StyleGhost(g, cf, isActive)
+	local cfg = DB()
+	local fs = g.fs
+	P.SetFont(fs, TabFontPath(), cfg.tabFontSize or 11, TabFontFlag())
 
--- Blizzard Style keeps undocked tabs visible, but they are UIParent children
--- that no chat fade or full hide reaches: while chat is fully hidden their
--- regions are zeroed like the EllesmereUI look's, recording exactly which
--- ones were visible, and those alone come back on reveal. The tab is flagged
--- (CFD) while it holds recorded regions, so the reveal restores it whatever
--- its dock state by then (Blizzard can re-dock a pooled whisper frame while
--- chat is hidden) and skips every tab with nothing recorded.
-local stockTabRegionsOff = setmetatable({}, { __mode = "k" })
-local function StockHideTabRegions(tab)
-    local regions = { tab:GetRegions() }
-    for i = 1, #regions do
-        local region = regions[i]
-        local a = region and region.SetAlpha and region:GetAlpha()
-        if a and not stockTabRegionsOff[region]
-            and ((issecretvalue and issecretvalue(a)) or a ~= 0) then
-            stockTabRegionsOff[region] = true
-            CFD(tab).stockRegionsOff = true
-            region:SetAlpha(0)
-        end
-    end
-end
-local function StockRestoreTabRegions(tab)
-    local d = CFD(tab)
-    if not d.stockRegionsOff then return end
-    d.stockRegionsOff = nil
-    local regions = { tab:GetRegions() }
-    for i = 1, #regions do
-        local region = regions[i]
-        if region and stockTabRegionsOff[region] then
-            stockTabRegionsOff[region] = nil
-            region:SetAlpha(1)
-        end
-    end
-end
+	local tr, tg, tb, ta
+	if cf.isTemporary then
+		-- Whisper tabs keep the whisper color as their marker.
+		local info = ChatTypeInfo[cf.chatType == "BN_WHISPER" and "BN_WHISPER" or "WHISPER"]
+		tr, tg, tb, ta = (info and info.r) or 1, (info and info.g) or 0.5, (info and info.b) or 1, 1
+	elseif isActive then
+		tr, tg, tb, ta = P.ModeColor(cfg.tabFontColorActiveMode or "custom", cfg.tabFontColorActive,
+			{ r = 1, g = 1, b = 1, a = 1 })
+	else
+		tr, tg, tb, ta = P.ModeColor(cfg.tabFontColorMode or "custom", cfg.tabFontColor,
+			{ r = 1, g = 1, b = 1, a = 0.65 })
+	end
+	fs:SetTextColor(tr, tg, tb, ta)
+	g.glow:SetVertexColor(tr, tg, tb)
 
--------------------------------------------------------------------------------
---  Ghost styling: everything the owned strip drew, unchanged, minus any
---  geometry authority.
--------------------------------------------------------------------------------
-local function StyleGhost(g, isActive)
-    local cfg = DB()
-    local state = g.state
-    local fs = g._fs
+	-- Background: color or texture, active / inactive.
+	local br, bgc, bb, ba
+	if isActive then
+		br, bgc, bb, ba = P.ModeColor(cfg.tabBackgroundColorActiveMode or "custom", cfg.tabBackgroundColorActive,
+			{ r = 0.03, g = 0.045, b = 0.05, a = 0.65 })
+	else
+		local c = cfg.tabBackgroundColor or {}
+		br, bgc, bb = c.r or 0.03, c.g or 0.045, c.b or 0.05
+		ba = c.a == nil and 0.44 or c.a
+	end
+	P.PaintFill(g.bg, P.TexturePath(cfg.tabBackgroundTexture), br, bgc, bb, ba)
 
-    fs:SetFont(TabFontPath(), cfg.tabFontSize or 11, TabFontFlag())
-    local tr, tg, tb, ta
-    if state.isTemp then
-        -- Conversation tabs keep the whisper chat color as their marker,
-        -- like the old skin (which left Blizzard's coloring in place).
-        local info = ChatTypeInfo[state.bn and "BN_WHISPER" or "WHISPER"]
-        tr, tg, tb, ta = (info and info.r) or 1, (info and info.g) or 0.5, (info and info.b) or 1, 1
-    elseif isActive then
-        tr, tg, tb, ta = ResolveModeColor(cfg.tabFontColorActiveMode or "custom",
-            cfg.tabFontColorActive, { r = 1, g = 1, b = 1, a = 1 })
-    else
-        tr, tg, tb, ta = ResolveModeColor(cfg.tabFontColorMode or "custom",
-            cfg.tabFontColor, { r = 1, g = 1, b = 1, a = 0.65 })
-    end
-    fs:SetTextColor(tr, tg, tb, ta)
-    -- The alert glow wears the tab's text color (desaturated art + tint).
-    g._glow:SetVertexColor(tr, tg, tb)
+	local px = P.PixelFor(g)
+	-- Active underline.
+	if cfg.activeUnderline ~= false and isActive then
+		local mode = cfg.activeUnderlineColorMode or "accent"
+		if mode == "border" then
+			mode = "custom"
+		end
+		local ur, ug, ub, ua = P.ModeColor(mode, cfg.activeUnderlineColor, { r = 0.05, g = 0.82, b = 0.61, a = 1 })
+		g.underline:SetTexture(ur, ug, ub, ua)
+		g.underline:SetHeight(px)
+		g.underline:Show()
+	else
+		g.underline:Hide()
+	end
 
-    -- Classic WoW UI: the vanilla chat tab sheet, cut the way retail's own
-    -- chat config tabs still cut it (16px caps, a stretched middle), dimmed
-    -- while not selected. Typography stays the user's. Built once per ghost.
-    if ClassicTabs() then
-        if not g._clL then
-            local TEX = "Interface\\ChatFrame\\ChatFrameTab"
-            local L = g:CreateTexture(nil, "BACKGROUND", nil, 1)
-            L:SetTexture(TEX)
-            L:SetTexCoord(0, 0.25, 0, 1)
-            L:SetSize(16, CLASSIC_TAB_H)
-            L:SetPoint("TOPLEFT", g, "TOPLEFT", 0, 0)
-            local R = g:CreateTexture(nil, "BACKGROUND", nil, 1)
-            R:SetTexture(TEX)
-            R:SetTexCoord(0.75, 1, 0, 1)
-            R:SetSize(16, CLASSIC_TAB_H)
-            R:SetPoint("TOPRIGHT", g, "TOPRIGHT", 0, 0)
-            local M = g:CreateTexture(nil, "BACKGROUND", nil, 1)
-            M:SetTexture(TEX)
-            M:SetTexCoord(0.25, 0.75, 0, 1)
-            M:SetPoint("TOPLEFT", L, "TOPRIGHT", 0, 0)
-            M:SetPoint("BOTTOMRIGHT", R, "BOTTOMLEFT", 0, 0)
-            g._clL, g._clM, g._clR = L, M, R
-            g._bg:Hide()
-            g._underline:Hide()
-            g._sep:Hide()
-            g._borderHost:Hide()
-        end
-        local a = isActive and 1 or CLASSIC_IDLE_A
-        g._clL:SetAlpha(a)
-        g._clM:SetAlpha(a)
-        g._clR:SetAlpha(a)
-        return
-    end
+	-- Separator (tabs inside the panel): 1 px in the gap after the tab.
+	local extend = ECHAT.ExtendBgBehindTabs(cfg)
+	if extend and not cfg.hideBorders then
+		g.sep:SetTexture(P.InnerBorderColor(cfg))
+		g.sep:SetWidth(px)
+		g.sep:Show()
+	else
+		g.sep:Hide()
+	end
 
-    -- WoW Forever: the kit's bronze tab, warm while selected. Typography
-    -- stays the user's.
-    if FvTabs() then
-        ECHAT.FV_StyleGhost(g, isActive)
-        return
-    end
-
-    -- Background: color or texture, active/inactive variants.
-    local bgc
-    if isActive then
-        local stored = cfg.tabBackgroundColorActive or { r = .03, g = .045, b = .05, a = .65 }
-        local br, bgc2, bb, ba = ResolveModeColor(cfg.tabBackgroundColorActiveMode or "custom",
-            stored, { r = .03, g = .045, b = .05, a = .65 })
-        bgc = { r = br, g = bgc2, b = bb, a = ba }
-    else
-        local c = cfg.tabBackgroundColor or { r = .03, g = .045, b = .05, a = .44 }
-        bgc = { r = c.r or .03, g = c.g or .045, b = c.b or .05, a = c.a == nil and .44 or c.a }
-    end
-    local texKey = cfg.tabBackgroundTexture or "none"
-    local texPath
-    if texKey ~= "none" then
-        if ECHAT.RefreshBgTextureCatalogue then ECHAT.RefreshBgTextureCatalogue() end
-        if EUI.ResolveTexturePath then
-            texPath = EUI.ResolveTexturePath(ns.chatBgTextures, texKey, nil)
-        else
-            texPath = ns.chatBgTextures and ns.chatBgTextures[texKey]
-        end
-    end
-    if texPath then
-        g._bg:SetTexture(texPath)
-        g._bg:SetVertexColor(bgc.r, bgc.g, bgc.b, bgc.a)
-    else
-        g._bg:SetVertexColor(1, 1, 1, 1)
-        g._bg:SetColorTexture(bgc.r, bgc.g, bgc.b, bgc.a)
-    end
-
-    -- Active underline.
-    local underline = g._underline
-    if cfg.activeUnderline ~= false and isActive then
-        local mode = cfg.activeUnderlineColorMode or "accent"
-        if mode == "border" then mode = "custom" end
-        local ur, ug, ub, ua = ResolveModeColor(mode, cfg.activeUnderlineColor,
-            { r = .05, g = .82, b = .61, a = 1 })
-        underline:SetColorTexture(ur, ug, ub, ua)
-        underline:Show()
-    else
-        underline:Hide()
-    end
-
-    -- Separator (extended mode): the 1px divider in Blizzard's inter-tab gap.
-    local showSep = ECHAT.ExtendBgBehindTabs(cfg) and not cfg.hideBorders
-    if showSep then
-        local r, gg, b, a
-        if cfg.innerBorderColorMode == "accent" and EUI.GetAccentColor then
-            r, gg, b = EUI.GetAccentColor()
-            a = (cfg.innerBorderColor and cfg.innerBorderColor.a) or 0.06
-        else
-            local c = cfg.innerBorderColor or { r = 1, g = 1, b = 1, a = 0.06 }
-            r, gg, b, a = c.r or 1, c.g or 1, c.b or 1, c.a == nil and 0.06 or c.a
-        end
-        g._sep:SetColorTexture(r, gg, b, a)
-        g._sep:Show()
-    else
-        g._sep:Hide()
-    end
-
-    -- Per-tab border (only when tabs are visual islands outside the panel).
-    local host = g._borderHost
-    if EUI.ApplyBorderStyle then
-        local showBorder = not ECHAT.ExtendBgBehindTabs(cfg)
-        local sync = cfg.syncTabBorder ~= false
-        local prefix = sync and "panelBorder" or "tabBorder"
-        local function K(suffix, fallback)
-            local v = cfg[prefix .. suffix]
-            if v == nil then return fallback end
-            return v
-        end
-        local sizes = { none = 0, thin = 1, normal = 2, heavy = 3, strong = 4 }
-        local thicknessKey = K("Thickness", "none")
-        local size = sizes[thicknessKey] or 1
-        local texKey = K("Texture", "solid")
-        -- Exact pixel size under the same prefix as the step (nil = the legacy
-        -- step path); the hidden 0 passed below is a substitute, so no px then.
-        local px = showBorder and EUI.BorderPx(K("ThicknessPx", nil), size, texKey) or nil
-        local br, bgr, bb, ba = ResolveModeColor(K("ColorMode", "custom"),
-            K("Color", nil), { r = 1, g = 1, b = 1, a = K("Opacity", nil)
-                or ((K("ColorMode", "custom") == "custom") and 0.18 or 0.5) })
-        if cfg.activeTabBorder ~= false and isActive and cfg.tabBorderColorActive then
-            local ac = cfg.tabBorderColorActive
-            br, bgr, bb = ac.r or br, ac.g or bgr, ac.b or bb
-            ba = ac.a == nil and ba or ac.a
-        end
-        EUI.ApplyBorderStyle(host, showBorder and size or 0, br, bgr, bb, ba,
-            texKey, K("OffsetX", nil), K("OffsetY", nil),
-            K("ShiftX", nil), K("ShiftY", nil), "chat", thicknessKey, nil, px)
-        host:SetShown(showBorder and size > 0)
-    end
+	-- Own border (tabs outside the panel): the panel's when synced.
+	local prefix = (cfg.syncTabBorder ~= false) and "panelBorder" or "tabBorder"
+	local steps = P.BORDER_STEPS[cfg[prefix .. "Thickness"] or "none"] or 0
+	if extend then
+		steps = 0
+	end
+	local r, gg, b, a = P.PanelBorderColor(cfg, prefix)
+	if cfg.activeTabBorder ~= false and isActive and cfg.tabBorderColorActive then
+		local ac = cfg.tabBorderColorActive
+		r, gg, b = ac.r or r, ac.g or gg, ac.b or b
+		a = ac.a == nil and a or ac.a
+	end
+	P.LayoutEdges(g.edges, steps * px, r, gg, b, a)
 end
 
 -------------------------------------------------------------------------------
---  Float ghost refresh (file-scope, explicit args: no per-refresh closure).
+--  Refresh: place and style every ghost
 -------------------------------------------------------------------------------
-local function RefreshFloatGhost(cf, height, fontPath, fontSize, padX, labelY, seen)
-    local id = cf:GetID()
-    local tab = _G[cf:GetName() .. "Tab"]
-    local d = CFD(cf)
-    if not (tab and d and d.bg) then return end
-    local g = floatGhosts[id]
-    if not g then
-        g = BuildGhost()
-        -- Float ghosts arm the geometry follower themselves -- the
-        -- strip's motion catcher only covers the dock band, and the
-        -- armed follower is what makes this window's panel (and the
-        -- text frame anchored inside it) follow a native tab drag
-        -- per-frame instead of freezing until the next deferred pass.
-        -- Motion-only + full propagation: the tab beneath keeps its
-        -- tooltip, clicks, and the drag itself.
-        if g.SetMouseClickEnabled then
-            g:SetMouseClickEnabled(false)
-            g:SetMouseMotionEnabled(true)
-            if g.SetPropagateMouseClicks then g:SetPropagateMouseClicks(true) end
-            if g.SetPropagateMouseMotion then g:SetPropagateMouseMotion(true) end
-            g:SetScript("OnEnter", function()
-                if ECHAT.FollowArm then ECHAT.FollowArm() end
-                if ECHAT.ResetIdleTimer then ECHAT.ResetIdleTimer() end
-            end)
-            g:SetScript("OnLeave", function()
-                if ECHAT.FollowRelease then ECHAT.FollowRelease() end
-            end)
-        end
-        floatGhosts[id] = g
-    end
-    if g:GetParent() ~= d.bg then g:SetParent(d.bg) end
-    local isTemp = cf.isTemporary and true or false
-    local st = g.state
-    if not st then st = {}; g.state = st end
-    st.cf, st.id, st.isTemp, st.bn = cf, id, isTemp, nil
-    g:ClearAllPoints()
-    g:SetPoint("BOTTOMLEFT", tab, "BOTTOMLEFT", 0, 0)
-    g:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", 0, 0)
-    g:SetHeight(height)
-    if BlizzTabs() then
-        -- Blizzard's own tab is the visible one here: the ghost stays only as
-        -- the invisible motion catcher that keeps the panel following drags.
-        if g:GetAlpha() ~= 0 then g:SetAlpha(0) end
-        g:Show()
-        seen[id] = true
-        return
-    end
-    local fs = g._fs
-    fs:SetFont(fontPath, fontSize, TabFontFlag())
-    fs:ClearAllPoints()
-    fs:SetPoint("LEFT", g, "LEFT", padX, labelY)
-    fs:SetPoint("RIGHT", g, "RIGHT", -padX, labelY)
-    if isTemp then
-        -- Same secret discipline as the docked path.
-        local label = cf.chatTarget
-        st.bn = cf.chatType == "BN_WHISPER"
-        if issecretvalue and issecretvalue(label) then
-            fs:SetText(label)
-        elseif label ~= nil then
-            fs:SetText(label)
-        else
-            fs:SetText("...")
-        end
-    else
-        local name = GetChatWindowInfo(id)
-        fs:SetText(name or ("Window " .. id))
-    end
-    StyleGhost(g, cf:IsShown())
-    g:Show()
-    seen[id] = true
+local function PlaceLabel(g)
+	local padX = DB().tabInnerPaddingX or 12
+	g.fs:ClearAllPoints()
+	g.fs:SetPoint("LEFT", g, "LEFT", padX, 0)
+	g.fs:SetPoint("RIGHT", g, "RIGHT", -padX, 0)
 end
 
--------------------------------------------------------------------------------
---  Strip placement: mirror the dock manager's rect exactly (live anchors).
--------------------------------------------------------------------------------
-local function PositionStrip()
-    local gdm = _G.GeneralDockManager
-    if not gdm then return end
-    strip:ClearAllPoints()
-    -- Classic's full-height tabs (and WoW Forever's) reach above the 26px
-    -- dock: raise the clip.
-    strip:SetPoint("TOPLEFT", gdm, "TOPLEFT", 0,
-        ClassicTabs() and CLASSIC_CLIP_UP or (FvTabs() and FV_CLIP_UP) or 0)
-    strip:SetPoint("BOTTOMRIGHT", gdm, "BOTTOMRIGHT", 0, 0)
-    -- Never re-show over an engaged full hide or passthrough: their
-    -- remember-restores own the reveal.
-    strip:SetShown(not ns._chatStackHidden and not ns._chatPassthrough)
+local function RefreshTab(cf, isActive, leftInset, leftExtend)
+	local tab = _G[cf:GetName() .. "Tab"]
+	local td = tab and FD(tab)
+	local g = td and td.ghost
+	if not g then
+		return
+	end
+	local cfg = DB()
+	local height = P.TabHeight()
+	g:ClearAllPoints()
+	local band = P.band
+	if cf.isDocked and band and band:IsShown() then
+		local onePx = P.PixelFor(g)
+		g:SetPoint("TOP", band, "TOP", 0, -onePx)
+		g:SetPoint("BOTTOM", band, "BOTTOM", 0, 0)
+		g:SetPoint("LEFT", tab, "LEFT", leftExtend or 0, 0)
+		g:SetPoint("RIGHT", tab, "RIGHT", 0, 0)
+	else
+		g:SetPoint("BOTTOMLEFT", tab, "BOTTOMLEFT", leftInset or 0, 0)
+		g:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", 0, 0)
+		g:SetHeight(height)
+	end
+	-- Clicks land on the visible part only.
+	tab:SetHitRectInsets(0, 0, max(0, (tab:GetHeight() or 32) - height), 0)
+	HideBlizzardLabel(tab)
+	g.fs:SetText(TabLabel(tab))
+	PlaceLabel(g)
+	StyleGhost(g, cf, isActive)
+	if isActive then
+		StopFlash(g)
+	elseif tab.alerting then
+		StartFlash(g)
+	else
+		StopFlash(g)
+	end
+	g:Show()
+	if tab.conversationIcon then
+		tab.conversationIcon:SetAlpha(0)
+	end
+	local tabAlpha = cf.isDocked and 1 or (P.alphaCur or 1)
+	if tab:GetAlpha() ~= tabAlpha then
+		tab:SetAlpha(tabAlpha)
+	end
 end
 
--------------------------------------------------------------------------------
---  Refresh: enumerate the dock (reads only), anchor one ghost per docked tab.
---  Geometry is entirely Blizzard's; a ghost follows its tab through every
---  move, resize, drag, and scroll in the same render pass.
--------------------------------------------------------------------------------
 local function RefreshNow()
-    PositionStrip()
-    local cfg = DB()
-    local selected = SelectedWindow()
-    local height = TabHeight()
-    local fontPath = TabFontPath()
-    local fontSize = cfg.tabFontSize or 11
-    local fontFlag = TabFontFlag()
-    local padX = cfg.tabInnerPaddingX or 12
-    local labelY = ClassicTabs() and CLASSIC_LABEL_Y
-        or (FvTabs() and (ns.ChatFvHeavy() and FV_LABEL_Y_HEAVY or FV_LABEL_Y)) or 0
+	if not P.started then
+		return
+	end
+	local cfg = DB()
+	local selected = P.SelectedWindow()
+	local px = P.PixelFor(UIParent)
+	local gap = (cfg.tabSpacing or 1) * px
+	local extend = ECHAT.ExtendBgBehindTabs(cfg)
 
-    -- The chat panel extends left of ChatFrame1 by its inset while Blizzard's
-    -- dock starts at the frame edge; the FIRST ghost (and the strip's clip
-    -- rect) stretch left to the panel edge so the row lines up with the
-    -- panel. Visual-only: the extra pixels have no tab under them. Deferred
-    -- numeric rect reads, the module's shipped-safe class. The stock styles
-    -- draw no panel, so their tabs stay exactly where Blizzard puts them;
-    -- WoW Forever draws one, its first tab standing tabX in from its frame.
-    local leftExtend = 0
-    local fvTabs = FvTabs()
-    if not (ns.ChatStock and ns.ChatStock()) or fvTabs then
-        local cf1 = _G.ChatFrame1
-        local bg1 = cf1 and CFD(cf1).bg
-        local firstCF = GENERAL_CHAT_DOCK and GENERAL_CHAT_DOCK.DOCKED_CHAT_FRAMES
-            and GENERAL_CHAT_DOCK.DOCKED_CHAT_FRAMES[1]
-        local firstTab = firstCF and _G[firstCF:GetName() .. "Tab"]
-        local bgLeft = bg1 and bg1:GetLeft()
-        local tabLeft = firstTab and firstTab:GetLeft()
-        if bgLeft and tabLeft then
-            if fvTabs then bgLeft = bgLeft + ECHAT.FV.tabX end
-            local delta = bgLeft - tabLeft
-            if delta < 0 and delta > -60 then leftExtend = delta end
-        end
-    end
-    if leftExtend ~= 0 then
-        local gdm = _G.GeneralDockManager
-        if gdm then
-            strip:SetPoint("TOPLEFT", gdm, "TOPLEFT", leftExtend, fvTabs and FV_CLIP_UP or 0)
-        end
-    end
+	-- The panel reaches 10 px left of ChatFrame1; the first tab's ghost
+	-- stretches to the panel edge so the row lines up with it.
+	local leftExtend = 0
+	local d1 = FD(ChatFrame1)
+	local dock = GENERAL_CHAT_DOCK
+	local list = dock and dock.DOCKED_CHAT_FRAMES
+	local first = list and list[1]
+	local firstTab = first and _G[first:GetName() .. "Tab"]
+	local bgLeft = d1.bg and d1.bg:GetLeft()
+	local tabLeft = firstTab and firstTab:GetLeft()
+	if bgLeft and tabLeft then
+		local delta = bgLeft - tabLeft
+		if delta < 0 and delta > -60 then
+			leftExtend = delta
+		end
+	end
 
-    -- The dock's scroll child parents every SCROLLING tab (all docked tabs
-    -- except pinned General/Combat Log). Real parentage is the clip
-    -- discriminator below -- read fresh each pass, tabs redock and reorder.
-    local scrollChild
-    do
-        local sf = GENERAL_CHAT_DOCK and GENERAL_CHAT_DOCK.scrollFrame
-        scrollChild = sf and sf.GetScrollChild and sf:GetScrollChild() or nil
-    end
-
-    local dockList = GENERAL_CHAT_DOCK and GENERAL_CHAT_DOCK.DOCKED_CHAT_FRAMES
-    local count = 0
-    local seenScrolling = false
-    local tabGap = (cfg.tabSpacing or 1) * ((EUI.PP and EUI.PP.mult) or 1)
-    -- Blizzard Style shows Blizzard's real docked tabs: no docked ghosts (the
-    -- sweep below hides any left from the pool).
-    if type(dockList) == "table" and not BlizzTabs() then
-        for i = 1, #dockList do
-            local cf = dockList[i]
-            local tab = cf and _G[cf:GetName() .. "Tab"]
-            if tab then
-                count = count + 1
-                local g = AcquireGhost(count)
-                local isTemp = cf.isTemporary and true or false
-                -- State tables are reused across refreshes (no alloc churn).
-                local st = g.state
-                if not st then st = {}; g.state = st end
-                st.cf, st.id, st.isTemp, st.bn = cf, cf:GetID(), isTemp, nil
-
-                -- Ghosts of scroll-region tabs clip at the dock scroll
-                -- window's edges, like their tabs; only the pinned static
-                -- pair's ghosts clip at the strip's. User-created persistent
-                -- windows scroll exactly like whisper tabs, so the
-                -- discriminator is the tab's REAL parent (the scroll
-                -- child), never the temporary flag.
-                local wantParent = strip
-                local isScrolling = scrollChild and tab:GetParent() == scrollChild
-                if isScrolling and EnsureDynClip() then
-                    wantParent = dynClip
-                end
-                if g:GetParent() ~= wantParent then g:SetParent(wantParent) end
-
-                -- FCFDock_UpdateTabs leaves one UI unit between tabs in each
-                -- group, but none before the first scrolling tab. Compensate
-                -- on our visual only; never re-anchor Blizzard's click targets.
-                local nativeGap = isScrolling and not seenScrolling and 0 or 1
-                if isScrolling then seenScrolling = true end
-                local leftInset = count == 1 and leftExtend or 0
-                -- Classic and WoW Forever ghosts span their tab exactly (their
-                -- art carries its own margins), so no spacing compensation there.
-                if count > 1 and not ECHAT.ExtendBgBehindTabs(cfg) and not ClassicTabs() and not FvTabs() then
-                    leftInset = tabGap - nativeGap
-                end
-
-                g:ClearAllPoints()
-                local band = ns._chatBgExt
-                if band and band:IsShown() then
-                    -- Band mode: vertical extent from the band frame ITSELF
-                    -- (horizontal from the tab), with ONE PHYSICAL PIXEL of
-                    -- top slack. The inset chain runs on raw UI units, so at
-                    -- non-1 scales every derived edge sits at its own
-                    -- physical-pixel fraction and per-texture rounding can
-                    -- push a flush-rect fill one row above the band's
-                    -- rendered top (field-isolated to the bg fill; rect
-                    -- sharing alone did not close it). Starting the ghost a
-                    -- pixel inside the band makes poking above impossible
-                    -- at any position or scale; the slack row reads as band
-                    -- background.
-                    local onePx = (EUI.PP and EUI.PP.mult) or 1
-                    g:SetPoint("TOP", band, "TOP", 0, -onePx)
-                    g:SetPoint("BOTTOM", band, "BOTTOM", 0, 0)
-                    g:SetPoint("LEFT", tab, "LEFT", count == 1 and leftExtend or 0, 0)
-                    g:SetPoint("RIGHT", tab, "RIGHT", 0, 0)
-                else
-                    -- Island tabs: bottom-aligned to the tab, our height.
-                    g:SetPoint("BOTTOMLEFT", tab, "BOTTOMLEFT", leftInset, 0)
-                    g:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", 0, 0)
-                    g:SetHeight(height)
-                end
-
-                local fs = g._fs
-                fs:SetFont(fontPath, fontSize, fontFlag)
-                fs:ClearAllPoints()
-                fs:SetPoint("LEFT", g, "LEFT", padX, labelY)
-                fs:SetPoint("RIGHT", g, "RIGHT", -padX, labelY)
-
-                if isTemp then
-                    -- Conversation label: may be a SECRET value. issecretvalue
-                    -- comes FIRST (even a nil-compare on a secret errors);
-                    -- secrets go straight to SetText, the display-only sink.
-                    local label = cf.chatTarget
-                    g.state.bn = cf.chatType == "BN_WHISPER"
-                    if issecretvalue and issecretvalue(label) then
-                        fs:SetText(label)
-                    elseif label ~= nil then
-                        fs:SetText(label)
-                    else
-                        fs:SetText("...")
-                    end
-                else
-                    local name = GetChatWindowInfo(cf:GetID())
-                    fs:SetText(name or ("Window " .. cf:GetID()))
-                end
-
-                local isActive = cf == selected
-                StyleGhost(g, isActive)
-                -- Blizzard's own alert state is authoritative here: their
-                -- handler sets it the moment a flash-worthy message hits a
-                -- hidden window (including the message that CREATES a
-                -- conversation window -- our ghost is born one pass later
-                -- and would miss the observer's flash), and clears it on
-                -- select. Read through TabAlerting, never tab.alerting
-                -- directly: under a LibChatAnims embedder, and on WoW
-                -- Forever, the field stays nil forever, and this mirror then
-                -- STOPPED the flash the observer lane had just started --
-                -- whisper alerts died within one tab pass.
-                if isActive then
-                    g:StopFlash()
-                elseif TabAlerting(tab) then
-                    g:StartFlash()
-                else
-                    g:StopFlash()
-                end
-                g:Show()
-            end
-        end
-    end
-    for i = count + 1, #ghosts do
-        local g = ghosts[i]
-        if g.state then g.state.cf = nil end
-        g:StopFlash()
-        g:Hide()
-    end
-
-    -- Undocked windows: one ghost pinned to each window's (region-suppressed)
-    -- tab, parented to that window's panel so it inherits the panel's shown
-    -- state and fade. The tab itself stays fully live: native drag-to-redock,
-    -- menu, tooltip.
-    table.wipe(floatSeen)
-    for i = 1, 10 do
-        local cf = _G["ChatFrame" .. i]
-        if cf and not cf.isDocked and cf:IsShown() then
-            RefreshFloatGhost(cf, height, fontPath, fontSize, padX, labelY, floatSeen)
-        end
-    end
-    local frames = _G.CHAT_FRAMES
-    if type(frames) == "table" then
-        for i = 11, #frames do
-            local cf = _G[frames[i]]
-            if cf and cf.isTemporary and cf.inUse and not cf.isDocked and cf:IsShown() then
-                RefreshFloatGhost(cf, height, fontPath, fontSize, padX, labelY, floatSeen)
-            end
-        end
-    end
-    for id, g in pairs(floatGhosts) do
-        if not floatSeen[id] then
-            if g.state then g.state.cf = nil end
-            g:StopFlash()
-            g:Hide()
-        end
-    end
+	if type(list) == "table" then
+		for i, cf in ipairs(list) do
+			local inset = 0
+			if i == 1 then
+				inset = leftExtend
+			elseif not extend then
+				inset = gap
+			end
+			RefreshTab(cf, cf == selected, inset, i == 1 and leftExtend or 0)
+		end
+	end
+	-- Undocked windows: their own tab above them, active while shown.
+	P.ForEachChatFrame(function(cf)
+		if not cf.isDocked and cf:IsShown() then
+			RefreshTab(cf, true, 0, 0)
+		end
+	end)
 end
-
-local refreshQueued = false
-RequestRefresh = function()
-    if refreshQueued then return end
-    refreshQueued = true
-    C_Timer.After(0, function()
-        refreshQueued = false
-        RefreshNow()
-    end)
-end
-ECHAT.TabsRefresh = RequestRefresh
 ECHAT.TabsRefreshNow = RefreshNow
 
--------------------------------------------------------------------------------
---  Adopt Blizzard's strip: invisible but fully clickable. One container-alpha
---  write; per-tab alphas multiply against it so FCFTab_UpdateAlpha can keep
---  writing whatever it likes. The overflow button and its list pop back to
---  full visibility (stock look) via ignoreParentAlpha -- without it they
---  would be invisible click targets.
---
---  Passthrough / full hide: invisible tabs must not eat world clicks, so the
---  exact set (each docked tab + the overflow button) gets click-disabled
---  while either mode is engaged; the sweep re-asserts on late joiners.
--------------------------------------------------------------------------------
-local function SetTabClickable(tab, on)
-    if not tab.SetMouseClickEnabled then return end
-    -- Temporary whisper tabs are PROTECTED in lockdown; a refused write is
-    -- left for a later sweep (the tracker records only what actually
-    -- landed, so the next TabsSweepBlizzard still sees the drift).
-    if InCombatLockdown() then
-        if not pcall(tab.SetMouseClickEnabled, tab, on) then return end
-    else
-        tab:SetMouseClickEnabled(on)
-    end
-    if CFD then CFD(tab).clickOff = (not on) or nil end
+local queued = false
+local function RequestRefresh()
+	if queued then
+		return
+	end
+	queued = true
+	P.After(0, function()
+		queued = false
+		RefreshNow()
+	end)
 end
+ECHAT.RequestTabRefresh = RequestRefresh
+ECHAT.TabsRefresh = RequestRefresh
 
-function ECHAT.TabsSweepBlizzard()
-    local gdm = _G.GeneralDockManager
-    local blizzTabs = BlizzTabs()
-    if gdm then
-        -- Full hide owns the dock's shown state (SetChatStackShown hides it
-        -- with a remember); the sweep only heals a wrongly-hidden dock when
-        -- no full hide is engaged.
-        if not gdm:IsShown() and not ns._chatStackHidden then
-            -- Ancestor Show with a protected docked whisper tab is blocked
-            -- in lockdown; a refused heal retries on the next sweep.
-            if InCombatLockdown() then pcall(gdm.Show, gdm) else gdm:Show() end
-        end
-    end
-    -- Blizzard Style: the real strip is the visible one; the module fade
-    -- drives its dock alpha (_ApplyAlpha), and the overflow button inherits
-    -- it like stock, so the invisible-strip asserts below do not apply.
-    if gdm and not blizzTabs then
-        -- GetAlpha can return a secret number mid-combat in a raid (same
-        -- class as the cursor-position guards elsewhere in this file); a
-        -- secret result can't be safely compared for the ~= 0 skip-optimization,
-        -- so just re-assert 0 unconditionally in that case.
-        local gdmAlpha = gdm:GetAlpha()
-        if issecretvalue and issecretvalue(gdmAlpha) then
-            gdm:SetAlpha(0)
-        elseif gdmAlpha ~= 0 then
-            gdm:SetAlpha(0)
-        end
-        local ob = gdm.overflowButton
-        if ob then
-            if ob.SetIgnoreParentAlpha and not ob:IsIgnoringParentAlpha() then
-                ob:SetIgnoreParentAlpha(true)
-            end
-            local list = ob.list
-            if list and list.SetIgnoreParentAlpha and not list:IsIgnoringParentAlpha() then
-                list:SetIgnoreParentAlpha(true)
-            end
-        end
-    end
+-- Width: label + Inner Padding X each side (Blizzard's static tab resize).
+hooksecurefunc("PanelTemplates_TabResize", function(tab, padding, absoluteSize)
+	if absoluteSize or not P.started or not tab then
+		return
+	end
+	local g = ghostOf[tab]
+	if not g then
+		return
+	end
+	local cfg = DB()
+	P.SetFont(g.measure, TabFontPath(), cfg.tabFontSize or 11, TabFontFlag())
+	g.measure:SetText(TabLabel(tab))
+	local w = (g.measure:GetStringWidth() or 30) + 2 * (cfg.tabInnerPaddingX or 12)
+	-- Tab Spacing is cut from the left of every tab after the first: add it
+	-- here so the label keeps its room.
+	local list = GENERAL_CHAT_DOCK and GENERAL_CHAT_DOCK.DOCKED_CHAT_FRAMES
+	local first = list and list[1]
+	local isFirst = first and _G[first:GetName() .. "Tab"] == tab
+	if not isFirst and not ECHAT.ExtendBgBehindTabs(cfg) then
+		w = w + (cfg.tabSpacing or 1) * P.PixelFor(UIParent)
+	end
+	-- A little slack: string widths round down.
+	tab:SetWidth(max(24, math.ceil(w) + 2))
+end)
 
-    -- Click-state for the interaction plane, exact set, both directions.
-    local wantOff = (ns._chatPassthrough or ns._chatStackHidden) and true or false
-    local dockList = GENERAL_CHAT_DOCK and GENERAL_CHAT_DOCK.DOCKED_CHAT_FRAMES
-    if type(dockList) == "table" then
-        for i = 1, #dockList do
-            local cf = dockList[i]
-            local tab = cf and _G[cf:GetName() .. "Tab"]
-            if tab then
-                local isOff = CFD(tab).clickOff and true or false
-                if isOff ~= wantOff then SetTabClickable(tab, not wantOff) end
-            end
-        end
-    end
-    if gdm and gdm.overflowButton then
-        local ob = gdm.overflowButton
-        local isOff = CFD(ob).clickOff and true or false
-        if isOff ~= wantOff then SetTabClickable(ob, not wantOff) end
-    end
-
-    -- Undocked windows: suppress their tabs' region pixels (ghosts paint
-    -- instead; re-asserted every sweep in case a vertex-color path touches
-    -- an art texture's alpha slot) and mirror the passthrough click-state.
-    for i = 1, 20 do
-        local cf = _G["ChatFrame" .. i]
-        local tab = cf and _G["ChatFrame" .. i .. "Tab"]
-        if tab then
-            -- Blizzard Style reveal: any tab still holding zeroed regions,
-            -- docked or not (see StockHideTabRegions).
-            if blizzTabs and not wantOff then StockRestoreTabRegions(tab) end
-            if not cf.isDocked then
-                if not blizzTabs then
-                    SuppressTabRegions(tab)
-                elseif wantOff and tab:IsShown() then
-                    StockHideTabRegions(tab)
-                end
-                local isOff = CFD(tab).clickOff and true or false
-                if isOff ~= wantOff then SetTabClickable(tab, not wantOff) end
-            end
-        end
-    end
-    -- Blizzard Style: the quick-button bar keeps its stock parent (the
-    -- visible combat log tab), exactly as Blizzard draws it.
-    if blizzTabs then return end
-
-    -- Combat log quick-button bar: Blizzard parents it to ChatFrame2Tab at
-    -- its OnLoad purely for tab-alpha inheritance; under the alpha-0 dock it
-    -- would inherit invisibility. Re-home it onto ChatFrame2 itself -- the
-    -- frame its anchors already target -- keeping the tree fully
-    -- Blizzard-owned (its secure Show/Hide and progress-bar writes never
-    -- cross an insecure parent). Position is stock; it rides the chat fade
-    -- via cf2's alpha and the frame's own dock show/hide. Idempotent;
-    -- self-heals if the combat log addon loads (and re-parents) after a
-    -- sweep.
-    local qb = _G.CombatLogQuickButtonFrame_Custom
-    local cf2 = _G.ChatFrame2
-    if qb and cf2 and qb:GetParent() ~= cf2 then
-        qb:SetParent(cf2)
-    end
+-------------------------------------------------------------------------------
+--  Options entry points (same names as retail)
+-------------------------------------------------------------------------------
+function ECHAT.ApplyTabAppearance()
+	RequestRefresh()
 end
+ECHAT.ApplyTabBorders = ECHAT.ApplyTabAppearance
+ECHAT.ApplyTabSeparators = ECHAT.ApplyTabAppearance
+ECHAT.ApplyTabSpacing = ECHAT.ApplyTabAppearance
 
--------------------------------------------------------------------------------
---  Flash: driven by the engine tail. Suppression semantics come free -- a
---  message suppressed by Blizzard's handler never reaches AddMessage, so it
---  never reaches this observer. New conversation tabs appear via the same
---  observer (their first message queues a refresh).
--------------------------------------------------------------------------------
--- Whisper types only, matching Blizzard's FlashTabIfNotShown: the flashTab /
--- flashTabOnGeneral flags gate it AND the type must be a whisper.
-local FLASH_TYPES = {
-    WHISPER = true, BN_WHISPER = true,
-    WHISPER_INFORM = false, BN_WHISPER_INFORM = false,
-}
-
-local function GhostFor(cf)
-    for i = 1, #ghosts do
-        local g = ghosts[i]
-        if g.state and g.state.cf == cf then return g end
-    end
-    for _, g in pairs(floatGhosts) do
-        if g.state and g.state.cf == cf then return g end
-    end
-    return nil
-end
-
-local function OnTabMessage(cf, event)
-    -- Blizzard Style: Blizzard's own tabs flash natively and docked windows
-    -- have no ghost at all; only a shown undocked window still wants its
-    -- (invisible, motion-catching) float ghost.
-    if BlizzTabs() then
-        if not cf.isDocked and cf:IsShown() and not GhostFor(cf) then RequestRefresh() end
-        return
-    end
-    -- A message for a window with no ghost yet (fresh temp frame, or a dock
-    -- change we have not seen) re-enumerates on the next tick. Hidden
-    -- undocked windows are excluded: they get no ghost until shown, and
-    -- re-queueing per message would churn.
-    if not GhostFor(cf) and (cf.isDocked or cf:IsShown()) then
-        RequestRefresh()
-    end
-    if not event then return end
-    local chatType = strsub(event, 10)
-    if not FLASH_TYPES[chatType] then return end
-    local selected = SelectedWindow()
-    if cf == selected or not cf.isDocked then return end
-    local info = ChatTypeInfo[chatType]
-    if not info then return end
-    if cf == _G.DEFAULT_CHAT_FRAME then
-        if not info.flashTabOnGeneral then return end
-        -- Popout modes carry the alert on the conversation tab; Blizzard
-        -- suppresses the general-tab flash there too.
-        if GetCVar("whisperMode") ~= "inline" then return end
-    elseif not info.flashTab then
-        return
-    end
-    -- A conversation window CREATED by this message has no ghost yet; the
-    -- queued refresh above builds it and the alert mirror (TabAlerting) in
-    -- the refresh starts its flash.
-    local g = GhostFor(cf)
-    if g and g:IsShown() then g:StartFlash() end
-end
-
--------------------------------------------------------------------------------
---  Passthrough (full hide): our visuals hide; the invisible interaction plane
---  is click-disabled by the sweep (called by the module's passthrough flow).
--------------------------------------------------------------------------------
-function ECHAT.TabsSetPassthrough(on)
-    if on then
-        if strip:IsShown() then
-            ns._stripWasShown = true
-            strip:Hide()
-        end
-    else
-        if ns._stripWasShown then
-            ns._stripWasShown = nil
-            strip:Show()
-        end
-    end
-    ECHAT.TabsSweepBlizzard()
-end
-
--------------------------------------------------------------------------------
---  Options-contract exports: same names the options page (and the module's
---  own appliers) call. All styling-only now -- geometry belongs to Blizzard.
--------------------------------------------------------------------------------
-function ECHAT.ApplyTabAppearance() RequestRefresh() end
-function ECHAT.ApplyTabBorders() RequestRefresh() end
-function ECHAT.ApplyTabSeparators() RequestRefresh() end
-function ECHAT.ApplyTabSpacing() RequestRefresh() end
-
+-- Fonts, height or padding changed: Blizzard re-measures the tabs.
 function ECHAT.ApplyTabLayout()
-    PositionStrip()
-    RequestRefresh()
+	if not P.started then
+		return
+	end
+	if GENERAL_CHAT_DOCK and FCFDock_UpdateTabs then
+		FCFDock_UpdateTabs(GENERAL_CHAT_DOCK, true)
+	end
+	P.ForEachChatFrame(function(cf)
+		local tab = _G[cf:GetName() .. "Tab"]
+		if tab and not cf.isDocked and FD(tab).ghost then
+			PanelTemplates_TabResize(tab, tab.sizePadding or 0)
+		end
+	end)
+	RequestRefresh()
 end
 
 function ECHAT.ApplyTabPadding()
-    PositionStrip()
-    if ECHAT.ApplyExtendedBackground then ECHAT.ApplyExtendedBackground() end
-    if ECHAT.ApplySidebarIcons then ECHAT.ApplySidebarIcons() end
-    RequestRefresh()
+	ECHAT.ApplyExtendedBackground()
+	ECHAT.ApplySidebarIcons()
+	RequestRefresh()
 end
 
 -------------------------------------------------------------------------------
---  Init: wired by the module root once panels exist (TabsInit), then kept
---  fresh by the module's existing deferred passes (QueueTabPass/QueueFullPass
---  call TabsRefresh + TabsSweepBlizzard).
+--  Blizzard tab events: selection, dock changes, alerts, renames
 -------------------------------------------------------------------------------
-function ECHAT.TabsInit()
-    if ECHAT.EngineSetTabObserver then
-        ECHAT.EngineSetTabObserver(OnTabMessage)
-    end
-    ECHAT.TabsSweepBlizzard()
-    RefreshNow()
+for _, fn in ipairs({ "FCFDock_UpdateTabs", "FCFTab_UpdateColors", "FCF_StartAlertFlash", "FCF_StopAlertFlash",
+	"FCF_DockFrame", "FCF_UnDockFrame", "FCF_SetWindowName", "FCF_Close", "FCF_SetTabPosition" }) do
+	if _G[fn] then
+		hooksecurefunc(fn, RequestRefresh)
+	end
 end

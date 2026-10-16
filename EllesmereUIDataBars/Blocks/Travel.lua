@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIDataBars_Compat.lua
 -- Blocks\Travel.lua
 -- Travel block factory (hearthstones and M+ teleports).
 
@@ -56,11 +56,17 @@ local HEARTHSTONE_IDS = {
 -- when owned. Each has its OWN cooldown, separate from the shared hearthstone
 -- one -- why Astral Recall is here, not the pool above, despite also returning
 -- to the bind point. Spell IDs: Dalaran 222695, Arcantina 1255801, Garrison 171253.
+-- 5.4.8 port: the travel spells and bag items of Mists of Pandaria instead of
+-- the retail toys (spells and items alike; the kind probe below tells them apart).
 local TRAVEL_EXTRAS = {
-    140192,  -- Dalaran Hearthstone
-    253629,  -- Key to the Arcantina
-    110560,  -- Garrison Hearthstone
-    556,     -- Astral Recall (a spell, hence the per-entry kind probe below)
+    556,     -- Astral Recall (Shaman)
+    126892,  -- Zen Pilgrimage (Monk)
+    50977,   -- Death Gate (Death Knight)
+    18960,   -- Teleport: Moonglade (Druid)
+    87215,   -- Wormhole Generator: Pandaria
+    48933,   -- Wormhole Generator: Northrend
+    58487,   -- Potion of Deepholm
+    32757,   -- Blessed Medallion of Karabor
 }
 
 -- Hearthstones share one cooldown, so polling a single owned one suffices.
@@ -184,8 +190,11 @@ ns.BlockFactories.travel = function(blockCfg, slot, content, barCtx)
     -- registered in Enable (RegisterInstEvents cannot unit-filter): every
     -- hearth start IS a player cast, and BAG_UPDATE_COOLDOWN measured
     -- idle-chatty (~0.7 Hz ambient with nothing cooling).
+    -- 5.4.8 port: HEARTHSTONE_BOUND may not exist on this client (unknown
+    -- events are skipped by RegisterInstEvents), so a new bind location also
+    -- shows after the next zone change.
     inst.events = { "HEARTHSTONE_BOUND", "PLAYER_ENTERING_WORLD",
-        "BAG_UPDATE_DELAYED", "SPELLS_CHANGED" }
+        "BAG_UPDATE_DELAYED", "SPELLS_CHANGED", "ZONE_CHANGED_NEW_AREA" }
 
     local _trvFitBuf1 = { "" }
     local _trvFitBuf2 = { "" }
@@ -258,6 +267,22 @@ ns.BlockFactories.travel = function(blockCfg, slot, content, barCtx)
         for _, entryId in ipairs(TRAVEL_EXTRAS) do
             local isToy   = PlayerHasToy(entryId)
             local isSpell = not isToy and IsPlayerSpell(entryId)
+            -- 5.4.8 port: a travel item in the bags is used like a toy, by
+            -- a static "/use item:ID" macro row.
+            local isItem  = not isToy and not isSpell
+                and C_Item and C_Item.GetItemCount and (C_Item.GetItemCount(entryId) or 0) > 0
+            if isItem then
+                local entryName = C_Item.GetItemInfo(entryId)
+                if entryName then
+                    local tcd, tKnown = TravelGetRemainingCooldown(entryId, false)
+                    local tstr = tKnown and (ns.FormatCooldown(tcd) or L["READY"]) or "-"
+                    if tKnown and tcd <= 0 then
+                        ns.Tip_AddMacroActionDouble(entryName, tstr, "/use item:" .. entryId, 1, 1, 1, 0, 1, 0)
+                    else
+                        ns.Tip_AddDouble(entryName, tstr, 0.65, 0.65, 0.65, 0.5, 0.5, 0.5)
+                    end
+                end
+            end
             if isToy or isSpell then
                 local entryName
                 if isSpell then

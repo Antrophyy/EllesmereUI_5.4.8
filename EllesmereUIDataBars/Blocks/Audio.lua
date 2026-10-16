@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIDataBars_Compat.lua
 -- Blocks\Audio.lua
 -- Audio volume block factory.
 
@@ -33,9 +33,9 @@ local AUDIO_CHANNELS = {
     sfx      = { cvar = "Sound_SFXVolume",      enable = "Sound_EnableSFX",      label = "AUDIO_SFX" },
     music    = { cvar = "Sound_MusicVolume",    enable = "Sound_EnableMusic",    label = "AUDIO_MUSIC" },
     ambience = { cvar = "Sound_AmbienceVolume", enable = "Sound_EnableAmbience", label = "AUDIO_AMBIENCE" },
-    dialog   = { cvar = "Sound_DialogVolume",   enable = "Sound_EnableDialog",   label = "AUDIO_DIALOG" },
 }
-local AUDIO_CHANNEL_ORDER = { "master", "sfx", "music", "ambience", "dialog" }
+-- 5.4.8 port: no Dialog channel (it arrived in Legion).
+local AUDIO_CHANNEL_ORDER = { "master", "sfx", "music", "ambience" }
 ns.AUDIO_CHANNELS = AUDIO_CHANNELS
 ns.AUDIO_CHANNEL_ORDER = AUDIO_CHANNEL_ORDER
 
@@ -67,8 +67,14 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
     -- outside a drag), so callers never repaint on their own. Plain SetCVar, not
     -- EllesmereUI.SetCVar: this is the player's own volume (and mute), which
     -- Uninstall EUI leaves as it is.
+    -- 5.4.8 port: SetCVar from addon code fires no CVAR_UPDATE, so the writer
+    -- repaints (the bar, and the tip outside a drag) itself.
+    local function Repaint()
+        if not inst._dead and inst.Refresh then inst:Refresh() end
+    end
     local function SetChanVol(ch, v)
         SetCVar(ch.cvar, Clamp(v, 0, 1))
+        Repaint()
     end
     local function SetVol(v) SetChanVol(Chan(), v) end
 
@@ -81,7 +87,7 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
 
     -- Volume bar: flat fill + dark track, same visual recipe as the profession skill bars.
     local volTrack = audioButton:CreateTexture(nil, "BACKGROUND")
-    volTrack:SetColorTexture(0.15, 0.15, 0.15, 0.6)
+    volTrack:SetTexture(0.15, 0.15, 0.15, 0.6)
     local volBar = CreateFrame("StatusBar", nil, audioButton)
     volBar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
     volBar:SetMinMaxValues(0, 1)
@@ -122,6 +128,7 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
     -- Mute flips repaint through the same synchronous CVAR_UPDATE path as volume writes.
     local function ToggleMute(ch)
         SetCVar(ch.enable, GetCVarBool(ch.enable) and 0 or 1)
+        Repaint()
     end
 
     -- Left-click off the bar (icon) toggles mute for the block's channel; the bar's hit frame keeps drag-to-set.
@@ -258,9 +265,11 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
     end
 
     inst.eventFrame = MakeEventFrame(inst, function(self, event, cvar)
-        -- Only sound CVar flips (ours or Blizzard's own panel) repaint.
+        -- 5.4.8 port: CVAR_UPDATE names the option ("MASTER_VOLUME",
+        -- "ENABLE_SOUND", ...), not the CVar, so any sound-ish name repaints.
         if event == "CVAR_UPDATE" and type(cvar) == "string"
-           and not cvar:find("^Sound_") then
+           and not (cvar:find("^Sound_") or cvar:find("SOUND") or cvar:find("VOLUME")
+                    or cvar:find("MUSIC") or cvar:find("AMBIENCE")) then
             return
         end
         self:Refresh()

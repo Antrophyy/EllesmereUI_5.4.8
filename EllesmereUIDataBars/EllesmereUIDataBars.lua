@@ -1,5 +1,15 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIDataBars_Compat.lua
 -- EllesmereUIDataBars: user-created multi-bar engine.
+--
+-- 5.4.8 PORT (EllesmereUI 9.3.8 DataBars): the retail engine, kept as close as
+-- the client allows. The retail APIs it calls come from
+-- EllesmereUIDataBars_Compat.lua (private environment, see setfenv above).
+-- Port changes: media are TGA files in this addon's media folder (the micro
+-- menu art too); the Great Vault, Crests and Supplies blocks are left out
+-- (nothing like them in 5.4.8); the first login seeds the retail "Naowh"
+-- profile; Unlock Mode registers one MoP mover per bar; the options page is
+-- EllesmereUIOptions\EUI_DataBars_Options.lua (reaches this ns through
+-- EllesmereUI.EDB).
 --
 -- ENGINE FILE. Owns DB + fresh profile shape (bars array, monotonic never-reused
 -- ids); shared infra (fonts, formatters, heartbeat, OOC deferral, frame pool, popup
@@ -47,22 +57,21 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --   ns.MakePreviewBackdrop(host, themeCfg, showBorder)
 --   ns.BLOCK_TYPES / ns.BLOCK_DEFAULTS / ns.EDB_VIS_CAPS / ns.EDGE_PAD
 --
---  The calls that run the other way (options file -> runtime). Both are
---  defined from the options PLAYER_LOGIN handler, hence the nil guard at
---  their call sites:
+--  The one call that runs the other way (options file -> runtime): a block
+--  whose empty state invites a click can send the player to the control that
+--  fills it in. Defined from the options PLAYER_LOGIN handler, hence the nil
+--  guard at its call site:
 --
 --   ns.OpenBlockSettings(barId, blockId, settingKey)
---       a block whose empty state invites a click sends the player to the
---       control that fills it in: deep-links to the
---       "block:<blockId>:<settingKey>" click target the options page
---       registers for that row (see _edbClickTargets).
---   ns.OnBarLaidOut(barId)
---       called at the end of every layout pass of a bar: the options page's
---       preview strip re-solves from the block measurements that pass settled.
+--       deep-links to the "block:<blockId>:<settingKey>" click target the
+--       options page registers for that row (see _edbClickTargets).
 
 local ADDON_NAME, ns = ...
 if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
+-- 5.4.8 port: the options page (outside this environment) reads ns here
+-- (the write goes through the proxy to the core table).
+EllesmereUI.EDB = ns
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
 local WB = EllesmereUI.Lite.NewAddon("EllesmereUIDataBars")
@@ -100,6 +109,7 @@ local L = {
     SPENT                = "Spent",
     PROFIT               = "Profit",
     DEFICIT              = "Deficit",
+    WARBANK              = "Warbank",
     TOTAL                = "Total",
     WOW_TOKEN            = "WoW Token",
     OPEN_BAGS            = "Open Bags",
@@ -113,7 +123,7 @@ local L = {
     HEARTHSTONE          = "Hearthstone",
     READY                = "Ready",
     ON_COOLDOWN          = "On Cooldown",
-    MYTHIC_TELEPORTS     = "Mythic+ Teleports",
+    MYTHIC_TELEPORTS     = "Challenge Mode Teleports",
     USE_HEARTHSTONE      = "Use Hearthstone",
     RANDOM_HEARTHSTONE   = "Random Hearthstone",
     CURRENT_SPEC         = "Current Specialization",
@@ -189,10 +199,10 @@ local PP = EllesmereUI.PP
 
 local MEDIA = "Interface\\AddOns\\EllesmereUIDataBars\\media\\"
 ns.MEDIA = MEDIA
--- The suite's shared micro menu art (EllesmereUI\media\micromenu\), also used by
--- Quickdraw: the micro menu, bags, gold, location, item level, stats and Great
--- Vault icons.
-ns.MICROMENU_MEDIA = "Interface\\AddOns\\EllesmereUI\\media\\micromenu\\"
+-- The suite's shared micro menu art (retail EllesmereUI\media\micromenu\): the
+-- micro menu, bags, gold, location and item level icons. 5.4.8 port: the TGA
+-- copies live in this addon (media\micromenu\).
+ns.MICROMENU_MEDIA = MEDIA .. "micromenu\\"
 
 -------------------------------------------------------------------------------
 --  Defaults (fresh profile shape; the old single-bar keys are abandoned)
@@ -224,9 +234,7 @@ ns.BLOCK_TYPES = {
     { key = "travel",     label = "Travel Cooldowns" },
     { key = "micromenu",  label = "Micro Menu" },
     { key = "currency",   label = "Currency" },
-    { key = "crests",     label = "Crests" },
     { key = "ilvl",       label = "Item Level" },
-    { key = "greatvault", label = "Great Vault" },
     { key = "audio",      label = "Audio" },
     { key = "ldb",        label = "Broker Plugin" },
     { key = "spacer",     label = "Spacer" },
@@ -250,17 +258,12 @@ ns.BLOCK_DEFAULTS = {
     profession = {},
     profession2 = {},
     travel     = { randomizeHs = true },
+    -- 5.4.8 port: the separate Talents button of the 5.4.8 micro menu (talent).
     micromenu  = { disableBlizzardMicroMenu = false, hideSocialText = false, mainMenuSpacing = 4, iconSpacing = 2,
-                   menu = true, guild = true, social = true, char = true, spell = true, ach = true, quest = true, lfg = true,
+                   menu = true, guild = true, social = true, char = true, spell = true, talent = true, ach = true, quest = true, lfg = true,
                    pvp = true, housing = true, journal = true, pet = true, shop = true, help = true },
     currency   = { currencyId = nil, showIcon = true, showDescription = true },
-    -- t1..t5 are TIER slots, not currency ids: a season swap replaces the ids
-    -- in Blocks\Shared.lua (CRESTS) and the player's checklist selection still applies.
-    crests     = { t1 = true, t2 = true, t3 = true, t4 = true, t5 = true,
-                   showIcons = true, separator = "slash", showSeasonProgress = false,
-                   hideEmpty = false, reverse = false },
     ilvl       = { prefix = "short", value = "equipped", precision = 0 },
-    greatvault = {},
     audio      = { channel = "master" },
     -- Broker plugin: one block type for every LibDataBroker data source, picked
     -- by name (source). stripColors defaults ON -- broker text arrives full of
@@ -274,22 +277,41 @@ ns.BLOCK_DEFAULTS = {
 -- Factories are registered by Blocks\*.lua.
 ns.BlockFactories = {}
 
--- WoW Forever has no Great Vault, no season crests and one spec per class with
--- nothing to switch: those blocks leave the picker (BLOCK_TYPES), the add path
--- refuses them (no default, so the Bottom Info Bar template skips its spec
--- block) and their Blocks\*.lua files return before registering a factory, so
--- a bar saved with one shows an empty slot there instead of erroring.
-if EllesmereUI.IS_FOREVER then
-    local FOREVER_OFF = { greatvault = true, crests = true, spec = true }
-    table.insert(ns.BLOCK_TYPES, #ns.BLOCK_TYPES, { key = "supplies", label = "Class Resources" })
-    ns.BLOCK_DEFAULTS.supplies = { showIcon = true }
-    for i = #ns.BLOCK_TYPES, 1, -1 do
-        if FOREVER_OFF[ns.BLOCK_TYPES[i].key] then table.remove(ns.BLOCK_TYPES, i) end
-    end
-    for key in pairs(FOREVER_OFF) do ns.BLOCK_DEFAULTS[key] = nil end
-end
+-- 5.4.8 port: no Great Vault, season crests or WoW Forever class resources in
+-- Mists of Pandaria, so those block types do not exist here (a bar imported
+-- with one shows an empty slot, like retail on the other client).
 
 local DeepCopy = EllesmereUI.Lite.DeepCopy
+
+-------------------------------------------------------------------------------
+--  First login: the retail EllesmereUI "Naowh" profile
+--  (EllesmereUIDB.profiles.Naowh.addons.EllesmereUIDataBars on the retail
+--  client): one Micro Menu Strip bar with the micro menu and durability.
+-------------------------------------------------------------------------------
+local NAOWH_SEED = {
+    selectedBarId = 8,
+    nextBarId = 8,
+    bars = {
+        {
+            id = 8, name = "Micro Menu Strip", orientation = "H", sizingMode = "auto",
+            lengthMode = "custom", length = 530, thickness = 32, fontScale = 100,
+            visibility = "always", fillBlockId = 1, nextBlockId = 2,
+            savedPos = { point = "CENTER", relPoint = "CENTER", x = -1014.0000000298, y = -703.00019341707 },
+            theme = { style = "modern", euiAlpha = 0.5, modernColor = { r = 0, g = 0, b = 0, a = 0.4 } },
+            blocks = {
+                { id = 1, type = "micromenu", align = "CENTER", xOff = 0, yOff = 0, scale = 120, textYOff = 8,
+                  settings = { disableBlizzardMicroMenu = false, hideSocialText = false, mainMenuSpacing = 4,
+                               iconSpacing = 5.9999996870756, menu = true, guild = false, social = false,
+                               char = true, spell = true, talent = true, ach = true, quest = true, lfg = true,
+                               pvp = true, housing = true, journal = true, pet = true, shop = true, help = true,
+                               socialTooltip = true, charStatsTooltip = true } },
+                { id = 2, type = "durability", align = "CENTER", xOff = 0, yOff = 0, scale = 120,
+                  contentGapL = 4, contentGapR = 8, settings = { showIcon = true } },
+            },
+        },
+    },
+}
+ns.NAOWH_SEED = NAOWH_SEED
 
 -------------------------------------------------------------------------------
 --  Profile access
@@ -339,6 +361,9 @@ function ns.SetFont(fs, size, barCfg)
         EllesmereUI.PrimeFontShadow(fs, useShadow and true or false)
     end
     fs:SetFont(path, sz, flags)
+    -- 5.4.8: a font file the client cannot read leaves the FontString without
+    -- a font (SetText would then error).
+    if not fs:GetFont() then fs:SetFont("Fonts\\ARIALN.TTF", sz, flags) end
 end
 
 function ns.GetAccent()
@@ -373,9 +398,9 @@ end
 --  Money / time formatting (pure)
 -------------------------------------------------------------------------------
 local DENOMINATIONS = {
-    { divisor = 10000, symbol = GOLD_AMOUNT_SYMBOL,   color = "|cffe2ac7a" },  -- E2AC7A (user-set; do not "restore" to ffd700)
-    { divisor = 100,   symbol = SILVER_AMOUNT_SYMBOL, color = "|cffc7c7cf" },
-    { divisor = 1,     symbol = COPPER_AMOUNT_SYMBOL, color = "|cffed8a3f" },  -- copper-orange
+    { divisor = 10000, symbol = GOLD_AMOUNT_SYMBOL or "g", color = "|cffe2ac7a" },  -- E2AC7A (user-set; do not "restore" to ffd700)
+    { divisor = 100,   symbol = SILVER_AMOUNT_SYMBOL or "s", color = "|cffc7c7cf" },
+    { divisor = 1,     symbol = COPPER_AMOUNT_SYMBOL or "c", color = "|cffed8a3f" },  -- copper-orange
 }
 
 -- Coin textures, one per denomination. ":0:0:2:0" is Blizzard's own
@@ -611,7 +636,7 @@ do
         local popup = CreateFrame("Frame", nil, UIParent)
         local bg = popup:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
-        bg:SetColorTexture(0.067, 0.067, 0.067, 0.97)
+        bg:SetTexture(0.067, 0.067, 0.067, 0.97)
         if PP and PP.CreateBorder then
             PP.CreateBorder(popup, 0, 0, 0, 0.9, 1, "OVERLAY", 7)
         end
@@ -787,7 +812,7 @@ do
         tip:Hide()
         local bg = tip:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
-        bg:SetColorTexture(0.067, 0.067, 0.067, 0.97)
+        bg:SetTexture(0.067, 0.067, 0.067, 0.97)
         if PP and PP.CreateBorder then
             PP.CreateBorder(tip, 0, 0, 0, 0.9, 1, "OVERLAY", 7)
         end
@@ -884,7 +909,7 @@ do
     local function AddRowHighlight(b)
         local hl = b:CreateTexture(nil, "HIGHLIGHT")
         hl:SetAllPoints()
-        hl:SetColorTexture(1, 1, 1, 0.10)
+        hl:SetTexture(1, 1, 1, 0.10)
     end
 
     local function AcquireActionButton()
@@ -1745,13 +1770,13 @@ local BASE_U, BASE_V = BASE_R - BASE_L, BASE_B - BASE_T
 local function EnsureThemeTextures(host)
     if host._edbBgAtlas then return end
     local bgAtlas = host:CreateTexture(nil, "BACKGROUND", nil, -8)
-    bgAtlas:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\modern_blizz.png")
+    bgAtlas:SetTexture(MEDIA .. "modern_blizz.tga")   -- 5.4.8 port: TGA copy of the EllesmereUI art
     bgAtlas:SetAllPoints(host)
     local bgOverlay = host:CreateTexture(nil, "BACKGROUND", nil, -7)
-    bgOverlay:SetColorTexture(0, 0, 0, 0.5)
+    bgOverlay:SetTexture(0, 0, 0, 0.5)
     bgOverlay:SetAllPoints(host)
     local modernBg = host:CreateTexture(nil, "BACKGROUND", nil, -7)
-    modernBg:SetColorTexture(0.067, 0.067, 0.067, 0.95)
+    modernBg:SetTexture(0.067, 0.067, 0.067, 0.95)
     modernBg:SetAllPoints(host)
     -- Bar Texture layer: replaces the flat/art background when picked,
     -- tinted by the style's color+opacity knobs.
@@ -1806,7 +1831,7 @@ local function ApplyThemeToHost(host, theme, texKey, showBorder)
             host._edbModernBg:SetAlpha(0)
         else
             host._edbBarTex:SetAlpha(0)
-            host._edbModernBg:SetColorTexture(c.r or 0.067, c.g or 0.067, c.b or 0.067, c.a or 0.95)
+            host._edbModernBg:SetTexture(c.r or 0.067, c.g or 0.067, c.b or 0.067, c.a or 0.95)
             host._edbModernBg:SetAlpha(1)
         end
         op = c.a
@@ -1819,7 +1844,7 @@ local function ApplyThemeToHost(host, theme, texKey, showBorder)
         if op == nil then op = 1 end
         host._edbBarTex:SetAlpha(0)
         host._edbBgAtlas:SetAlpha(op)
-        host._edbBgOverlay:SetColorTexture(0, 0, 0, theme.euiAlpha or 0.5)
+        host._edbBgOverlay:SetTexture(0, 0, 0, theme.euiAlpha or 0.5)
         host._edbBgOverlay:SetAlpha(op)
         host._edbModernBg:SetAlpha(0)
     end
@@ -2000,7 +2025,7 @@ local function ApplyBlockDecor(slot, blockCfg, barCfg)
             slot._edbBg:SetAllPoints(slot)
         end
         local c = blockCfg.bg
-        slot._edbBg:SetColorTexture(c.r or 0, c.g or 0, c.b or 0, c.a or 0.5)
+        slot._edbBg:SetTexture(c.r or 0, c.g or 0, c.b or 0, c.a or 0.5)
         slot._edbBg:Show()
     elseif slot._edbBg then
         slot._edbBg:Hide()
@@ -2012,7 +2037,7 @@ local function ApplyBlockDecor(slot, blockCfg, barCfg)
         if not slot._edbHover then
             slot._edbHover = slot:CreateTexture(nil, "OVERLAY", nil, 6)
             slot._edbHover:SetAllPoints(slot)
-            slot._edbHover:SetColorTexture(1, 1, 1, 0.04)
+            slot._edbHover:SetTexture(1, 1, 1, 0.04)
             slot._edbHover:Hide()
         end
         if slot.EnableMouseMotion then slot:EnableMouseMotion(true) end
@@ -2178,9 +2203,6 @@ ApplyLayout = function(id)
             end
         end
     end
-    -- The options page's preview strip solves from these measurements.
-    local onLaidOut = ns.OnBarLaidOut
-    if onLaidOut then onLaidOut(id) end
 end
 
 --- "Never" is this module's only disable channel, so every gate that asks it has to ask
@@ -2472,7 +2494,7 @@ function ns.SetBlockEditHighlight(barId, blockId)
     if not slot._edbEditHL then
         local t = slot:CreateTexture(nil, "OVERLAY", nil, 6)
         t:SetAllPoints(slot)
-        t:SetColorTexture(1, 1, 1, 0.15)
+        t:SetTexture(1, 1, 1, 0.15)
         slot._edbEditHL = t
     end
     slot._edbEditHL:Show()
@@ -2492,6 +2514,8 @@ do
         "ZONE_CHANGED_NEW_AREA", "UPDATE_SHAPESHIFT_FORM",
         "PLAYER_ENTERING_WORLD", "PLAYER_UPDATE_RESTING",
         "UNIT_ENTERED_VEHICLE", "UNIT_EXITED_VEHICLE",
+        -- 5.4.8: mounting fires COMPANION_UPDATE (no mount display event).
+        "COMPANION_UPDATE",
     }
 
     -- Legacy scalar evaluation for the modes the multi engine declines.
@@ -2576,7 +2600,8 @@ do
                 visFrame = CreateFrame("Frame")
                 visFrame:SetScript("OnEvent", OnVisEvent)
             end
-            for _, e in ipairs(VIS_EVENTS) do visFrame:RegisterEvent(e) end
+            -- 5.4.8: events the client does not know (gliding) would error.
+            for _, e in ipairs(VIS_EVENTS) do pcall(visFrame.RegisterEvent, visFrame, e) end
             if EllesmereUI._hasGlidingEvent then
                 visFrame:RegisterEvent("PLAYER_IS_GLIDING_CHANGED")
             end
@@ -2705,6 +2730,20 @@ local function MakeBarElement(barId, orderIdx)
         -- the old horizontal center every login/resize). Delegates to
         -- applyPosition instead; mover, save/load, anchors are unaffected.
         noInitHook = true,
+        -- 5.4.8 port (MoP Unlock Mode): live label, and the edge snap rides
+        -- the snapshot so Exit without saving restores it.
+        labelFn = function()
+            local c = cfgOf()
+            return (c and c.name) or label
+        end,
+        getSnapEdge = function()
+            local c = cfgOf()
+            return c and c.snapEdge
+        end,
+        setSnapEdge = function(v)
+            local c = cfgOf()
+            if c then c.snapEdge = v end
+        end,
         getFrame = function()
             local rec = live[barId]
             local cfg = cfgOf()
@@ -3186,8 +3225,30 @@ end
 -------------------------------------------------------------------------------
 function WB:OnInitialize()
     self.db = EllesmereUI.Lite.NewDB("EllesmereUIDataBarsDB", defaults)
-    -- Cross-character gold ledger is account data (EllesmereUIDB.goldLedger,
-    -- EllesmereUI.GetGoldLedger()), not profile -- a profile-scoped copy would leak every
+    -- 5.4.8 port: the first login starts from the retail "Naowh" bars.
+    if self.db._isNew then
+        local p = self.db.profile
+        for k, v in pairs(NAOWH_SEED) do p[k] = DeepCopy(v) end
+        p.seeded = "Naowh"
+    end
+    -- 5.4.8 port: settings changes (fonts, accent), resets and UI scale
+    -- changes re-apply every bar, once per frame at most (slider drags).
+    EllesmereUI.applyHooks = EllesmereUI.applyHooks or {}
+    local applyQueued = false
+    local function QueueApplyAll()
+        if applyQueued then return end
+        applyQueued = true
+        C_Timer.After(0, function()
+            applyQueued = false
+            if ns.WipeFitCache then ns.WipeFitCache() end
+            for _, cfg in ipairs(ns.BarsInOrder()) do ns.ReflowBlocks(cfg.id); ns.ApplyBar(cfg.id) end
+        end)
+    end
+    ns.QueueApplyAll = QueueApplyAll
+    tinsert(EllesmereUI.applyHooks, QueueApplyAll)
+    if ns.accentCallbacks then tinsert(ns.accentCallbacks, QueueApplyAll) end
+    -- Cross-character gold ledger is account data (EllesmereUIDB.dataBarsGold,
+    -- GoldStore), not profile -- a profile-scoped copy would leak every
     -- character's name/realm/balance into export strings. Drop any old
     -- profile copy (don't migrate): on an imported profile it holds the
     -- exporter's characters, and the account store refills from play anyway.
@@ -3250,6 +3311,22 @@ end
 
 _G._EDB_RegisterUnlock = function()
     ns.RegisterAllUnlockElements()
+end
+
+-------------------------------------------------------------------------------
+--  Slash command  /edb  opens EllesmereUI to the DataBars page (retail
+--  defines it in the options file; 5.4.8 port: here, since the options
+--  addon loads on demand).
+-------------------------------------------------------------------------------
+SLASH_ELLESMEREDATABARS1 = "/edb"
+SlashCmdList.ELLESMEREDATABARS = function()
+    if InCombatLockdown() then
+        print("Cannot open options in combat")
+        return
+    end
+    if EllesmereUI.LoadOptions and EllesmereUI.LoadOptions() and EllesmereUI.OpenSettingsModule then
+        EllesmereUI.OpenSettingsModule("dataBars")
+    end
 end
 
 -------------------------------------------------------------------------------

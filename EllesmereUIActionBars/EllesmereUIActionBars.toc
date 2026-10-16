@@ -1,33 +1,23 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Action Bars
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
-## Notes: Modern action bars built for performance and clarity.
-## Author: Ellesmere
-## Version: 9.5.5
+## Notes: Modern action bars built for performance and clarity (EllesmereUI Action Bars, 5.4.8 port).
+## Author: EllesmereUI port
+## Version: 3.5.0
 ## Dependencies: EllesmereUI
+## OptionalDeps: ElvUI
 ## SavedVariables: EllesmereUIActionBarsDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
-# Main Luas
+# Bar list, defaults, saved settings, shared helpers
 EllesmereUIActionBars.lua
+# Button look: square art, borders, textures, text, cooldown numbers, glows
 EUI_ActionBars_ButtonArt.lua
-EUI_ActionBars_Range.lua
-EUI_ActionBars_Apply.lua
-EUI_ActionBars_Glows.lua
-EUI_ActionBars_Pushed.lua
-EUI_ActionBars_Visibility.lua
-EUI_ActionBars_Events.lua
-EUI_ActionBars_Chrome.lua
+# Buttons: action / stance / pet buttons, their updates and key bindings
+EUI_ActionBars_Buttons.lua
+# Bars: frames, layout, paging, visibility, fades, Blizzard bars, movers
+EUI_ActionBars_Bars.lua
+# XP and Reputation bars
 EUI_ActionBars_DataBars.lua
-EUI_ActionBars_ExtraBars.lua
+# Quick Keybind Mode (/kb)
 EUI_ActionBars_QuickKeybind.lua
-EUI_ActionBars_XPBar.lua
-EUI_ActionBars_Flyout.lua
 
-# Options
-
-# Note: Bindings.xml (custom Bar9/Bar10 keybind commands) is intentionally NOT
-# listed here -- WoW auto-loads a file named Bindings.xml from the addon root.
-# Listing it would load it a second time through the UI-XML parser ("Unrecognized
-# XML: Binding").
+# Bindings.xml (Action Bar 9 / 10 key bindings) is loaded by the game on its own.

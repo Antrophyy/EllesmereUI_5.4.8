@@ -1,1556 +1,1015 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
--------------------------------------------------------------------------------
---  EllesmereUIDamageMeters_SpellHistory.lua
---  Standalone spell history tracker.  Two independent display modes:
---    - Icon strip: horizontal/vertical row of spell icons (grows configurable)
---    - Bar window: standalone window matching DM bar styling
---  Zero overhead when both features are disabled (no events registered).
--------------------------------------------------------------------------------
-local _, ns = ...
-local EUI = EllesmereUI
+-- Spell History (EllesmereUI "Spell History", made for the 5.4.8 client).
+-- Two displays share one history of the player's casts:
+--   Icon History: a strip of recent spell icons.
+--   Bar History:  a window with one bar per cast (icon, name, cast time, target).
+-- Cast detection follows TrufiGCD (works on 5.4.8): casts are added at START,
+-- instants at SUCCEEDED, channels at CHANNEL_START or their first SUCCEEDED.
 
--------------------------------------------------------------------------------
---  Constants
--------------------------------------------------------------------------------
-local MAX_HISTORY       = 80
-local BAR_TEX           = "Interface\\Buttons\\WHITE8X8"
-local ICON_POOL_SIZE    = 40
-local BAR_POOL_SIZE     = 40
+local addonName = ...
+local ns = EllesmereUI
 
--- Interrupted/failed bar color (hardcoded)
-local CLR_STOPPED       = { 0.859, 0.255, 0.255 }  -- #DB4141
-
-local OUTCOME_TEXT = {
-    failed      = "|cffdb4141Failed|r",
-    interrupted = "|cffdb4141Interrupted|r",
-}
-
--------------------------------------------------------------------------------
---  DB defaults
--------------------------------------------------------------------------------
-local SH_DEFAULTS = {
-    iconEnabled     = false,
-    barEnabled      = false,
-    growDirection   = "LEFT",
-    iconSize        = 36,
-    iconZoom        = 0.08,
-    iconFadeTime    = 0,
-    iconSpacing     = 1,
-    iconCount       = 5,
-    iconOpacity     = 1,
-    iconAnimation   = "none",  -- none, slide, fly
-    maxBars         = 5,
-    hideTopBar      = false,
-    barWidth        = 300,
-    barLocked       = false,
-    barPos          = nil,
-    iconPos         = nil,
-    barColorUseClass  = false,
-    barColorUseAccent = false,
-    barColor        = { r = 0.298, g = 0.565, b = 0.494 },  -- #4C907E
-    barOpacity      = 1,
-    spellHistoryBarTexture = "match",
-    textSize        = 11,
-    textColorUseAccent = false,
-    textColor       = { r = 1, g = 1, b = 1 },
-    shBarHeight     = 20,
-    bgR = 0, bgG = 0, bgB = 0, bgAlpha = 0.25,
-    iconHideInDungeon    = false,
-    iconHideInRaid       = false,
-    iconHideInDelve      = false,
-    iconHideInPvP        = false,
-    iconHideOutOfInstance = false,
-    barHideInDungeon     = false,
-    barHideInRaid        = false,
-    barHideInDelve       = false,
-    barHideInPvP         = false,
-    barHideOutOfInstance = false,
-}
-
--------------------------------------------------------------------------------
---  Shared history buffer (newest at index 1)
--------------------------------------------------------------------------------
-local _history = {}
-local _pendingCasts = {}
-
--------------------------------------------------------------------------------
---  Helpers
--------------------------------------------------------------------------------
-local floor, format, min, max = math.floor, string.format, math.min, math.max
 local GetTime = GetTime
+local GetSpellInfo = GetSpellInfo
+local UnitCastingInfo = UnitCastingInfo
+local UnitChannelInfo = UnitChannelInfo
+local floor, min, max = math.floor, math.min, math.max
+local tinsert, tremove = table.insert, table.remove
+local format = format
 
--- Spell info cache: spellID -> { name, iconID } (never changes for a given ID)
-local _spellInfoCache = {}
-
--- Cached DB accessor; defaults are merged once at init, not per-call
-local _shDB
-local function DB()
-    if _shDB then return _shDB end
-    local d = ns.EDM.DB()
-    if not d.spellHistory then d.spellHistory = {} end
-    local sh = d.spellHistory
-    for k, v in pairs(SH_DEFAULTS) do
-        if sh[k] == nil then sh[k] = v end
-    end
-    _shDB = sh
-    return sh
-end
-
-local function SetFont(fs, size) EllesmereUI.ApplyModuleFont(fs, nil, size, "damageMeters") end
-
--- Icon size is a coordinate value like the window width and icon spacing, so it
--- keeps its proportion at any UI scale; only snapped onto the pixel grid.
-local function SnapSize(val)
-    local PP = EUI and EUI.PP
-    if PP and PP.Snap then return PP.Snap(val or 0) end
-    return val or 0
-end
-
-local function GetBarTexturePath()
-    local dmCfg = ns.EDM.DB()
-    local sh = DB()
-    local key = sh.spellHistoryBarTexture
-    if not key or key == "match" then
-        key = (dmCfg and dmCfg.barTexture) or "none"
-    end
-    local texTable = _G._EDM_BarTextures
-    if texTable then return EUI.ResolveTexturePath(texTable, key, BAR_TEX) end
-    return BAR_TEX
-end
-
-local function GetAccentRGB()
-    local EG = EUI.ELLESMERE_GREEN
-    if EG then return EG.r, EG.g, EG.b end
-    return EUI.DEFAULT_ACCENT_R or 12/255, EUI.DEFAULT_ACCENT_G or 210/255, EUI.DEFAULT_ACCENT_B or 157/255
-end
-
-local function OutcomeColor(status)
-    if status == "failed" or status == "interrupted" then
-        return CLR_STOPPED[1], CLR_STOPPED[2], CLR_STOPPED[3]
-    end
-    local sh = DB()
-    if sh.barColorUseClass then
-        local _, classFile = UnitClass("player")
-        local cc = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile] and EUI.GetClassColor(classFile)
-        if cc then return cc.r, cc.g, cc.b end
-    end
-    if sh.barColorUseAccent then return GetAccentRGB() end
-    local c = sh.barColor
-    return c and c.r or 0.298, c and c.g or 0.565, c and c.b or 0.494
-end
-
--- Resolve spell override (base -> active override) for correct name/icon
-local function ResolveOverride(sid)
-    if C_Spell and C_Spell.GetOverrideSpell then
-        local ov = C_Spell.GetOverrideSpell(sid)
-        if ov and ov ~= 0 and ov ~= sid then return ov end
-    end
-    if FindSpellOverrideByID then
-        local ov = FindSpellOverrideByID(sid)
-        if ov and ov ~= 0 and ov ~= sid then return ov end
-    end
-    return sid
-end
-
-local function FormatCastTime(entry)
-    if entry.isInstant then return "" end
-    local status = entry.status
-    -- Active cast: show elapsed time counting up
-    if status == "casting" or status == "channeling" then
-        local elapsed = GetTime() - entry.startTime
-        if elapsed > 0 then return format("%.1f", elapsed) end
-        return ""
-    end
-    -- Completed/failed: show total duration
-    if entry.castDuration and entry.castDuration > 0 then return format("%.1fs", entry.castDuration) end
-    return ""
-end
-
--- Build right-side text without allocating a temp table each time
-local function BuildRightText(entry)
-    local castStr = FormatCastTime(entry)
-    local outcomeStr = OUTCOME_TEXT[entry.status]
-    -- Outcome (Interrupted/Failed) replaces target; otherwise show target.
-    -- Enemy names in M+ are secret values but FontStrings can display them.
-    local target = entry.target
-    local isSecret = target and issecretvalue and issecretvalue(target)
-    local hasTarget = target and (isSecret or target ~= "")
-    -- Strip realm suffix for non-secret names (secret values pass through to FontString as-is)
-    if hasTarget and not isSecret and not outcomeStr and Ambiguate then
-        target = Ambiguate(target, "short")
-    end
-    local rightPart = outcomeStr or (hasTarget and target) or nil
-    local result
-    if castStr ~= "" and rightPart then
-        result = castStr .. "  " .. rightPart
-    elseif castStr ~= "" then
-        result = castStr
-    elseif rightPart then
-        result = rightPart
-    else
-        result = ""
-    end
-    return result
-end
-
--------------------------------------------------------------------------------
---  Forward declarations (defined after UI code)
--------------------------------------------------------------------------------
-local RefreshBarWindow
-local BuildIconStrip
-local StartCastAnim
-
--------------------------------------------------------------------------------
---  History management
--------------------------------------------------------------------------------
-local function RefreshViews()
-    local sh = DB()
-    if sh.iconEnabled  then BuildIconStrip() end
-    if sh.barEnabled   then RefreshBarWindow() end
-end
-
-local function PushEntry(entry)
-    table.insert(_history, 1, entry)
-    if #_history > MAX_HISTORY then _history[#_history] = nil end
-    RefreshViews()
-end
-
-local _pendingTargets = {}  -- castGUID -> target name (from UNIT_SPELLCAST_SENT)
-local _activeChannelSpell = nil  -- spellID of currently channeling spell (suppress tick SUCCEEDEDs)
-local _knownOverrides = {}  -- spellID -> true for override spells that pass IsSpellKnownOrOverridesKnown
-
-local function FinishPending(castGUID, status)
-    _pendingTargets[castGUID] = nil
-    local entry = _pendingCasts[castGUID]
-    if not entry then return end
-    -- Don't downgrade a success (server accepted) to failed/interrupted (client race)
-    if entry.status == "success" then _pendingCasts[castGUID] = nil; return end
-    -- Snapshot fill progress for interrupted/failed casts so the bar freezes
-    if status == "interrupted" or status == "failed" then
-        local now = GetTime()
-        local dur = entry.endTime - entry.startTime
-        if dur > 0 then
-            if entry.isChannel then
-                entry.fillProgress = max(0, min(1, (entry.endTime - now) / dur))
-            else
-                entry.fillProgress = max(0, min(1, (now - entry.startTime) / dur))
-            end
-        end
-    end
-    entry.status = status
-    entry.endTime = GetTime()
-    if entry.startTime then entry.castDuration = entry.endTime - entry.startTime end
-    _pendingCasts[castGUID] = nil
-    RefreshViews()
-end
-
--------------------------------------------------------------------------------
---  Event-driven spell tracking
---  Events are only registered when at least one feature is enabled.
--------------------------------------------------------------------------------
-local _eventsActive = false
-local eventFrame = CreateFrame("Frame")
-
-local function OnSpellEvent(_, event, unit, ...)
-    if unit ~= "player" then return end
-
-    -- UNIT_SPELLCAST_SENT has unique args: unit, target, castGUID, spellID
-    if event == "UNIT_SPELLCAST_SENT" then
-        local target, castGUID2 = ...
-        if castGUID2 and target then
-            _pendingTargets[castGUID2] = target
-        end
-        return
-    end
-
-    local castGUID, spellID = ...
-
-    if event == "UNIT_SPELLCAST_START" then
-        local name, _, _, startMS, endMS = UnitCastingInfo("player")
-        if not name or not spellID then return end
-        spellID = ResolveOverride(spellID)
-        local info = _spellInfoCache[spellID]
-        if not info then info = C_Spell and C_Spell.GetSpellInfo(spellID); if info then _spellInfoCache[spellID] = info end end
-        local entry = {
-            spellID      = spellID,
-            spellName    = name,
-            icon         = info and info.iconID,
-            target       = castGUID and _pendingTargets[castGUID],
-            startTime    = (startMS or 0) / 1000,
-            endTime      = (endMS or 0) / 1000,
-            castDuration = ((endMS or 0) - (startMS or 0)) / 1000,
-            status       = "casting",
-            isInstant    = false,
-            isChannel    = false,
-            timestamp    = GetTime(),
-        }
-        if castGUID then _pendingCasts[castGUID] = entry end
-        PushEntry(entry)
-        StartCastAnim()
-
-    elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
-        local name, _, _, startMS, endMS, _, _, chanSpellID = UnitChannelInfo("player")
-        local sid = ResolveOverride(chanSpellID or spellID)
-        if not name then return end
-        local info = sid and _spellInfoCache[sid]
-        if not info and sid then info = C_Spell and C_Spell.GetSpellInfo(sid); if info then _spellInfoCache[sid] = info end end
-        local entry = {
-            spellID      = sid,
-            spellName    = name,
-            icon         = info and info.iconID,
-            target       = castGUID and _pendingTargets[castGUID],
-            startTime    = (startMS or 0) / 1000,
-            endTime      = (endMS or 0) / 1000,
-            castDuration = ((endMS or 0) - (startMS or 0)) / 1000,
-            status       = "channeling",
-            isInstant    = false,
-            isChannel    = true,
-            timestamp    = GetTime(),
-        }
-        _activeChannelSpell = sid
-        if castGUID then _pendingCasts[castGUID] = entry end
-        PushEntry(entry)
-        StartCastAnim()
-
-    elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
-        if castGUID and _pendingCasts[castGUID] then
-            FinishPending(castGUID, "success")
-        else
-            -- Skip channeled spell ticks (SUCCEEDED fires per tick during a channel)
-            if _activeChannelSpell and spellID == _activeChannelSpell then return end
-            -- Skip internal/system spells (LOGINEFFECT, DNT, etc.)
-            -- IsPlayerSpell catches most, but override/transform spells (e.g.
-            -- Lightsmith armaments) fail it. Fall back to IsSpellKnownOrOverridesKnown
-            -- and cache the result (that API is flaky on repeated calls).
-            if not IsPlayerSpell(spellID) then
-                if not _knownOverrides[spellID] then
-                    if IsSpellKnownOrOverridesKnown and IsSpellKnownOrOverridesKnown(spellID) then
-                        _knownOverrides[spellID] = true
-                    else
-                        return
-                    end
-                end
-            end
-            spellID = ResolveOverride(spellID)
-            -- Latency race: INTERRUPTED/FAILED can fire before SUCCEEDED at
-            -- the end of a cast.  The pending entry is already consumed and
-            -- sitting in _history with a wrong status.  Scan recent history
-            -- and fix it instead of creating a duplicate.
-            local dominated = false
-            -- Check pending casts first (different/nil castGUID race)
-            for gid, pe in pairs(_pendingCasts) do
-                if pe.spellID == spellID then
-                    FinishPending(gid, "success")
-                    dominated = true
-                    break
-                end
-            end
-            -- Check recent history (INTERRUPTED already consumed the entry)
-            if not dominated then
-                for hi = 1, min(#_history, 5) do
-                    local he = _history[hi]
-                    if he.spellID == spellID and (he.status == "interrupted" or he.status == "failed") then
-                        he.status = "success"
-                        he.fillProgress = nil
-                        dominated = true
-                        RefreshViews()
-                        break
-                    end
-                end
-            end
-            if not dominated then
-                local info = spellID and _spellInfoCache[spellID]
-                if not info and spellID then info = C_Spell and C_Spell.GetSpellInfo(spellID); if info then _spellInfoCache[spellID] = info end end
-                if not info then return end
-                PushEntry({
-                    spellID      = spellID,
-                    spellName    = info.name or "?",
-                    icon         = info.iconID,
-                    target       = castGUID and _pendingTargets[castGUID],
-                    startTime    = GetTime(),
-                    endTime      = GetTime(),
-                    castDuration = 0,
-                    status       = "success",
-                    isInstant    = true,
-                    isChannel    = false,
-                    timestamp    = GetTime(),
-                })
-            end
-        end
-
-    elseif event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_FAILED_QUIET" then
-        if castGUID then FinishPending(castGUID, "failed") end
-
-    elseif event == "UNIT_SPELLCAST_INTERRUPTED" then
-        if castGUID then FinishPending(castGUID, "interrupted") end
-
-    elseif event == "UNIT_SPELLCAST_STOP" then
-        if not castGUID then return end
-        local entry = _pendingCasts[castGUID]
-        if entry and entry.status == "casting" then
-            local gid = castGUID
-            C_Timer.After(0, function()
-                if _pendingCasts[gid] and _pendingCasts[gid].status == "casting" then
-                    FinishPending(gid, "failed")
-                end
-            end)
-        end
-
-    elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
-        _activeChannelSpell = nil
-        if castGUID then
-            _pendingTargets[castGUID] = nil
-            local entry = _pendingCasts[castGUID]
-            if entry then
-                if entry.status == "channeling" then entry.status = "success" end
-                entry.endTime = GetTime()
-                if entry.startTime then entry.castDuration = entry.endTime - entry.startTime end
-                _pendingCasts[castGUID] = nil
-            end
-        end
-    end
-end
-
-local function RegisterEvents()
-    if _eventsActive then return end
-    eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SENT", "player")  -- player only (was global, fired for all units)
-    eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
-    eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
-    eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
-    eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED_QUIET", "player")
-    eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
-    eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
-    eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")
-    eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")
-    eventFrame:SetScript("OnEvent", OnSpellEvent)
-    _eventsActive = true
-end
-
-local function UnregisterEvents()
-    if not _eventsActive then return end
-    eventFrame:UnregisterAllEvents()
-    eventFrame:SetScript("OnEvent", nil)
-    _eventsActive = false
-end
-
--------------------------------------------------------------------------------
---  Instance visibility check
--------------------------------------------------------------------------------
-local function ShouldHide(hideInDungeon, hideInRaid, hideInDelve, hideInPvP, hideOutOfInstance)
-    -- Always visible while configuring or positioning the element.
-    if ns._optionsOpen or EUI._unlockActive then return false end
-    -- Show/hide all windows hotkey. Both displays rebuild themselves on every cast, so
-    -- the check belongs here rather than in a one-off hide from the main file.
-    if ns._toggleHidden and ns.EDM.DB().toggleIncludeSpellHistory then return true end
-    local _, iType = IsInInstance()
-    if hideInDungeon and iType == "party" then return true end
-    if hideInRaid and iType == "raid" then return true end
-    if hideInDelve and C_PartyInfo and C_PartyInfo.IsDelveInProgress and C_PartyInfo.IsDelveInProgress() then return true end
-    if hideInPvP and (iType == "pvp" or iType == "arena") then return true end
-    if hideOutOfInstance and (iType == "none" or iType == nil) then return true end
-    return false
-end
-
--------------------------------------------------------------------------------
---  ICON STRIP  (standalone movable frame)
--------------------------------------------------------------------------------
-local _iconContainer
-local _iconStrip
-local _iconPool = {}
-local _lastAnimTimestamp = 0  -- tracks when to animate icon 1
-local _lastIconCount = 0      -- tracks visible count for minimal loop
-local _iconLayoutKey = ""     -- tracks settings that affect icon layout (skip repositioning if unchanged)
-
+local MAX_HISTORY = 80
+local MAX_ICONS = 10
+local MAX_BARS = 10
 local ANIM_DUR = 0.5
 local ANIM_SLIDE_PX = 6
-
--- The saved iconPos remains the TOPLEFT of the newest icon, matching every
--- existing profile.  The container expands around that fixed icon so changing
--- the history length or growth direction never makes the row wander.
-local function IconStripGeometry(count)
-    local sh = DB()
-    local iconSz = SnapSize(sh.iconSize or 24)
-    local gap = sh.iconSpacing or 1
-    local dir = sh.growDirection or "LEFT"
-    count = max(1, count or sh.iconCount or 5)
-    local span = count * iconSz + (count - 1) * gap
-    local horizontal = dir == "LEFT" or dir == "RIGHT"
-    local width = horizontal and span or iconSz
-    local height = horizontal and iconSz or span
-    local leftOffset = dir == "LEFT" and (span - iconSz) or 0
-    local upOffset = dir == "UP" and (span - iconSz) or 0
-    return iconSz, gap, dir, width, height, leftOffset, upOffset
-end
-
-local function PositionIconContainer(count)
-    if not _iconContainer or not _iconStrip then return end
-    local iconSz, _, dir, width, height, leftOffset, upOffset = IconStripGeometry(count)
-
-    _iconContainer:SetSize(width, height)
-    _iconStrip:SetSize(iconSz, iconSz)
-    _iconStrip:ClearAllPoints()
-    if dir == "RIGHT" then
-        _iconStrip:SetPoint("LEFT", _iconContainer, "LEFT", 0, 0)
-    elseif dir == "LEFT" then
-        _iconStrip:SetPoint("RIGHT", _iconContainer, "RIGHT", 0, 0)
-    elseif dir == "DOWN" then
-        _iconStrip:SetPoint("TOP", _iconContainer, "TOP", 0, 0)
-    else
-        _iconStrip:SetPoint("BOTTOM", _iconContainer, "BOTTOM", 0, 0)
-    end
-
-    -- The shared anchor system owns placement while this element is linked.
-    if EUI.IsUnlockAnchored and EUI.IsUnlockAnchored("EDM_IconHistory") then return end
-
-    local pos = DB().iconPos
-    local firstLeft, firstTop
-    if pos and pos.x and pos.y then
-        firstLeft, firstTop = pos.x, pos.y
-    else
-        firstLeft = UIParent:GetWidth() * 0.5 - iconSz * 0.5
-        firstTop = UIParent:GetHeight() * 0.5 + iconSz * 0.5
-    end
-    _iconContainer:ClearAllPoints()
-    _iconContainer:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT",
-        firstLeft - leftOffset, firstTop + upOffset)
-end
-
-local function SaveIconPositionFromFrame(count)
-    if not _iconContainer then return end
-    local left, top = _iconContainer:GetLeft(), _iconContainer:GetTop()
-    if not left or not top then return end
-    local _, _, _, _, _, leftOffset, upOffset = IconStripGeometry(count)
-    DB().iconPos = { x = left + leftOffset, y = top - upOffset }
-end
-
-local function StartIconDrag(btn)
-    local anchored = EUI.IsUnlockAnchored and EUI.IsUnlockAnchored("EDM_IconHistory")
-    if btn == "LeftButton" and IsShiftKeyDown() and _iconContainer and not anchored then
-        _iconContainer._dragging = true
-        _iconContainer:StartMoving()
-    end
-end
-
-local function StopIconDrag()
-    if not _iconContainer then return end
-    _iconContainer._dragging = nil
-    _iconContainer:StopMovingOrSizing()
-    SaveIconPositionFromFrame(_iconContainer._layoutCount)
-    -- Shift may have been released during drag; disable mouse now.
-    if not IsShiftKeyDown() then
-        _iconStrip:EnableMouse(false)
-        for _, ic in ipairs(_iconPool) do ic.frame:EnableMouse(false) end
-    end
-end
-
--------------------------------------------------------------------------------
---  Fade-out clock (iconFadeTime > 0): each icon expires individually once
---  its cast is older than the configured time, fading to zero over FADE_DUR.
---  Event-driven -- nothing runs while no icon is inside its fade window:
---    * out of combat, ONE one-shot timer is armed for the moment the next
---      icon begins fading; while an icon is actively fading, a throttled
---      OnUpdate driver (hidden when idle) repaints the strip;
---    * in combat everything is parked, so the history stays readable
---      through a fight. PLAYER_REGEN_ENABLED credits each entry the time
---      it spent in combat (per-entry base: icons cast mid-fight are
---      credited only their own in-combat lifetime) and restarts the clock.
--------------------------------------------------------------------------------
 local FADE_DUR = 1.5
-local _fadeTimer    -- one-shot C_Timer.NewTimer for the next fade start
-local _fadeDriver   -- throttled OnUpdate frame, shown only while fading
-local _fadeEvents   -- REGEN watcher, created on first use
-local _combatStart
+local STOP_GRACE = 0.3 -- a STOP without SUCCEEDED becomes "failed" after this time
+local HEADER_H = 22
+local ROW_GAP = 1
+local FAIL_COLOR = { 0.86, 0.255, 0.255 }
+local ACCENT = { 12 / 255, 210 / 255, 157 / 255 }
+local FONT = ns.FONT
+local BAR_TEXTURE = "Interface\\TargetingFrame\\UI-StatusBar"
 
-local function FadeBase(e)
-    return e._fadeBase or e.timestamp or 0
+-- Never shown: auto attacks and helper / off-hand / duplicate hits (list from TrufiGCD).
+local IGNORED = {
+	[6603] = true, [75] = true,
+	[61391] = true, [5374] = true, [27576] = true, [88263] = true, [98057] = true,
+	[32175] = true, [32176] = true, [96103] = true, [85384] = true, [57794] = true,
+	[52174] = true, [135299] = true, [121473] = true, [121474] = true, [114093] = true,
+	[114089] = true, [115357] = true, [115360] = true, [127797] = true, [102794] = true,
+	[50622] = true, [122128] = true, [110745] = true, [120696] = true, [120692] = true,
+	[115464] = true, [126526] = true, [132951] = true, [107270] = true, [137584] = true,
+	[137585] = true, [117993] = true, [124040] = true,
+}
+
+local GROW_DIRS = {
+	{ key = "LEFT", text = "Left" },
+	{ key = "RIGHT", text = "Right" },
+	{ key = "UP", text = "Up" },
+	{ key = "DOWN", text = "Down" },
+}
+local GROW_VECTOR = { LEFT = { -1, 0 }, RIGHT = { 1, 0 }, UP = { 0, 1 }, DOWN = { 0, -1 } }
+
+local ANIMATIONS = {
+	{ key = "none", text = "None" },
+	{ key = "slide", text = "Slide In" },
+	{ key = "fly", text = "Fly In" },
+}
+
+local COLOR_MODES_TEXT = {
+	{ key = "custom", text = "Custom Color" },
+	{ key = "accent", text = "Accent Color" },
+}
+local COLOR_MODES_BAR = {
+	{ key = "class", text = "Class Color" },
+	{ key = "custom", text = "Custom Color" },
+	{ key = "accent", text = "Accent Color" },
+}
+
+-- Visibility options (EllesmereUI "Visibility Options"). Delves do not exist on 5.4.8.
+local VISIBILITY = {
+	{ key = "HideInDungeon", text = "Hide in Dungeons" },
+	{ key = "HideInRaid", text = "Hide in Raids" },
+	{ key = "HideInPvP", text = "Hide in PvP" },
+	{ key = "HideOutOfInstance", text = "Hide out of Instances" },
+}
+
+local function CreateDefaults()
+	return {
+		-- Icon History
+		iconEnabled = false,
+		iconGrow = "LEFT",
+		iconHideInDungeon = false,
+		iconHideInRaid = false,
+		iconHideInPvP = false,
+		iconHideOutOfInstance = false,
+		iconSize = 36,
+		iconZoom = 8, -- % cut from each side of the icon (shared with the bars)
+		iconMax = 5,
+		iconSpacing = 1,
+		iconOpacity = 100,
+		iconAnimation = "slide",
+		iconFadeTime = 0,
+		iconPos = { 0, -180 },
+		-- Bar History
+		barEnabled = false,
+		barHideInDungeon = false,
+		barHideInRaid = false,
+		barHideInPvP = false,
+		barHideOutOfInstance = false,
+		bgColor = { 0, 0, 0 },
+		bgAlpha = 25,
+		barHideTopBar = false,
+		barHeight = 20,
+		barMax = 5,
+		barTexture = BAR_TEXTURE,
+		textSize = 11,
+		textColorMode = "custom",
+		textColor = { 1, 1, 1 },
+		barColorMode = "custom",
+		barColor = { 0.298, 0.565, 0.494 },
+		barOpacity = 100,
+		barWidth = 300,
+		barPos = { 250, -100 },
+	}
 end
 
-local function StopFadeClock()
-    if _fadeTimer then _fadeTimer:Cancel(); _fadeTimer = nil end
-    if _fadeDriver then _fadeDriver:Hide() end
+local function CopyDefaults(src, dst)
+	for key, value in pairs(src) do
+		if type(value) == "table" then
+			if type(dst[key]) ~= "table" then
+				dst[key] = {}
+			end
+			CopyDefaults(value, dst[key])
+		elseif dst[key] == nil then
+			dst[key] = value
+		end
+	end
 end
 
--- Arms exactly one of: the fast driver (an icon is mid-fade) or a one-shot timer for
--- the next fade start. Out-of-combat only; entries are newest first, so effective ages
--- grow with the index and the scan can stop at the first fully-faded entry.
-local function ScheduleFade(fadeTime, maxIcons)
-    StopFadeClock()
-    local n = min(#_history, maxIcons)
-    if n == 0 then return end
-    local now = GetTime()
-    local fading = false
-    local nextIn
-    for i = 1, n do
-        local age = now - FadeBase(_history[i])
-        if age < fadeTime then
-            local d = fadeTime - age
-            if not nextIn or d < nextIn then nextIn = d end
-        elseif age < fadeTime + FADE_DUR then
-            fading = true
-            break
-        else
-            break
-        end
-    end
-    if fading then
-        if not _fadeDriver then
-            _fadeDriver = CreateFrame("Frame")
-            _fadeDriver:Hide()
-            local acc = 0
-            _fadeDriver:SetScript("OnUpdate", function(_, dt)
-                acc = acc + dt
-                if acc < 0.05 then return end
-                acc = 0
-                BuildIconStrip()
-            end)
-        end
-        _fadeDriver:Show()
-    elseif nextIn then
-        _fadeTimer = C_Timer.NewTimer(nextIn + 0.02, BuildIconStrip)
-    end
+local db = CreateDefaults()
+local loaded = false
+
+local history = {}
+local currentCast, currentChannel
+local lastSucceededLine
+local sent -- last UNIT_SPELLCAST_SENT: spell name, target, time
+local fadeClock = 0 -- runs only out of combat, so icons do not fade in combat
+local previewOn = false
+local iconsUnlocked, barsUnlocked = false, false
+local animEntry, animStart
+local scrollOffset = 0
+local previewSpells
+
+local driver = CreateFrame("Frame")
+
+---------------------------------------------------------------------------
+-- History
+---------------------------------------------------------------------------
+local Refresh -- defined below
+
+local function NewEntry(spellID, status)
+	if not spellID or IGNORED[spellID] then
+		return nil
+	end
+	local name, _, icon = GetSpellInfo(spellID)
+	if not name or not icon then
+		return nil
+	end
+	local now = GetTime()
+	local entry = {
+		spellID = spellID,
+		name = name,
+		icon = icon,
+		status = status,
+		timestamp = now,
+		fadeBase = fadeClock,
+	}
+	if sent and sent.name == name and now - sent.time < 3 then
+		entry.target = sent.target
+	end
+	return entry
 end
 
-local function EnsureFadeEvents()
-    if _fadeEvents then return end
-    _fadeEvents = CreateFrame("Frame")
-    _fadeEvents:RegisterEvent("PLAYER_REGEN_DISABLED")
-    _fadeEvents:RegisterEvent("PLAYER_REGEN_ENABLED")
-    _fadeEvents:SetScript("OnEvent", function(_, event)
-        if event == "PLAYER_REGEN_DISABLED" then
-            _combatStart = GetTime()
-            StopFadeClock()
-        else
-            local cs = _combatStart
-            _combatStart = nil
-            if (DB().iconFadeTime or 0) <= 0 then return end
-            local now = GetTime()
-            cs = cs or now
-            for i = 1, #_history do
-                local e = _history[i]
-                local base = FadeBase(e)
-                e._fadeBase = base + (now - max(cs, base))
-            end
-            BuildIconStrip()
-        end
-    end)
+local function Push(entry)
+	tinsert(history, 1, entry)
+	if #history > MAX_HISTORY then
+		history[#history] = nil
+	end
+	animEntry, animStart = entry, GetTime()
+	scrollOffset = 0
+	Refresh()
 end
 
--- Plays a one-shot intro animation on an icon frame.
--- Uses dt-accumulated OnUpdate for smooth sub-frame interpolation.
--- Only called on icon 1, which always rests at CENTER of _iconStrip.
-local function PlayIconAnim(ic, animType, dir, targetAlpha)
-    local f = ic.frame
-    targetAlpha = targetAlpha or 1
-
-    -- Kill any in-progress animation and snap to rest position.
-    -- Using hardcoded rest anchor (icon 1 = CENTER,0,0) instead of
-    -- GetPoint, which returns mid-animation displacement on rapid casts.
-    f:SetScript("OnUpdate", nil)
-    f:SetScale(1)
-    f:ClearAllPoints()
-    f:SetPoint("CENTER", _iconStrip, "CENTER", 0, 0)
-
-    local p1, rel, relP, origX, origY = "CENTER", _iconStrip, "CENTER", 0, 0
-
-    -- Compute starting displacement for slide types
-    local dx, dy = 0, 0
-    if animType == "slide" then
-        if dir == "LEFT" then dx = ANIM_SLIDE_PX
-        elseif dir == "RIGHT" then dx = -ANIM_SLIDE_PX
-        elseif dir == "UP" then dy = -ANIM_SLIDE_PX
-        else dy = ANIM_SLIDE_PX end
-    end
-
-    local isFly = (animType == "fly")
-    local elapsed = 0
-    local startAlpha = targetAlpha * 0.5
-
-    f:SetAlpha(startAlpha)
-    if isFly then f:SetScale(1.35) end
-    if dx ~= 0 or dy ~= 0 then
-        f:SetPoint(p1, rel, relP, origX + dx, origY + dy)
-    end
-
-    f:SetScript("OnUpdate", function(self, dt)
-        elapsed = elapsed + dt
-        local t = elapsed / ANIM_DUR
-        if t >= 1 then t = 1 end
-
-        local inv = 1 - t
-        local ease = 1 - inv * inv * inv
-
-        self:SetAlpha(startAlpha + (targetAlpha - startAlpha) * ease)
-
-        if dx ~= 0 or dy ~= 0 then
-            self:SetPoint(p1, rel, relP, origX + dx * (1 - ease), origY + dy * (1 - ease))
-        end
-
-        if isFly then
-            self:SetScale(1.35 + (1 - 1.35) * ease)
-        end
-
-        if t >= 1 then
-            self:SetAlpha(targetAlpha)
-            self:SetScript("OnUpdate", nil)
-            if isFly then self:SetScale(1) end
-            if dx ~= 0 or dy ~= 0 then
-                self:SetPoint(p1, rel, relP, origX, origY)
-            end
-        end
-    end)
+local function Finish(entry, status)
+	entry.status = status
+	entry.finished = GetTime()
+	entry.stopAt = nil
+	Refresh()
 end
 
-local function MakeIcon(parent)
-    local ic = {}
-    ic.frame = CreateFrame("Frame", nil, parent)
-    ic.frame:EnableMouse(false)
-    -- Shift+drag on any icon moves the entire strip
-    ic.frame:SetScript("OnMouseDown", function(_, btn)
-        StartIconDrag(btn)
-    end)
-    ic.frame:SetScript("OnMouseUp", StopIconDrag)
-    local bg = ic.frame:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints()
-    bg:SetColorTexture(0, 0, 0, 0.4)
-    ic.bg = bg
-    ic.tex = ic.frame:CreateTexture(nil, "ARTWORK")
-    ic.tex:SetAllPoints()
-    local z = DB().iconZoom or 0.08
-    ic.tex:SetTexCoord(z, 1 - z, z, 1 - z)
-    ic.frame:Hide()
-    return ic
+local function SetCastTimes(entry, startMS, endMS)
+	local now = GetTime()
+	entry.startTime = startMS and startMS / 1000 or now
+	entry.endTime = endMS and endMS / 1000 or entry.startTime
 end
 
--- Preview icons: random spells from the player's action bars
-local _previewIcons
-local function GetPreviewIcons()
-    if _previewIcons then return _previewIcons end
-    _previewIcons = {}
-    -- Pull from action bars first (most recognizable spells)
-    for slot = 1, 120 do
-        local actionType, id = GetActionInfo(slot)
-        if actionType == "spell" and id and id > 0 then
-            local tex = GetActionTexture(slot)
-            if tex then
-                -- Deduplicate
-                local dup = false
-                for _, t in ipairs(_previewIcons) do
-                    if t == tex then dup = true; break end
-                end
-                if not dup then
-                    _previewIcons[#_previewIcons + 1] = tex
-                    if #_previewIcons >= 10 then break end
-                end
-            end
-        end
-    end
-    -- Fallback if action bars returned nothing
-    if #_previewIcons == 0 then
-        _previewIcons = { 134400, 134400, 134400 }
-    end
-    return _previewIcons
+-- 5.4.8 payload: unit, spellName, rank, lineID, spellID (SENT: unit, spellName, rank, target, lineID).
+local function OnSpellEvent(event, unit, spellName, rank, arg4, arg5)
+	if event == "UNIT_SPELLCAST_SENT" then
+		sent = { name = spellName, target = (arg4 and arg4 ~= "") and arg4 or nil, time = GetTime() }
+		return
+	end
+	local lineID, spellID = arg4, arg5
+
+	if event == "UNIT_SPELLCAST_START" then
+		local entry = NewEntry(spellID, "casting")
+		if not entry then
+			return
+		end
+		local _, _, _, _, startMS, endMS = UnitCastingInfo("player")
+		SetCastTimes(entry, startMS, endMS)
+		entry.lineID = lineID
+		currentCast = entry
+		Push(entry)
+
+	elseif event == "UNIT_SPELLCAST_DELAYED" then
+		if currentCast then
+			local _, _, _, _, startMS, endMS = UnitCastingInfo("player")
+			if endMS then
+				SetCastTimes(currentCast, startMS, endMS)
+			end
+		end
+
+	elseif event == "UNIT_SPELLCAST_CHANNEL_START" or event == "UNIT_SPELLCAST_CHANNEL_UPDATE" then
+		local entry = currentChannel
+		if not entry or entry.spellID ~= spellID or GetTime() - entry.timestamp > 1 then
+			if event == "UNIT_SPELLCAST_CHANNEL_UPDATE" then
+				return
+			end
+			entry = NewEntry(spellID, "channeling")
+			if not entry then
+				return
+			end
+			entry.isChannel = true
+			currentChannel = entry
+			Push(entry)
+		end
+		local _, _, _, _, startMS, endMS = UnitChannelInfo("player")
+		if endMS then
+			SetCastTimes(entry, startMS, endMS)
+		end
+
+	elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
+		if currentChannel then
+			Finish(currentChannel, "success")
+			currentChannel = nil
+		end
+
+	elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+		if IGNORED[spellID] then
+			return
+		end
+		-- Some spells send SUCCEEDED twice with the same line id.
+		if lineID and lineID ~= 0 then
+			if lineID == lastSucceededLine then
+				return
+			end
+			lastSucceededLine = lineID
+		end
+		local cast = currentCast
+		if cast and ((lineID ~= 0 and cast.lineID == lineID) or cast.spellID == spellID) then
+			currentCast = nil
+			Finish(cast, "success")
+			return
+		end
+		-- SUCCEEDED after the cast was already marked failed (latency): undo it.
+		local now = GetTime()
+		for i = 1, min(5, #history) do
+			local e = history[i]
+			if e.spellID == spellID and (e.status == "failed" or e.status == "interrupted") and now - (e.finished or 0) < 1 then
+				e.status = "success"
+				Refresh()
+				return
+			end
+		end
+		-- Channel ticks, and channels that send SUCCEEDED before CHANNEL_START.
+		if currentChannel and currentChannel.spellID == spellID then
+			return
+		end
+		local channelName, _, _, _, startMS, endMS = UnitChannelInfo("player")
+		if channelName and channelName == spellName then
+			local entry = NewEntry(spellID, "channeling")
+			if entry then
+				entry.isChannel = true
+				SetCastTimes(entry, startMS, endMS)
+				currentChannel = entry
+				Push(entry)
+			end
+			return
+		end
+		-- Instant cast. Hidden / internal spells have no link.
+		if not GetSpellLink(spellID) then
+			return
+		end
+		local entry = NewEntry(spellID, "success")
+		if entry then
+			entry.isInstant = true
+			Push(entry)
+		end
+
+	elseif event == "UNIT_SPELLCAST_INTERRUPTED" or event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_FAILED_QUIET" then
+		local status = event == "UNIT_SPELLCAST_INTERRUPTED" and "interrupted" or "failed"
+		local cast = currentCast
+		-- Match by line id; a FAILED of a different (queued) spell must not touch the cast.
+		if cast and ((lineID ~= 0 and cast.lineID == lineID) or ((lineID == 0 or cast.lineID == 0) and cast.spellID == spellID)) then
+			currentCast = nil
+			Finish(cast, status)
+		elseif status == "interrupted" and currentChannel and currentChannel.spellID == spellID then
+			Finish(currentChannel, "interrupted")
+			currentChannel = nil
+		end
+
+	elseif event == "UNIT_SPELLCAST_STOP" then
+		local cast = currentCast
+		if cast and cast.status == "casting" and (cast.lineID == lineID or cast.spellID == spellID) then
+			-- SUCCEEDED may still come; if not, OnUpdate marks it failed.
+			cast.stopAt = GetTime()
+		end
+	end
 end
 
-BuildIconStrip = function()
-    local sh = DB()
-    if not sh.iconEnabled or ShouldHide(sh.iconHideInDungeon, sh.iconHideInRaid, sh.iconHideInDelve, sh.iconHideInPvP, sh.iconHideOutOfInstance) then
-        if _iconContainer then _iconContainer:Hide() end
-        StopFadeClock()
-        return
-    end
-
-    if not _iconContainer then
-        _iconContainer = CreateFrame("Frame", "EllesmereUIDMIconHistoryFrame", UIParent)
-        _iconContainer:SetFrameStrata("MEDIUM")
-        _iconContainer:SetFrameLevel(10)
-        _iconContainer:SetClampedToScreen(true)
-        _iconContainer:SetMovable(true)
-        _iconContainer:EnableMouse(false)
-
-        _iconStrip = CreateFrame("Frame", "EllesmereUIDMIconStrip", _iconContainer)
-        _iconStrip:SetFrameStrata("MEDIUM")
-        _iconStrip:SetFrameLevel(10)
-        _iconStrip:EnableMouse(false)
-        _iconStrip:SetScript("OnMouseDown", function(_, btn) StartIconDrag(btn) end)
-        _iconStrip:SetScript("OnMouseUp", StopIconDrag)
-        -- Click-through unless shift is held (strip + all icon children).
-        -- The Shift watch is registered only while the strip is visible; each
-        -- show re-reads Shift so a press or release made while hidden is not missed.
-        local modFrame = CreateFrame("Frame")
-        local function SetShiftMouse(on)
-            -- Don't disable mouse mid-drag; let OnMouseUp end it naturally
-            if not on and _iconContainer._dragging then return end
-            _iconStrip:EnableMouse(on)
-            for _, ic in ipairs(_iconPool) do
-                ic.frame:EnableMouse(on)
-            end
-        end
-        modFrame:SetScript("OnEvent", function(_, _, key, down)
-            if key == "LSHIFT" or key == "RSHIFT" then SetShiftMouse(down == 1) end
-        end)
-        _iconContainer:SetScript("OnShow", function()
-            modFrame:RegisterEvent("MODIFIER_STATE_CHANGED")
-            SetShiftMouse(IsShiftKeyDown() and true or false)
-        end)
-        _iconContainer:SetScript("OnHide", function()
-            modFrame:UnregisterEvent("MODIFIER_STATE_CHANGED")
-        end)
-        -- Starts hidden so the first Show below runs the OnShow registration.
-        _iconContainer:Hide()
-        -- Per-icon backgrounds (created in MakeIcon) travel with each icon
-        -- during animation. No strip-level background needed.
-    end
-
-    local iconSz = SnapSize(sh.iconSize or 24)
-    local gap = sh.iconSpacing or 1
-    local dir = sh.growDirection or "LEFT"
-    local iconZoom = sh.iconZoom or 0.08
-
-    local maxIcons = sh.iconCount or 5
-    local histCount = min(#_history, maxIcons)
-
-    -- Fade-out: out of combat, entries past fadeTime+FADE_DUR drop off the
-    -- strip (newest first, so the scan stops at the first faded one) and the
-    -- clock re-arms for whatever comes next. In combat nothing runs; the
-    -- REGEN watcher restarts the clock. fadeNow doubles as the "fade math
-    -- active" flag for the alpha pass in the icon loop below.
-    local fadeTime = sh.iconFadeTime or 0
-    local fadeNow
-    if fadeTime > 0 then
-        EnsureFadeEvents()
-        if not InCombatLockdown() then
-            fadeNow = GetTime()
-            if histCount > 0 then
-                local visible = 0
-                for i = 1, histCount do
-                    if fadeNow - FadeBase(_history[i]) < fadeTime + FADE_DUR then
-                        visible = i
-                    else
-                        break
-                    end
-                end
-                histCount = visible
-            end
-            ScheduleFade(fadeTime, maxIcons)
-        end
-    else
-        StopFadeClock()
-    end
-
-    -- Unlock Mode always reserves the configured maximum footprint. Live
-    -- history and fade state may change the icon contents, but never the mover
-    -- size while the user is positioning it. The options preview keeps its
-    -- existing behavior and does not backfill slots vacated by faded icons.
-    local showPreview = EUI._unlockActive or (ns._optionsOpen and histCount < maxIcons
-        and not (fadeTime > 0 and #_history > 0))
-    local count = showPreview and maxIcons or histCount
-
-    -- Nothing to show: hide the strip entirely
-    if count == 0 then _iconContainer:Hide(); return end
-
-    -- Position and size only on layout change (checked after count is known)
-    local iconAlphaCheck = sh.iconOpacity or 1
-    local needsLayout = (iconSz .. "|" .. gap .. "|" .. dir .. "|" .. count .. "|" .. iconAlphaCheck) ~= _iconLayoutKey
-    if needsLayout then
-        _iconContainer._layoutCount = count
-        PositionIconContainer(count)
-    end
-
-    while #_iconPool < ICON_POOL_SIZE do
-        _iconPool[#_iconPool + 1] = MakeIcon(_iconStrip)
-    end
-
-    -- Layout only changes when settings change; content changes every cast.
-    local iconAlpha = iconAlphaCheck
-    local layoutChanged = needsLayout
-    local loopEnd = max(count, _lastIconCount or 0)
-
-    for i = 1, loopEnd do
-        local ic = _iconPool[i]
-        if not ic then break end
-        if i <= count then
-            if ic._cachedZoom ~= iconZoom then
-                ic._cachedZoom = iconZoom
-                ic.tex:SetTexCoord(iconZoom, 1 - iconZoom, iconZoom, 1 - iconZoom)
-            end
-            if layoutChanged then
-                ic.frame:SetScript("OnUpdate", nil)
-                ic.frame:SetScale(1)
-                ic.frame:SetSize(iconSz, iconSz)
-                ic.frame:ClearAllPoints()
-                local offset = (i - 1) * (iconSz + gap)
-                if i == 1 then
-                    ic.frame:SetPoint("CENTER", _iconStrip, "CENTER", 0, 0)
-                elseif dir == "RIGHT" then
-                    ic.frame:SetPoint("CENTER", _iconStrip, "CENTER", offset, 0)
-                elseif dir == "LEFT" then
-                    ic.frame:SetPoint("CENTER", _iconStrip, "CENTER", -offset, 0)
-                elseif dir == "DOWN" then
-                    ic.frame:SetPoint("CENTER", _iconStrip, "CENTER", 0, -offset)
-                else
-                    ic.frame:SetPoint("CENTER", _iconStrip, "CENTER", 0, offset)
-                end
-                ic.frame:SetAlpha(iconAlpha)
-                ic.frame:Show()
-            end
-
-            if i <= histCount then
-                local entry = _history[i]
-                -- Only update texture/color when entry changes
-                if ic._cachedEntry ~= entry then
-                    ic._cachedEntry = entry
-                    if entry.icon then ic.tex:SetTexture(entry.icon) end
-                    ic._cachedStatus = nil
-                end
-                local st = entry.status
-                if ic._cachedStatus ~= st then
-                    ic._cachedStatus = st
-                    if st == "failed" or st == "interrupted" then
-                        ic.tex:SetVertexColor(CLR_STOPPED[1], CLR_STOPPED[2], CLR_STOPPED[3], 1)
-                    else
-                        ic.tex:SetVertexColor(1, 1, 1, 1)
-                    end
-                    ic.tex:SetAlpha(1)
-                end
-                if fadeNow then
-                    local age = fadeNow - FadeBase(entry)
-                    if age > fadeTime then
-                        local k = 1 - (age - fadeTime) / FADE_DUR
-                        if k < 0 then k = 0 end
-                        ic.frame:SetAlpha(iconAlpha * k)
-                        ic._fading = true
-                    elseif ic._fading then
-                        ic.frame:SetAlpha(iconAlpha)
-                        ic._fading = nil
-                    end
-                elseif ic._fading then
-                    ic.frame:SetAlpha(iconAlpha)
-                    ic._fading = nil
-                end
-            else
-                if not ic._isPreview then
-                    ic._isPreview = true
-                    ic._cachedEntry = nil
-                    local previews = GetPreviewIcons()
-                    local pIdx = ((i - 1) % #previews) + 1
-                    ic.tex:SetTexture(previews[pIdx])
-                    ic.tex:SetVertexColor(1, 1, 1, 1)
-                    ic.tex:SetAlpha(0.75)
-                end
-            end
-            if i <= histCount then ic._isPreview = nil end
-            if not layoutChanged then ic.frame:Show() end
-
-            if i == 1 and histCount > 0 then
-                local ts = _history[1].timestamp
-                if ts ~= _lastAnimTimestamp then
-                    _lastAnimTimestamp = ts
-                    local animType = sh.iconAnimation or "slide"
-                    if animType ~= "none" then
-                        PlayIconAnim(ic, animType, dir, iconAlpha)
-                    end
-                end
-            end
-        else
-            ic.frame:SetScript("OnUpdate", nil)
-            ic.frame:SetScale(1)
-            ic.frame:Hide()
-        end
-    end
-    _lastIconCount = count
-    if layoutChanged then
-        _iconLayoutKey = iconSz .. "|" .. gap .. "|" .. dir .. "|" .. count .. "|" .. iconAlpha
-    end
-
-    _iconStrip:Show()
-    _iconContainer:Show()
+---------------------------------------------------------------------------
+-- Shared helpers
+---------------------------------------------------------------------------
+-- Font and outline from Global Settings > Fonts (module key "damageMeters").
+local function SetFont(fs, size)
+	if ns.ApplyModuleFont then
+		ns.ApplyModuleFont(fs, size, "damageMeters")
+		return
+	end
+	fs:SetFont(FONT, size, "OUTLINE")
+	if not fs:GetFont() then
+		fs:SetFont(STANDARD_TEXT_FONT, size, "OUTLINE")
+	end
 end
 
--- First-class Unlock Mode element.  The frame spans every configured icon in
--- preview mode, giving the strip the same labeled placement box as Combat Timer.
-ns.MakeIconHistoryUnlockElement = function(MK)
-    local function UnlockGeometry()
-        return IconStripGeometry(DB().iconCount or 5)
-    end
-    return MK({
-        key   = "EDM_IconHistory",
-        label = "Icon History",
-        group = "Damage Meters",
-        order = 657,
-        noResize = true,
-        noAnchorTarget = true,
-        -- Self-positioning: the container resizes with the LIVE icon count
-        -- (casts, fade-outs), and the unlock system's resize re-apply would pin
-        -- the stored CENTER of the MAX footprint on every resize -- turning the
-        -- fixed newest-icon anchor into centered growth. noInitHook delegates
-        -- both the login apply and every resize re-apply to applyPos below
-        -- (PositionIconContainer's newest-icon-TOPLEFT compensation).
-        noInitHook = true,
-        getFrame = function() return _iconContainer end,
-        getSize = function()
-            local _, _, _, width, height = UnlockGeometry()
-            return width, height
-        end,
-        isHidden = function() return not DB().iconEnabled end,
-        savePos = function(_, point, relPoint, x, y)
-            -- Unlock Mode stores registered elements as CENTER/CENTER offsets.
-            -- Convert that full-container center back to the legacy first-icon
-            -- TOPLEFT convention so old profiles and Shift-drag keep agreeing.
-            local iconSz, _, dir, width, height = UnlockGeometry()
-            local centerX = UIParent:GetWidth() * 0.5 + (x or 0)
-            local centerY = UIParent:GetHeight() * 0.5 + (y or 0)
-            local firstLeft = centerX - width * 0.5
-            local firstTop = centerY + height * 0.5
-            if dir == "LEFT" then firstLeft = firstLeft + width - iconSz end
-            if dir == "UP" then firstTop = firstTop - height + iconSz end
-            DB().iconPos = { x = firstLeft, y = firstTop }
-        end,
-        loadPos = function()
-            local pos = DB().iconPos
-            local iconSz, _, dir, width, height = UnlockGeometry()
-            local firstLeft = pos and pos.x or (UIParent:GetWidth() * 0.5 - iconSz * 0.5)
-            local firstTop = pos and pos.y or (UIParent:GetHeight() * 0.5 + iconSz * 0.5)
-            local left = firstLeft - (dir == "LEFT" and (width - iconSz) or 0)
-            local top = firstTop + (dir == "UP" and (height - iconSz) or 0)
-            return {
-                point = "CENTER", relPoint = "CENTER",
-                x = left + width * 0.5 - UIParent:GetWidth() * 0.5,
-                y = top - height * 0.5 - UIParent:GetHeight() * 0.5,
-            }
-        end,
-        clearPos = function() DB().iconPos = nil end,
-        applyPos = function()
-            PositionIconContainer((EUI._unlockActive and DB().iconCount) or _iconContainer and _iconContainer._layoutCount)
-        end,
-    })
+local function HiddenByZone(prefix)
+	local inInstance, instanceType = IsInInstance()
+	if not inInstance or instanceType == "none" then
+		return db[prefix .. "HideOutOfInstance"]
+	elseif instanceType == "raid" then
+		return db[prefix .. "HideInRaid"]
+	elseif instanceType == "pvp" or instanceType == "arena" then
+		return db[prefix .. "HideInPvP"]
+	end
+	return db[prefix .. "HideInDungeon"] -- party, scenario
 end
 
--------------------------------------------------------------------------------
---  BAR WINDOW  (standalone, matches DM window styling)
--------------------------------------------------------------------------------
-local _barWin
-local _barPool = {}
-local _barScroll = 0
-local _barFontCache = ""  -- tracks font changes to avoid per-bar SetFont calls
-local _barLayoutCache = "" -- tracks layout changes (barH, spacing, texture)
-local _lastBarVisible = 0 -- tracks visible bar count for minimal loop
-
-local function MakeHistoryBar(parent)
-    local bar = {}
-    bar.row = CreateFrame("Frame", nil, parent)
-    bar.row:SetHeight(18)
-
-    -- Icon anchored to row left; fill starts right of icon
-    bar.icon = bar.row:CreateTexture(nil, "OVERLAY")
-    bar.icon:SetSize(18, 18)
-    bar.icon:SetPoint("LEFT", bar.row, "LEFT", 0, 0)
-    local z = DB().iconZoom or 0.08
-    bar.icon:SetTexCoord(z, 1 - z, z, 1 - z)
-
-    bar.fill = CreateFrame("StatusBar", nil, bar.row)
-    bar.fill:SetPoint("TOPLEFT", bar.icon, "TOPRIGHT", 0, 0)
-    bar.fill:SetPoint("BOTTOMRIGHT", bar.row, "BOTTOMRIGHT", 0, 0)
-    bar.fill:SetMinMaxValues(0, 1)
-    bar.fill:SetValue(1)
-    bar.fill:SetStatusBarTexture(BAR_TEX)
-    -- Blizzard Style: the same track and edge as the meter's own rows
-    -- (Classic WoW UI rows stay plain).
-    if ns.DMStyle() == "blizzard" then
-        bar._bg = bar.row:CreateTexture(nil, "BACKGROUND")
-        ns.DMApplyBlizzBarBg(bar)
-    end
-
-    local tf = CreateFrame("Frame", nil, bar.fill)
-    tf:SetAllPoints(bar.fill)
-    tf:SetFrameLevel(bar.fill:GetFrameLevel() + 2)
-
-    local sh = DB()
-    local fs = sh.textSize or 11
-
-    bar.label = tf:CreateFontString(nil, "OVERLAY")
-    bar.label:SetPoint("LEFT", bar.icon, "RIGHT", 4, 0)
-    bar.label:SetJustifyH("LEFT")
-    bar.label:SetWordWrap(false)
-    SetFont(bar.label, fs)
-
-    bar.rightText = tf:CreateFontString(nil, "OVERLAY")
-    bar.rightText:SetPoint("RIGHT", tf, "RIGHT", -3, 0)
-    bar.rightText:SetJustifyH("RIGHT")
-    bar.rightText:SetWordWrap(false)
-    SetFont(bar.rightText, fs)
-
-    bar.label:SetPoint("RIGHT", bar.rightText, "LEFT", -4, 0)
-
-    bar.row:Hide()
-    return bar
+local function Zoom(texture)
+	local z = (db.iconZoom or 0) / 100
+	texture:SetTexCoord(z, 1 - z, z, 1 - z)
 end
 
-local MEDIA       = "Interface\\AddOns\\EllesmereUIDamageMeters\\Media\\"
-local RESIZE_ICON = "Interface\\AddOns\\EllesmereUI\\media\\icons\\resize_element.png"
-local MIN_W, MIN_H = 150, 80
-
-local function BuildBarWindow()
-    local sh = DB()
-    local dmCfg = ns.EDM.DB()
-    if not sh.barEnabled or ShouldHide(sh.barHideInDungeon, sh.barHideInRaid, sh.barHideInDelve, sh.barHideInPvP, sh.barHideOutOfInstance) then
-        if _barWin then _barWin:Hide() end
-        return
-    end
-
-    if not _barWin then
-        local frame = CreateFrame("Frame", "EllesmereUIDMBarHistory", UIParent)
-        frame:SetClampedToScreen(true)
-        frame:SetMovable(true)
-        frame:SetFrameStrata("MEDIUM")
-        frame:EnableMouse(false)
-        frame._visSlots = 1
-        frame._locked = sh.barLocked or false
-        frame._isHovered = false
-        _barWin = frame
-        -- A cast already underway animates the moment the window shows
-        -- (instance rules, hotkey, options, Alt-Z). Starts hidden so the
-        -- first Show below runs it too.
-        frame:SetScript("OnShow", function()
-            if next(_pendingCasts) then StartCastAnim(true) end
-        end)
-        frame:Hide()
-
-        frame._bg = frame:CreateTexture(nil, "BACKGROUND")
-        frame._bg:SetAllPoints()
-
-        -- Header (inside the classic box's line; flush on every other look)
-        local ci = ns.DMClassicInset()
-        -- (Its fixed 22, plus the Forever header band's rail under the variant.)
-        local hdr = CreateFrame("Frame", nil, frame)
-        hdr:SetHeight(22 + ns.DMFvRail(22))
-        hdr:SetPoint("TOPLEFT", frame, "TOPLEFT", ci, -ci); hdr:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -ci, -ci)
-        hdr:SetFrameLevel(frame:GetFrameLevel() + 5)
-        hdr:EnableMouse(true)
-        frame._hdr = hdr
-
-        local hdrBg = hdr:CreateTexture(nil, "BACKGROUND")
-        hdrBg:SetAllPoints()
-        frame._hdrBg = hdrBg
-
-        local title = hdr:CreateFontString(nil, "OVERLAY")
-        title:SetPoint("LEFT", hdr, "LEFT", 6, ns.DMHdrLift(22))
-        SetFont(title, 11)
-        title:SetText("Spell History")
-        frame._title = title
-
-        -- Header icons (right-aligned, matching DM window style)
-        local ICON_A = 0.4
-        local ICON_HA = 0.9
-        -- Size and gap follow the style (the main window's rule at its
-        -- fixed 22 base): ns.DMHdrIconSize / ns.DMHdrIconPad.
-        local btnSize = ns.DMHdrIconSize(nil)
-        local btnPad = ns.DMHdrIconPad()
-
-        -- artKey: the header key whose stock-style art replaces the glyph
-        -- under a stock style (ns.DM_HDR_ART); the glyph stays where none exists.
-        local function MakeHdrBtn(texFile, xOff, tooltip, onClick, artKey)
-            local btn = CreateFrame("Button", nil, hdr)
-            btn:SetSize(btnSize, btnSize)
-            btn:SetPoint("RIGHT", hdr, "RIGHT", xOff, ns.DMHdrLift(22))
-            btn:SetFrameLevel(hdr:GetFrameLevel() + 2)
-            local icon = btn:CreateTexture(nil, "ARTWORK")
-            icon:SetAllPoints()
-            btn._hdrIcon = icon
-            if not ns.DMPaintHdrArt(icon, artKey) then
-                icon:SetTexture(texFile)
-                icon:SetDesaturated(true)
-                icon:SetVertexColor(1, 1, 1, ICON_A)
-            end
-            btn:SetScript("OnEnter", function()
-                if not ns.DMHdrHover(icon, true) then icon:SetVertexColor(1, 1, 1, ICON_HA) end
-                EUI.ShowWidgetTooltip(btn, tooltip)
-            end)
-            btn:SetScript("OnLeave", function()
-                if not ns.DMHdrHover(icon, false) then icon:SetVertexColor(1, 1, 1, ICON_A) end
-                EUI.HideWidgetTooltip()
-            end)
-            btn:SetScript("OnClick", function()
-                EUI.HideWidgetTooltip()
-                onClick(btn)
-            end)
-            btn._icon = icon
-            return btn
-        end
-
-        -- Btn 1 (rightmost): Settings
-        MakeHdrBtn(MEDIA .. "dm_settings.png", -(btnPad + 2), "Settings", function()
-            -- Folded to the mini window: fall through to ShowModule, which unfolds it.
-            if ns._optionsOpen and not EUI._panelCollapsed then
-                EUI:Hide()
-                return
-            end
-            if EUI.ShowModule then
-                EUI:ShowModule("EllesmereUIDamageMeters")
-                C_Timer.After(0, function()
-                    EUI:SelectPage("Spell History")
-                end)
-            end
-        end, "settings")
-
-        -- Btn 2: Lock/Unlock
-        local lockBtnHdr = MakeHdrBtn(
-            frame._locked and (MEDIA .. "dm_locked_top.png") or (MEDIA .. "dm_unlock_top.png"),
-            -(btnSize + btnPad * 2 + 2), frame._locked and "Locked" or "Unlocked",
-            function()
-                frame._locked = not frame._locked
-                DB().barLocked = frame._locked
-                local ic = frame._lockBtn._icon
-                if not ns.DMPaintHdrArt(ic, frame._locked and "locked" or "unlocked") then
-                    ic:SetTexture(frame._locked and (MEDIA .. "dm_locked_top.png") or (MEDIA .. "dm_unlock_top.png"))
-                end
-            end,
-            frame._locked and "locked" or "unlocked"
-        )
-        frame._lockBtn = lockBtnHdr
-        lockBtnHdr:SetScript("OnEnter", function()
-            if not ns.DMHdrHover(lockBtnHdr._icon, true) then lockBtnHdr._icon:SetVertexColor(1, 1, 1, ICON_HA) end
-            EUI.ShowWidgetTooltip(lockBtnHdr, frame._locked and "Locked" or "Unlocked")
-        end)
-
-        -- Btn 3: Resize (width drag)
-        local resizeBtnHdr = MakeHdrBtn(MEDIA .. "dm_width_resize.png", -(btnSize * 2 + btnPad * 3 + 2), "Resize Width", function() end, "resize")
-        -- Override: drag to resize width
-        local resizeStartX, resizeStartW
-        local resizeFrame = CreateFrame("Frame")
-        resizeFrame:Hide()
-        resizeFrame:SetScript("OnUpdate", function()
-            if not frame._resizing then return end
-            local cx = GetCursorPosition()
-            local es = frame:GetEffectiveScale()
-            frame:SetWidth(max(MIN_W, resizeStartW + (cx / es - resizeStartX)))
-        end)
-        resizeBtnHdr:SetScript("OnMouseDown", function(_, btn)
-            if btn ~= "LeftButton" or frame._locked then return end
-            local left, top = frame:GetLeft(), frame:GetTop()
-            if left and top then
-                frame:ClearAllPoints()
-                frame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
-            end
-            local cx = GetCursorPosition()
-            resizeStartX = cx / frame:GetEffectiveScale()
-            resizeStartW = frame:GetWidth()
-            frame._resizing = true
-            resizeFrame:Show()
-        end)
-        resizeBtnHdr:SetScript("OnMouseUp", function(_, btn)
-            if btn ~= "LeftButton" or not frame._resizing then return end
-            frame._resizing = false
-            resizeFrame:Hide()
-            DB().barWidth = floor(frame:GetWidth() + 0.5)
-        end)
-
-        -- Header drag
-        hdr:SetScript("OnMouseDown", function(_, btn)
-            if btn == "LeftButton" and not frame._locked then frame:StartMoving() end
-        end)
-        hdr:SetScript("OnMouseUp", function()
-            frame:StopMovingOrSizing()
-            local l, t = frame:GetLeft(), frame:GetTop()
-            if l and t then DB().barPos = { x = l, y = t } end
-        end)
-
-        -- Content (click-through, mouse wheel only)
-        local content = CreateFrame("Frame", nil, frame)
-        content:SetPoint("TOPLEFT", hdr, "BOTTOMLEFT", 0, 0)
-        content:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
-        content:EnableMouse(false)
-        frame._content = content
-
-        content:EnableMouseWheel(true)
-        content:SetScript("OnMouseWheel", function(_, delta)
-            local maxS = max(0, #_history - (frame._visSlots or 1))
-            _barScroll = max(0, min(_barScroll - delta, maxS))
-            RefreshBarWindow()
-        end)
-
-    end
-
-    -- Apply styling (bg from spell history settings, header from DM settings;
-    -- the classic header shade follows this window's own colour)
-    ns.DMPaintWindowBg(_barWin._bg, sh.bgR or 0, sh.bgG or 0, sh.bgB or 0, sh.bgAlpha or 0.25, true)
-
-    local hc = dmCfg.hdrBgColor
-    local hR, hG, hB = hc and hc.r or 0x1B/255, hc and hc.g or 0x1B/255, hc and hc.b or 0x1B/255
-    ns.DMPaintHeaderBg(_barWin._hdrBg, hR, hG, hB, dmCfg.hdrBgAlpha or 1, sh.bgR or 0, sh.bgG or 0, sh.bgB or 0)
-
-    local tR, tG, tB
-    if dmCfg.hdrTextUseAccent ~= false then tR, tG, tB = ns.DMTitleRGB()
-    else local tc = dmCfg.hdrTextColor; tR = tc and tc.r or 1; tG = tc and tc.g or 1; tB = tc and tc.b or 1 end
-    _barWin._title:SetTextColor(tR, tG, tB, 1)
-
-    -- Hide/show top bar
-    local hideTop = sh.hideTopBar
-    local ci = ns.DMClassicInset()
-    if hideTop then _barWin._hdr:Hide() else _barWin._hdr:Show() end
-    _barWin._content:ClearAllPoints()
-    if hideTop then
-        _barWin._content:SetPoint("TOPLEFT", _barWin, "TOPLEFT", ci, -ci)
-    else
-        _barWin._content:SetPoint("TOPLEFT", _barWin._hdr, "BOTTOMLEFT", 0, 0)
-    end
-    _barWin._content:SetPoint("BOTTOMRIGHT", _barWin, "BOTTOMRIGHT", -ci, ci)
-
-    -- Size: width from DB, height auto-calculated from maxBars (plus the
-    -- classic box's inset above and below)
-    local hdrH = hideTop and 0 or (22 + ns.DMFvRail(22))
-    local maxBars = sh.maxBars or 5
-    local _, _, stride = ns._RowMetrics(sh.shBarHeight or 18, dmCfg.barSpacing or 2, _barWin:GetEffectiveScale())
-    local autoH = hdrH + maxBars * stride + ci * 2
-    _barWin:SetSize(sh.barWidth or 300, autoH)
-    _barWin._locked = sh.barLocked or false
-    local pos = sh.barPos
-    if pos and pos.x and pos.y then
-        _barWin:ClearAllPoints()
-        _barWin:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", pos.x, pos.y)
-    elseif not _barWin._positioned then
-        _barWin:ClearAllPoints()
-        _barWin:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-        _barWin._positioned = true
-    end
-
-    while #_barPool < BAR_POOL_SIZE do
-        _barPool[#_barPool + 1] = MakeHistoryBar(_barWin._content)
-    end
-
-    _barWin:Show()
-    RefreshBarWindow()
+-- Spells from the action bars, used to fill empty slots while previewing.
+local function GetPreviewSpells()
+	if previewSpells then
+		return previewSpells
+	end
+	previewSpells = {}
+	local seen = {}
+	for slot = 1, 120 do
+		local actionType, id = GetActionInfo(slot)
+		if actionType == "spell" and id and not seen[id] then
+			local name, _, icon, _, _, _, castTime = GetSpellInfo(id)
+			if name and icon then
+				seen[id] = true
+				previewSpells[#previewSpells + 1] = { name = name, icon = icon, castTime = (castTime or 0) / 1000 }
+				if #previewSpells >= MAX_BARS then
+					break
+				end
+			end
+		end
+	end
+	if #previewSpells == 0 then
+		previewSpells[1] = { name = "Spell", icon = "Interface\\Icons\\INV_Misc_QuestionMark", castTime = 1.5 }
+	end
+	return previewSpells
 end
 
-RefreshBarWindow = function()
-    if not _barWin or not _barWin:IsShown() then return end
-
-    local dmCfg = ns.EDM.DB()
-    local sh = DB()
-    local barH, barSp, stride = ns._RowMetrics(sh.shBarHeight or 18, dmCfg.barSpacing or 2, _barWin:GetEffectiveScale())
-    local texPath = GetBarTexturePath()
-    local fontSize = sh.textSize or 11
-    local content = _barWin._content
-    local frameH = content:GetHeight()
-    local visSlots = max(1, floor(frameH / stride + 0.5))
-    _barWin._visSlots = visSlots
-
-    -- Text color from spell history settings
-    local txR, txG, txB
-    if sh.textColorUseAccent then txR, txG, txB = GetAccentRGB()
-    else local tc = sh.textColor; txR = tc and tc.r or 1; txG = tc and tc.g or 1; txB = tc and tc.b or 1 end
-
-    -- Re-apply fonts to ALL pool bars when settings change (not just visible ones)
-    local fontKey = fontSize .. "|" .. EUI.GetFontPath("damageMeters") .. "|" .. EUI.GetFontOutlineFlag("damageMeters")
-    local fontChanged = (fontKey ~= _barFontCache)
-    if fontChanged then
-        _barFontCache = fontKey
-        for fi = 1, #_barPool do
-            SetFont(_barPool[fi].label, fontSize)
-            SetFont(_barPool[fi].rightText, fontSize)
-        end
-    end
-
-    -- Precompute normal bar color outside loop (OutcomeColor calls DB per bar)
-    local nR, nG, nB = OutcomeColor("success")
-    local barAlpha = sh.barOpacity or 1
-    local stR, stG, stB = CLR_STOPPED[1], CLR_STOPPED[2], CLR_STOPPED[3]
-
-    local total = min(#_history, sh.maxBars or 5)
-    local loopEnd = max(visSlots, _lastBarVisible)
-    local barIconZoom = sh.iconZoom or 0.08
-
-    -- Layout key: only rebuild positions/sizes when settings change
-    local layoutKey = barH .. "|" .. barSp .. "|" .. texPath
-    local layoutChanged = (layoutKey ~= _barLayoutCache)
-    if layoutChanged then _barLayoutCache = layoutKey end
-
-    for i = 1, loopEnd do
-        local bar = _barPool[i]
-        if not bar then break end
-        local idx = _barScroll + i
-        if i <= visSlots and idx <= total then
-            local entry = _history[idx]
-
-            if bar._cachedZoom ~= barIconZoom then
-                bar._cachedZoom = barIconZoom
-                bar.icon:SetTexCoord(barIconZoom, 1 - barIconZoom, barIconZoom, 1 - barIconZoom)
-            end
-
-            -- Layout: only on settings change or slot reuse
-            if layoutChanged or bar._cachedSlot ~= i then
-                bar._cachedSlot = i
-                local y = -(i - 1) * stride
-                bar.row:ClearAllPoints()
-                bar.row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, y)
-                bar.row:SetPoint("TOPRIGHT", content, "TOPRIGHT", 0, y)
-                bar.row:SetHeight(barH)
-                bar.fill:SetStatusBarTexture(texPath)
-                -- Blizzard Style: the stock bevel over the user's texture
-                -- (none under Classic WoW UI).
-                if ns.DMStyle() == "blizzard" then ns.DMApplyBlizzFill(bar.fill) end
-                bar.icon:SetSize(barH, barH)
-                bar._cachedEntry = nil -- force content rebuild
-            end
-
-            -- Content: only when entry changes
-            if bar._cachedEntry ~= entry then
-                bar._cachedEntry = entry
-                if entry.icon then bar.icon:SetTexture(entry.icon); bar.icon:Show()
-                else bar.icon:Hide() end
-                bar.label:SetText(entry.spellName or "?")
-                bar._cachedStatus = nil -- force color/fill rebuild
-                bar._cachedFillDone = nil -- force fill value reset
-            end
-
-            -- Color + fill: update when status changes or on active casts
-            local status = entry.status
-            if bar._cachedStatus ~= status then
-                bar._cachedStatus = status
-                local cr, cg, cb
-                if status == "failed" or status == "interrupted" then
-                    cr, cg, cb = stR, stG, stB
-                else
-                    cr, cg, cb = nR, nG, nB
-                end
-                bar.fill:SetStatusBarColor(cr, cg, cb, barAlpha)
-            end
-
-            -- Fill value: always set for active casts, once for finished
-            if entry.fillProgress then
-                bar.fill:SetValue(entry.fillProgress)
-            elseif status == "casting" or status == "channeling" then
-                local now = GetTime()
-                local dur = entry.endTime - entry.startTime
-                if dur > 0 then
-                    local progress = status == "channeling"
-                        and (entry.endTime - now) / dur
-                        or  (now - entry.startTime) / dur
-                    bar.fill:SetValue(min(max(progress, 0), 1))
-                else
-                    bar.fill:SetValue(1)
-                end
-            elseif not bar._cachedFillDone then
-                bar._cachedFillDone = true
-                bar.fill:SetValue(1)
-            end
-
-            -- Text color: only on settings change
-            if layoutChanged or not bar._cachedTxColor then
-                bar._cachedTxColor = true
-                bar.label:SetTextColor(txR, txG, txB, 1)
-                bar.rightText:SetTextColor(txR, txG, txB, 1)
-            end
-
-            bar.rightText:SetText(BuildRightText(entry))
-            bar.row:Show()
-        else
-            if bar then
-                bar.row:Hide()
-                bar._cachedSlot = nil; bar._cachedEntry = nil; bar._cachedStatus = nil
-                bar._cachedFillDone = nil; bar._cachedTxColor = nil
-            end
-        end
-    end
-    _lastBarVisible = visSlots
+-- Green box shown in Unlock Mode; dragging it moves dragFrame.
+local function CreateMover(parent, label, dragFrame, onStop)
+	local mover = CreateFrame("Frame", nil, parent)
+	mover:SetAllPoints(parent)
+	mover:SetFrameLevel(parent:GetFrameLevel() + 30)
+	mover:EnableMouse(true)
+	mover:RegisterForDrag("LeftButton")
+	local bg = mover:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetTexture(ACCENT[1], ACCENT[2], ACCENT[3], 0.15)
+	local function Edge(p1, p2, horizontal)
+		local tex = mover:CreateTexture(nil, "OVERLAY")
+		tex:SetTexture(ACCENT[1], ACCENT[2], ACCENT[3], 0.9)
+		tex:SetPoint(p1)
+		tex:SetPoint(p2)
+		if horizontal then
+			tex:SetHeight(1)
+		else
+			tex:SetWidth(1)
+		end
+	end
+	Edge("TOPLEFT", "TOPRIGHT", true)
+	Edge("BOTTOMLEFT", "BOTTOMRIGHT", true)
+	Edge("TOPLEFT", "BOTTOMLEFT", false)
+	Edge("TOPRIGHT", "BOTTOMRIGHT", false)
+	local text = mover:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	text:SetPoint("BOTTOMLEFT", mover, "TOPLEFT", 0, 3)
+	text:SetTextColor(ACCENT[1], ACCENT[2], ACCENT[3])
+	text:SetText(label)
+	mover:SetScript("OnDragStart", function() dragFrame:StartMoving() end)
+	mover:SetScript("OnDragStop", function()
+		dragFrame:StopMovingOrSizing()
+		dragFrame:SetUserPlaced(false)
+		onStop()
+	end)
+	mover:Hide()
+	return mover
 end
 
--------------------------------------------------------------------------------
---  Active-cast fill animation
---  Only runs while there are pending (in-progress) casts to animate and the
---  bar window is visible.  Stops itself when all casts resolve or the window
---  hides; the window's OnShow restarts it.  Zero cost when idle or hidden.
--------------------------------------------------------------------------------
--- Lightweight per-frame updater: only touches fill values + right text on
--- bars with active casts.  Full RefreshBarWindow runs on PushEntry/Finish.
-local _castAnimFrame = CreateFrame("Frame")
-_castAnimFrame:Hide()
-_castAnimFrame:SetScript("OnUpdate", function(self)
-    if not next(_pendingCasts) then self:Hide(); return end
-    if not _barWin or not _barWin:IsVisible() then self:Hide(); return end
-    local now = GetTime()
-    local visSlots = _barWin._visSlots or 5
-    local scroll = _barScroll or 0
-    for i = 1, min(visSlots, BAR_POOL_SIZE) do
-        local idx = scroll + i
-        local entry = _history[idx]
-        if not entry then break end
-        local status = entry.status
-        if status == "casting" or status == "channeling" then
-            local bar = _barPool[i]
-            if bar and bar.row:IsShown() then
-                local dur = entry.endTime - entry.startTime
-                if dur > 0 then
-                    local progress = status == "channeling"
-                        and (entry.endTime - now) / dur
-                        or  (now - entry.startTime) / dur
-                    bar.fill:SetValue(min(max(progress, 0), 1))
-                end
-                bar.rightText:SetText(BuildRightText(entry))
-            end
-        end
-    end
+---------------------------------------------------------------------------
+-- Icon History
+---------------------------------------------------------------------------
+-- head = the newest icon; its center is the saved position, so changing the
+-- number of icons or the direction does not move the strip.
+local head = CreateFrame("Frame", "EUI_SpellHistoryIcons", UIParent)
+head:SetMovable(true)
+head:SetClampedToScreen(true)
+head:SetFrameStrata("MEDIUM")
+head:Hide()
+
+local iconBox = CreateFrame("Frame", nil, head) -- covers the whole strip (for the mover)
+local icons = {}
+for i = 1, MAX_ICONS do
+	local f = CreateFrame("Frame", nil, head)
+	f.bg = f:CreateTexture(nil, "BACKGROUND")
+	f.bg:SetAllPoints()
+	f.bg:SetTexture(0, 0, 0, 0.4)
+	f.tex = f:CreateTexture(nil, "ARTWORK")
+	f.tex:SetAllPoints()
+	f:Hide()
+	icons[i] = f
+end
+
+local function SaveIconPosition()
+	local cx, cy = head:GetCenter()
+	local px, py = UIParent:GetCenter()
+	if cx and px then
+		db.iconPos = { floor(cx - px + 0.5), floor(cy - py + 0.5) }
+	end
+	head:ClearAllPoints()
+	head:SetPoint("CENTER", UIParent, "CENTER", db.iconPos[1], db.iconPos[2])
+end
+
+local iconMover = CreateMover(iconBox, "Spell History: Icons", head, SaveIconPosition)
+
+local function LayoutIcons()
+	local size, spacing, count = db.iconSize, db.iconSpacing, db.iconMax
+	local vec = GROW_VECTOR[db.iconGrow] or GROW_VECTOR.LEFT
+	head:SetSize(size, size)
+	-- While Unlock Mode is open its movers own the spot; an unlock anchor after.
+	if not (ns._unlockActive and head:GetNumPoints() > 0) then
+		head:ClearAllPoints()
+		head:SetPoint("CENTER", UIParent, "CENTER", db.iconPos[1], db.iconPos[2])
+		if not ns._unlockActive and ns.IsUnlockAnchored and ns.IsUnlockAnchored("EDM_IconHistory") and ns.ReapplyOwnAnchor then
+			ns.ReapplyOwnAnchor("EDM_IconHistory")
+		end
+	end
+	head:SetAlpha(db.iconOpacity / 100)
+	for i = 1, MAX_ICONS do
+		local f = icons[i]
+		f:SetSize(size, size)
+		f.baseX = vec[1] * (i - 1) * (size + spacing)
+		f.baseY = vec[2] * (i - 1) * (size + spacing)
+		f:ClearAllPoints()
+		f:SetPoint("CENTER", head, "CENTER", f.baseX, f.baseY)
+		Zoom(f.tex)
+	end
+	local length = count * size + (count - 1) * spacing
+	iconBox:ClearAllPoints()
+	if db.iconGrow == "LEFT" then
+		iconBox:SetPoint("TOPRIGHT", head, "TOPRIGHT")
+		iconBox:SetSize(length, size)
+	elseif db.iconGrow == "RIGHT" then
+		iconBox:SetPoint("TOPLEFT", head, "TOPLEFT")
+		iconBox:SetSize(length, size)
+	elseif db.iconGrow == "UP" then
+		iconBox:SetPoint("BOTTOMLEFT", head, "BOTTOMLEFT")
+		iconBox:SetSize(size, length)
+	else
+		iconBox:SetPoint("TOPLEFT", head, "TOPLEFT")
+		iconBox:SetSize(size, length)
+	end
+end
+
+local function RefreshIcons(now)
+	if not head:IsShown() then
+		return
+	end
+	local fadeTime = db.iconFadeTime
+	local slot = 0
+	for i = 1, #history do
+		if slot >= db.iconMax then
+			break
+		end
+		local entry = history[i]
+		local alpha = 1
+		if fadeTime > 0 then
+			local age = fadeClock - entry.fadeBase
+			if age > fadeTime then
+				alpha = 1 - (age - fadeTime) / FADE_DUR
+			end
+		end
+		if alpha > 0 then
+			slot = slot + 1
+			local f = icons[slot]
+			f.tex:SetTexture(entry.icon)
+			if entry.status == "failed" or entry.status == "interrupted" then
+				f.tex:SetVertexColor(FAIL_COLOR[1], FAIL_COLOR[2], FAIL_COLOR[3])
+			else
+				f.tex:SetVertexColor(1, 1, 1)
+			end
+			local dx, dy, scale = 0, 0, 1
+			if slot == 1 and entry == animEntry and db.iconAnimation ~= "none" then
+				local t = min((now - animStart) / ANIM_DUR, 1)
+				local inv = 1 - t
+				local ease = 1 - inv * inv * inv
+				alpha = alpha * (0.5 + 0.5 * ease)
+				if db.iconAnimation == "slide" then
+					local vec = GROW_VECTOR[db.iconGrow] or GROW_VECTOR.LEFT
+					dx = -vec[1] * ANIM_SLIDE_PX * (1 - ease)
+					dy = -vec[2] * ANIM_SLIDE_PX * (1 - ease)
+				else
+					scale = 1.35 + (1 - 1.35) * ease
+				end
+				if t >= 1 then
+					animEntry = nil
+				end
+			end
+			f:SetScale(scale)
+			f:ClearAllPoints()
+			f:SetPoint("CENTER", head, "CENTER", (f.baseX + dx) / scale, (f.baseY + dy) / scale)
+			f:SetAlpha(alpha)
+			f:Show()
+		end
+	end
+	-- Preview: fill empty slots with action bar spells.
+	if previewOn or iconsUnlocked then
+		local spells = GetPreviewSpells()
+		for i = slot + 1, db.iconMax do
+			local f = icons[i]
+			local spell = spells[(i - 1) % #spells + 1]
+			f.tex:SetTexture(spell.icon)
+			f.tex:SetVertexColor(1, 1, 1)
+			f:SetScale(1)
+			f:ClearAllPoints()
+			f:SetPoint("CENTER", head, "CENTER", f.baseX, f.baseY)
+			f:SetAlpha(0.75)
+			f:Show()
+		end
+		slot = db.iconMax
+	end
+	for i = slot + 1, MAX_ICONS do
+		icons[i]:Hide()
+	end
+end
+
+---------------------------------------------------------------------------
+-- Bar History
+---------------------------------------------------------------------------
+local win = CreateFrame("Frame", "EUI_SpellHistoryBars", UIParent)
+win:SetMovable(true)
+win:SetClampedToScreen(true)
+win:SetFrameStrata("MEDIUM")
+win:EnableMouseWheel(true)
+win:Hide()
+win.bg = win:CreateTexture(nil, "BACKGROUND")
+win.bg:SetAllPoints()
+win.header = CreateFrame("Frame", nil, win)
+win.header:SetPoint("TOPLEFT")
+win.header:SetPoint("TOPRIGHT")
+win.header:SetHeight(HEADER_H)
+win.header.bg = win.header:CreateTexture(nil, "BACKGROUND")
+win.header.bg:SetAllPoints()
+win.header.bg:SetTexture(0, 0, 0, 0.35)
+win.header.line = win.header:CreateTexture(nil, "BORDER")
+win.header.line:SetPoint("BOTTOMLEFT")
+win.header.line:SetPoint("BOTTOMRIGHT")
+win.header.line:SetHeight(1)
+win.header.line:SetTexture(ACCENT[1], ACCENT[2], ACCENT[3], 0.6)
+win.title = win.header:CreateFontString(nil, "OVERLAY")
+win.title:SetPoint("LEFT", 8, 0)
+
+local rows = {}
+for i = 1, MAX_BARS do
+	local row = CreateFrame("Frame", nil, win)
+	row.icon = row:CreateTexture(nil, "ARTWORK")
+	row.icon:SetPoint("TOPLEFT")
+	row.icon:SetPoint("BOTTOMLEFT")
+	row.bar = CreateFrame("StatusBar", nil, row)
+	row.bar:SetPoint("TOPLEFT", row.icon, "TOPRIGHT", 1, 0)
+	row.bar:SetPoint("BOTTOMRIGHT")
+	row.bar:SetMinMaxValues(0, 1)
+	row.barBg = row.bar:CreateTexture(nil, "BACKGROUND")
+	row.barBg:SetAllPoints()
+	row.name = row.bar:CreateFontString(nil, "OVERLAY")
+	row.name:SetPoint("LEFT", 4, 0)
+	row.name:SetJustifyH("LEFT")
+	row.name:SetWordWrap(false)
+	row.right = row.bar:CreateFontString(nil, "OVERLAY")
+	row.right:SetPoint("RIGHT", -4, 0)
+	row.right:SetJustifyH("RIGHT")
+	row.right:SetWordWrap(false)
+	row:Hide()
+	rows[i] = row
+end
+
+local function SaveBarPosition()
+	local left, top = win:GetLeft(), win:GetTop()
+	local px, py = UIParent:GetCenter()
+	if left and px then
+		db.barPos = { floor(left - px + 0.5), floor(top - py + 0.5) }
+	end
+	win:ClearAllPoints()
+	win:SetPoint("TOPLEFT", UIParent, "CENTER", db.barPos[1], db.barPos[2])
+end
+
+local barMover = CreateMover(win, "Spell History: Bars", win, SaveBarPosition)
+
+local function TextColor()
+	if db.textColorMode == "accent" then
+		return ACCENT[1], ACCENT[2], ACCENT[3]
+	end
+	local c = db.textColor
+	return c[1], c[2], c[3]
+end
+
+local function BarColor()
+	if db.barColorMode == "class" then
+		local c = RAID_CLASS_COLORS[select(2, UnitClass("player"))]
+		if c then
+			return c.r, c.g, c.b
+		end
+	elseif db.barColorMode == "accent" then
+		return ACCENT[1], ACCENT[2], ACCENT[3]
+	end
+	local c = db.barColor
+	return c[1], c[2], c[3]
+end
+
+local function LayoutBars()
+	local height, count = db.barHeight, db.barMax
+	local top = db.barHideTopBar and 0 or HEADER_H
+	win:SetSize(max(150, db.barWidth), top + count * (height + ROW_GAP) - ROW_GAP)
+	if not (ns._unlockActive and win:GetNumPoints() > 0) then
+		win:ClearAllPoints()
+		win:SetPoint("TOPLEFT", UIParent, "CENTER", db.barPos[1], db.barPos[2])
+		if not ns._unlockActive and ns.IsUnlockAnchored and ns.IsUnlockAnchored("EDM_BarHistory") and ns.ReapplyOwnAnchor then
+			ns.ReapplyOwnAnchor("EDM_BarHistory")
+		end
+	end
+	win:SetAlpha(db.barOpacity / 100)
+	local c = db.bgColor
+	win.bg:SetTexture(c[1], c[2], c[3], db.bgAlpha / 100)
+	win.header:SetShown(not db.barHideTopBar)
+	SetFont(win.title, db.textSize)
+	win.title:SetText("Spell History")
+	win.title:SetTextColor(TextColor())
+	local texture = (type(db.barTexture) == "string" and db.barTexture ~= "") and db.barTexture or BAR_TEXTURE
+	for i = 1, MAX_BARS do
+		local row = rows[i]
+		row:ClearAllPoints()
+		row:SetPoint("TOPLEFT", win, "TOPLEFT", 0, -top - (i - 1) * (height + ROW_GAP))
+		row:SetPoint("TOPRIGHT", win, "TOPRIGHT", 0, -top - (i - 1) * (height + ROW_GAP))
+		row:SetHeight(height)
+		row.icon:SetWidth(height)
+		Zoom(row.icon)
+		row.bar:SetStatusBarTexture(texture)
+		if not row.bar:GetStatusBarTexture() or not row.bar:GetStatusBarTexture():GetTexture() then
+			row.bar:SetStatusBarTexture(BAR_TEXTURE)
+		end
+		row.barBg:SetTexture(row.bar:GetStatusBarTexture():GetTexture())
+		SetFont(row.name, db.textSize)
+		SetFont(row.right, db.textSize)
+		if i > count then
+			row:Hide()
+		end
+	end
+end
+
+local function FormatEntry(entry, now)
+	local duration = (entry.endTime or 0) - (entry.startTime or 0)
+	if entry.status == "casting" or entry.status == "channeling" then
+		local elapsed = max(0, now - entry.startTime)
+		local progress = duration > 0 and elapsed / duration or 1
+		if entry.status == "channeling" then
+			progress = 1 - progress
+		end
+		return min(1, max(0, progress)), format("%.1f", elapsed), false
+	elseif entry.status == "failed" or entry.status == "interrupted" then
+		local progress = 1
+		if duration > 0 and entry.finished then
+			progress = (entry.finished - entry.startTime) / duration
+			if entry.isChannel then
+				progress = 1 - progress
+			end
+		end
+		return min(1, max(0, progress)), entry.status == "interrupted" and "Interrupted" or "Failed", true
+	end
+	local text = ""
+	if not entry.isInstant and entry.startTime then
+		local total = (entry.isChannel and entry.finished or entry.endTime) - entry.startTime
+		text = format("%.1fs", max(0, total))
+	end
+	if entry.target then
+		text = (text ~= "" and (entry.target .. "  " .. text)) or entry.target
+	end
+	return 1, text, false
+end
+
+local function RefreshBars(now)
+	if not win:IsShown() then
+		return
+	end
+	local r, g, b = BarColor()
+	local tr, tg, tb = TextColor()
+	local spells = (previewOn or barsUnlocked) and GetPreviewSpells()
+	for i = 1, db.barMax do
+		local row = rows[i]
+		local entry = history[scrollOffset + i]
+		if entry then
+			local progress, text, failed = FormatEntry(entry, now)
+			row.icon:SetTexture(entry.icon)
+			row.name:SetText(entry.name)
+			row.right:SetText(text)
+			row.bar:SetValue(progress)
+			if failed then
+				row.bar:SetStatusBarColor(FAIL_COLOR[1], FAIL_COLOR[2], FAIL_COLOR[3], 0.9)
+				row.barBg:SetVertexColor(FAIL_COLOR[1], FAIL_COLOR[2], FAIL_COLOR[3], 0.2)
+				row.right:SetTextColor(FAIL_COLOR[1], FAIL_COLOR[2], FAIL_COLOR[3])
+			else
+				row.bar:SetStatusBarColor(r, g, b, 0.9)
+				row.barBg:SetVertexColor(r, g, b, 0.2)
+				row.right:SetTextColor(tr, tg, tb)
+			end
+			row.name:SetTextColor(tr, tg, tb)
+			row:SetAlpha(1)
+			row:Show()
+		elseif spells then
+			local spell = spells[(i - 1) % #spells + 1]
+			row.icon:SetTexture(spell.icon)
+			row.name:SetText(spell.name)
+			row.right:SetText(spell.castTime > 0 and format("%.1fs", spell.castTime) or "")
+			row.bar:SetValue(1)
+			row.bar:SetStatusBarColor(r, g, b, 0.9)
+			row.barBg:SetVertexColor(r, g, b, 0.2)
+			row.name:SetTextColor(tr, tg, tb)
+			row.right:SetTextColor(tr, tg, tb)
+			row:SetAlpha(0.75)
+			row:Show()
+		else
+			row:Hide()
+		end
+		-- Name stops before the right text.
+		row.name:SetPoint("RIGHT", row.right, "LEFT", -6, 0)
+	end
+end
+
+win:SetScript("OnMouseWheel", function(_, delta)
+	local maxOffset = max(0, #history - db.barMax)
+	scrollOffset = min(maxOffset, max(0, scrollOffset - delta))
+	RefreshBars(GetTime())
 end)
 
--- onShow: called from the bar window's OnShow, which already means it is visible.
-StartCastAnim = function(onShow)
-    if onShow or (_barWin and _barWin:IsVisible()) then _castAnimFrame:Show() end
-end
-local function StopCastAnim()  _castAnimFrame:Hide() end
+---------------------------------------------------------------------------
+-- Visibility, events, updates
+---------------------------------------------------------------------------
+local SPELL_EVENTS = {
+	"UNIT_SPELLCAST_SENT", "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_SUCCEEDED",
+	"UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_FAILED_QUIET", "UNIT_SPELLCAST_INTERRUPTED",
+	"UNIT_SPELLCAST_STOP", "UNIT_SPELLCAST_DELAYED", "UNIT_SPELLCAST_CHANNEL_START",
+	"UNIT_SPELLCAST_CHANNEL_UPDATE", "UNIT_SPELLCAST_CHANNEL_STOP",
+}
+local eventsOn = false
 
--------------------------------------------------------------------------------
---  Public API
--------------------------------------------------------------------------------
-function ns.ApplySpellHistory()
-    local sh = DB()
-    local active = sh.iconEnabled or sh.barEnabled
+-- Hidden by the meter's Show/Hide Windows keybind ("Include Spell History").
+local keybindHidden = false
 
-    -- Dynamic event registration: zero overhead when disabled
-    if active then RegisterEvents() else UnregisterEvents(); StopCastAnim() end
-
-    if sh.iconEnabled then BuildIconStrip()
-    elseif _iconContainer then _iconContainer:Hide() end
-
-    if sh.barEnabled then BuildBarWindow()
-    elseif _barWin then _barWin:Hide() end
-
-    -- Keep disabled cost at zero: only subscribe to unlock transitions while
-    -- Icon History itself is enabled.
-    if sh.iconEnabled and not ns._iconUnlockListenerRegistered and EUI.RegisterUnlockModeListener then
-        ns._iconUnlockListenerRegistered = true
-        EUI:RegisterUnlockModeListener("EDM_IconHistory", function()
-            if DB().iconEnabled then BuildIconStrip() end
-        end)
-    elseif not sh.iconEnabled and ns._iconUnlockListenerRegistered and EUI.UnregisterUnlockModeListener then
-        EUI:UnregisterUnlockModeListener("EDM_IconHistory")
-        ns._iconUnlockListenerRegistered = nil
-    end
+local function UpdateVisibility()
+	local showIcons = db.iconEnabled and (previewOn or iconsUnlocked or not (keybindHidden or HiddenByZone("icon")))
+	local showBars = db.barEnabled and (previewOn or barsUnlocked or not (keybindHidden or HiddenByZone("bar")))
+	head:SetShown(showIcons and true or false)
+	win:SetShown(showBars and true or false)
+	-- The EllesmereUI core Unlock Mode draws the movers now.
+	iconMover:Hide()
+	barMover:Hide()
+	if head:IsShown() or win:IsShown() then
+		driver:Show()
+	else
+		driver:Hide()
+	end
 end
 
-function ns.RefreshSpellHistoryProfile()
-    _shDB = nil
-    _iconLayoutKey = ""
-    ns.ApplySpellHistory()
+Refresh = function()
+	local now = GetTime()
+	RefreshIcons(now)
+	RefreshBars(now)
 end
 
--------------------------------------------------------------------------------
---  Init (deferred to PLAYER_LOGIN so DM DB is ready)
--------------------------------------------------------------------------------
-local initFrame = CreateFrame("Frame")
-initFrame:RegisterEvent("PLAYER_LOGIN")
-initFrame:SetScript("OnEvent", function(self)
-    self:UnregisterAllEvents()
-    C_Timer.After(0.1, function()
-        _shDB = nil  -- force defaults merge on first access
-        ns.ApplySpellHistory()
-    end)
+local function Apply()
+	if not loaded then
+		return
+	end
+	local wanted = db.iconEnabled or db.barEnabled
+	if wanted ~= eventsOn then
+		eventsOn = wanted
+		for i = 1, #SPELL_EVENTS do
+			if wanted then
+				driver:RegisterUnitEvent(SPELL_EVENTS[i], "player")
+			else
+				driver:UnregisterEvent(SPELL_EVENTS[i])
+			end
+		end
+		if not wanted then
+			wipe(history)
+			currentCast, currentChannel = nil, nil
+		end
+	end
+	scrollOffset = 0
+	LayoutIcons()
+	LayoutBars()
+	UpdateVisibility()
+	Refresh()
+end
+
+local elapsedSince = 0
+driver:SetScript("OnUpdate", function(self, elapsed)
+	if not UnitAffectingCombat("player") then
+		fadeClock = fadeClock + elapsed
+	end
+	elapsedSince = elapsedSince + elapsed
+	if elapsedSince < 0.02 then
+		return
+	end
+	elapsedSince = 0
+	local now = GetTime()
+	-- Resolve casts that stopped without SUCCEEDED, and lost events.
+	for i = 1, min(10, #history) do
+		local e = history[i]
+		if e.status == "casting" then
+			if e.stopAt and now - e.stopAt > STOP_GRACE then
+				if currentCast == e then
+					currentCast = nil
+				end
+				e.status, e.finished, e.stopAt = "failed", e.stopAt, nil
+			elseif not e.stopAt and e.endTime and now > e.endTime + 2 and currentCast ~= e then
+				e.status, e.finished = "success", e.endTime
+			end
+		elseif e.status == "channeling" and currentChannel ~= e and e.endTime and now > e.endTime + 1 then
+			e.status, e.finished = "success", e.endTime
+		end
+	end
+	Refresh()
 end)
+driver:Hide()
 
--- Re-evaluate visibility when entering/leaving instances; refresh preview on spec change
-local zoneFrame = CreateFrame("Frame")
-zoneFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
-zoneFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-zoneFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-zoneFrame:SetScript("OnEvent", function(_, event)
-    if event == "PLAYER_SPECIALIZATION_CHANGED" then _previewIcons = nil end
-    if ns.ApplySpellHistory then ns.ApplySpellHistory() end
+driver:SetScript("OnEvent", function(self, event, ...)
+	if event == "ADDON_LOADED" then
+		if ... ~= addonName then
+			return
+		end
+		self:UnregisterEvent("ADDON_LOADED")
+		-- Before 3.1 the settings were EllesmereUIDB.spellHistory.
+		db = ns.ModuleDB("EllesmereUIDamageMetersDB", "spellHistory", "spellHistory")
+		CopyDefaults(CreateDefaults(), db)
+		loaded = true
+		Apply()
+	elseif event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" then
+		UpdateVisibility()
+		Refresh()
+	elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "PLAYER_SPECIALIZATION_CHANGED" then
+		previewSpells = nil
+	else
+		OnSpellEvent(event, ...)
+	end
 end)
+driver:RegisterEvent("ADDON_LOADED")
+driver:RegisterEvent("PLAYER_ENTERING_WORLD")
+driver:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+driver:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
+driver:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+
+---------------------------------------------------------------------------
+-- API for the settings window and Unlock Mode
+---------------------------------------------------------------------------
+ns.SH_GROW_DIRS = GROW_DIRS
+ns.SH_ANIMATIONS = ANIMATIONS
+ns.SH_TEXT_COLOR_MODES = COLOR_MODES_TEXT
+ns.SH_BAR_COLOR_MODES = COLOR_MODES_BAR
+ns.SH_VISIBILITY = VISIBILITY
+ns.GetSpellHistoryDB = function() return db end
+
+ns.SetSpellHistoryHidden = function(hidden)
+	keybindHidden = hidden and true or false
+	if db then
+		UpdateVisibility()
+	end
+end
+
+-- Shown while the Spell History page of the settings is open.
+ns.SetSpellHistoryPreview = function(on)
+	on = on and true or false
+	if previewOn ~= on then
+		previewOn = on
+		previewSpells = nil
+		UpdateVisibility()
+		Refresh()
+	end
+end
+
+ns.ResetSpellHistorySettings = function()
+	local keep = { iconPos = db.iconPos, barPos = db.barPos }
+	wipe(db)
+	CopyDefaults(CreateDefaults(), db)
+	for key, value in pairs(keep) do
+		db[key] = value
+	end
+	Apply()
+end
+
+ns.applyHooks = ns.applyHooks or {}
+tinsert(ns.applyHooks, Apply)
+
+---------------------------------------------------------------------------
+-- Unlock Mode (EllesmereUI core, retail EDM_IconHistory): the icon strip
+-- (its newest icon is the saved center, the mover covers the whole strip)
+-- and the bar window (saved as its top left corner).
+---------------------------------------------------------------------------
+local function SetUnlocked(on)
+	iconsUnlocked, barsUnlocked = on and true or false, on and true or false
+	local strata = on and "DIALOG" or "MEDIUM"
+	head:SetFrameStrata(strata)
+	win:SetFrameStrata(strata)
+	if db then
+		LayoutIcons()
+		LayoutBars()
+		UpdateVisibility()
+		Refresh()
+	end
+end
+
+local function RegisterUnlock()
+	if not ns.RegisterUnlockElements then
+		return
+	end
+	local MK = ns.MakeUnlockElement
+	ns:RegisterUnlockElements({
+		MK({
+			key = "EDM_IconHistory",
+			label = "Icon History",
+			group = "Damage Meters",
+			order = 700,
+			noResize = true,
+			getFrame = function() return head end,
+			getSize = function() return iconBox:GetWidth(), iconBox:GetHeight() end,
+			-- The mover covers the strip around the newest icon (negative insets).
+			getInsets = function()
+				local hl, hr, ht, hb = head:GetLeft(), head:GetRight(), head:GetTop(), head:GetBottom()
+				local bl, br, bt, bb = iconBox:GetLeft(), iconBox:GetRight(), iconBox:GetTop(), iconBox:GetBottom()
+				if not (hl and bl) then return nil end
+				return bl - hl, hr - br, ht - bt, bb - hb
+			end,
+			isHidden = function() return not db or not db.iconEnabled end,
+			savePos = function(_, point, relPoint, x, y)
+				if point == "CENTER" and relPoint == "CENTER" then
+					db.iconPos = { floor(x + 0.5), floor(y + 0.5) }
+				end
+				if not ns._unlockActive then LayoutIcons() end
+			end,
+			loadPos = function()
+				if not db then return nil end
+				return { point = "CENTER", relPoint = "CENTER", x = db.iconPos[1], y = db.iconPos[2] }
+			end,
+			clearPos = function() db.iconPos = { 0, -180 } end,
+			applyPos = function() if db then LayoutIcons() end end,
+		}),
+		MK({
+			key = "EDM_BarHistory",
+			label = "Bar History",
+			group = "Damage Meters",
+			order = 701,
+			getFrame = function() return win end,
+			getSize = function() return win:GetWidth(), win:GetHeight() end,
+			setWidth = function(_, w)
+				db.barWidth = max(150, floor(w + 0.5))
+				LayoutBars()
+				Refresh()
+			end,
+			isHidden = function() return not db or not db.barEnabled end,
+			-- Stored as the top left corner's offset from the screen center.
+			savePos = function(_, point, relPoint, x, y)
+				if point == "CENTER" and relPoint == "CENTER" then
+					db.barPos = { floor(x - win:GetWidth() / 2 + 0.5), floor(y + win:GetHeight() / 2 + 0.5) }
+				end
+				if not ns._unlockActive then LayoutBars() end
+			end,
+			loadPos = function()
+				if not db then return nil end
+				return { point = "TOPLEFT", relPoint = "CENTER", x = db.barPos[1], y = db.barPos[2] }
+			end,
+			clearPos = function() db.barPos = { 250, -100 } end,
+			applyPos = function() if db then LayoutBars() end end,
+		}),
+	}, "EllesmereUIDamageMeters")
+	ns:RegisterUnlockModeListener("EllesmereUIDamageMeters", SetUnlocked)
+end
+RegisterUnlock()

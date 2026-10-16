@@ -1,0 +1,467 @@
+-- EllesmereUI Unit Frames for 5.4.8: Player Aura Bars preset filters.
+-- Retail EllesmereUI_BuffPresets.lua RETAIL_PRESETS (kept verbatim) and the
+-- Player Aura Bars derivation (seed lists, class hints, spell families).
+-- Many ids are retail-only: the filter editor and dropdowns hide ids that
+-- GetSpellInfo does not know on this client (they stay in the saved lists).
+
+local addonName = ...
+local ns = EllesmereUI
+local UF = ns.UF
+
+local RETAIL_PRESETS = {
+
+-- Order = display order. Indicators assign filters by numeric id, but preset
+-- identity rides the `preset` field so curated-data updates can find them.
+filters = {
+    { key = "defensives",  name = "Defensives" },
+    { key = "activemitigation", name = "Active Mitigation" },
+    { key = "raidcds",     name = "Raid CDs" },
+    { key = "externals",   name = "Externals" },
+    { key = "coreheals",   name = "Core Healing Buffs" },
+    { key = "lesserheals", name = "Lesser Healing Buffs" },
+    { key = "support",     name = "Support" },
+    { key = "offensive",   name = "Offensive CDs" },
+    { key = "movement",    name = "Movement" },
+    { key = "utility",     name = "Utility" },
+    { key = "consumables", name = "Consumables" },
+},
+
+-- Curated spell lists per preset: [primaryID] = { class = "CLASSFILE"|"ALL",
+-- disabled = true|nil, alts = { id, ... } }. Enabled by default unless
+-- `disabled`. In BM2 the PRIMARY id is the checkbox row and alternates
+-- (talent/rank variants) follow the primary's state; in PAB every id becomes
+-- its own row with the primary's state and class hint.
+spells = {
+    defensives = {
+        [48707] = { class = "DEATHKNIGHT", alts = { 444741 } },
+        [48792] = { class = "DEATHKNIGHT" },
+        [49039] = { class = "DEATHKNIGHT", disabled = true },
+        [55233] = { class = "DEATHKNIGHT" },
+        [101568] = { class = "DEATHKNIGHT" },
+        [442715] = { class = "DEMONHUNTER", disabled = true },
+        [212800] = { class = "DEMONHUNTER" },
+        [1266616] = { class = "DEMONHUNTER", alts = { 394933 }, disabled = true },
+        [427912] = { class = "DEMONHUNTER", alts = { 258920 }, disabled = true },
+        [187827] = { class = "DEMONHUNTER" },
+        [207771] = { class = "DEMONHUNTER" },
+        [209426] = { class = "DEMONHUNTER", disabled = true },
+        [22812] = { class = "DRUID" },
+        [22842] = { class = "DRUID" },
+        [102342] = { class = "DRUID" },
+        [192081] = { class = "DRUID", disabled = true },
+        [61336] = { class = "DRUID" },
+        [393903] = { class = "DRUID", disabled = true },
+        [1261872] = { class = "DRUID" },
+        [404381] = { class = "EVOKER" },
+        [363916] = { class = "EVOKER" },
+        [374349] = { class = "EVOKER" },
+        [186265] = { class = "HUNTER" },
+        [472708] = { class = "HUNTER", disabled = true },
+        [264735] = { class = "HUNTER" },
+        [342246] = { class = "MAGE" },
+        [235313] = { class = "MAGE", disabled = true },
+        [11426] = { class = "MAGE", disabled = true },
+        [45438] = { class = "MAGE" },
+        [414658] = { class = "MAGE" },
+        [235450] = { class = "MAGE", disabled = true },
+        [449336] = { class = "MAGE" },
+        [1309793] = { class = "MAGE" },
+        [122783] = { class = "MONK" },
+        [115203] = { class = "MONK", alts = { 120954 } },
+        [125174] = { class = "MONK" },
+        [132578] = { class = "MONK" },
+        [322507] = { class = "MONK" },
+        [432180] = { class = "MONK", disabled = true },
+        [1241059] = { class = "MONK" },
+        [498] = { class = "PALADIN", alts = { 403876 } },
+        [642] = { class = "PALADIN" },
+        [184662] = { class = "PALADIN", disabled = true },
+        [31850] = { class = "PALADIN" },
+        [86659] = { class = "PALADIN" },
+        [212641] = { class = "PALADIN" },
+        [6940] = { class = "PALADIN" },
+        [1022] = { class = "PALADIN", alts = { 1309794 } },
+        [1038] = { class = "PALADIN" },
+        [1044] = { class = "PALADIN" },
+        [114216] = { class = "PRIEST", alts = { 114214 }, disabled = true },
+        [19236] = { class = "PRIEST" },
+        [47585] = { class = "PRIEST" },
+        [586] = { class = "PRIEST" },
+        [45242] = { class = "PRIEST", alts = { 426401 }, disabled = true },
+        [193065] = { class = "PRIEST" },
+        [27827] = { class = "PRIEST" },
+        [31224] = { class = "ROGUE" },
+        [5277] = { class = "ROGUE" },
+        [1966] = { class = "ROGUE" },
+        [185311] = { class = "ROGUE" },
+        [108271] = { class = "SHAMAN" },
+        [260881] = { class = "SHAMAN" },
+        [108416] = { class = "WARLOCK" },
+        [104773] = { class = "WARLOCK" },
+        [132413] = { class = "WARLOCK" },
+        [387636] = { class = "WARLOCK" },
+        [389614] = { class = "WARLOCK", disabled = true },
+        [118038] = { class = "WARRIOR" },
+        [184364] = { class = "WARRIOR" },
+        [190456] = { class = "WARRIOR", alts = { 1277297 } },
+        [147833] = { class = "WARRIOR" },
+        [385391] = { class = "WARRIOR" },
+        [871] = { class = "WARRIOR" },
+        [112048] = { class = "WARRIOR" },
+        [202147] = { class = "WARRIOR", disabled = true },
+    },
+    activemitigation = {
+        [77535] = { class = "DEATHKNIGHT" },
+        [203819] = { class = "DEMONHUNTER" },
+        [192081] = { class = "DRUID" },
+        [132403] = { class = "PALADIN" },
+        [132404] = { class = "WARRIOR" },
+    },
+    raidcds = {
+        [145629] = { class = "DEATHKNIGHT", alts = { 51052 } },
+        [209426] = { class = "DEMONHUNTER", alts = { 196718 } },
+        [740] = { class = "DRUID", alts = { 157982, 1264623 }, disabled = true },
+        [359816] = { class = "EVOKER", alts = { 362361 }, disabled = true },
+        [363534] = { class = "EVOKER", disabled = true },
+        [374227] = { class = "EVOKER" },
+        [31821] = { class = "PALADIN", alts = { 317929 } },
+        [64843] = { class = "PRIEST", alts = { 64844 }, disabled = true },
+        [81782] = { class = "PRIEST", alts = { 62618 } },
+        [325174] = { class = "SHAMAN", alts = { 98008 } },
+        [97463] = { class = "WARRIOR", alts = { 97462 } },
+    },
+    externals = {
+        [102342] = { class = "DRUID" },
+        [357170] = { class = "EVOKER" },
+        [53480] = { class = "HUNTER" },
+        [116849] = { class = "MONK" },
+        [1022] = { class = "PALADIN", alts = { 1309794 } },
+        [6940] = { class = "PALADIN" },
+        [204018] = { class = "PALADIN" },
+        [387804] = { class = "PALADIN" },
+        [47788] = { class = "PRIEST" },
+        [33206] = { class = "PRIEST" },
+    },
+    coreheals = {
+        [1278914] = { class = "DRUID", disabled = true },
+        [33763] = { class = "DRUID", alts = { 419207, 1227806 } },
+        [8936] = { class = "DRUID", alts = { 419287 }, disabled = true },
+        [774] = { class = "DRUID", alts = { 419204 }, disabled = true },
+        [155777] = { class = "DRUID", disabled = true },
+        [439530] = { class = "DRUID", disabled = true },
+        [474754] = { class = "DRUID", alts = { 474750 } },
+        [48438] = { class = "DRUID", alts = { 419344 }, disabled = true },
+        [409678] = { class = "EVOKER", disabled = true },
+        [355941] = { class = "EVOKER", alts = { 355936, 382614 }, disabled = true },
+        [376788] = { class = "EVOKER", disabled = true },
+        [363502] = { class = "EVOKER", disabled = true },
+        [364343] = { class = "EVOKER" },
+        [445740] = { class = "EVOKER", disabled = true },
+        [373267] = { class = "EVOKER" },
+        [366155] = { class = "EVOKER", disabled = true },
+        [367364] = { class = "EVOKER", disabled = true },
+        [373862] = { class = "EVOKER", disabled = true },
+        [1291636] = { class = "EVOKER", disabled = true },
+        [409895] = { class = "EVOKER", disabled = true },
+        [450769] = { class = "MONK", alts = { 450521, 450711, 450526, 450531 }, disabled = true },
+        [1292922] = { class = "MONK", disabled = true },
+        [124682] = { class = "MONK", disabled = true },
+        [467281] = { class = "MONK", alts = { 427296 }, disabled = true },
+        [388513] = { class = "MONK", disabled = true },
+        [450805] = { class = "MONK", disabled = true },
+        [119611] = { class = "MONK" },
+        [115175] = { class = "MONK", alts = { 1260617, 198533 }, disabled = true },
+        [156910] = { class = "PALADIN" },
+        [53563] = { class = "PALADIN" },
+        [200025] = { class = "PALADIN" },
+        [1244893] = { class = "PALADIN" },
+        [431381] = { class = "PALADIN", disabled = true },
+        [156322] = { class = "PALADIN", alts = { 461432 }, disabled = true },
+        [432502] = { class = "PALADIN", disabled = true },
+        [469703] = { class = "PALADIN", disabled = true },
+        [194384] = { class = "PRIEST" },
+        [77489] = { class = "PRIEST", disabled = true },
+        [17] = { class = "PRIEST", alts = { 1246768, 1254306, 1300008 }, disabled = true },
+        [41635] = { class = "PRIEST", disabled = true },
+        [139] = { class = "PRIEST", disabled = true },
+        [453846] = { class = "PRIEST", alts = { 453850 }, disabled = true },
+        [1253593] = { class = "PRIEST", alts = { 1300009 }, disabled = true },
+        [207400] = { class = "SHAMAN", disabled = true },
+        [383648] = { class = "SHAMAN", alts = { 974 } },
+        [444490] = { class = "SHAMAN", disabled = true },
+        [61295] = { class = "SHAMAN", disabled = true },
+    },
+    lesserheals = {
+        [1278914] = { class = "DRUID" },
+        [33763] = { class = "DRUID", alts = { 419207, 1227806 }, disabled = true },
+        [8936] = { class = "DRUID", alts = { 419287 } },
+        [774] = { class = "DRUID", alts = { 419204 } },
+        [155777] = { class = "DRUID" },
+        [439530] = { class = "DRUID", disabled = true },
+        [474754] = { class = "DRUID", alts = { 474750 }, disabled = true },
+        [48438] = { class = "DRUID", alts = { 419344 } },
+        [409678] = { class = "EVOKER", disabled = true },
+        [355941] = { class = "EVOKER", alts = { 355936, 382614 } },
+        [376788] = { class = "EVOKER" },
+        [363502] = { class = "EVOKER", disabled = true },
+        [364343] = { class = "EVOKER", disabled = true },
+        [445740] = { class = "EVOKER", disabled = true },
+        [373267] = { class = "EVOKER" },
+        [366155] = { class = "EVOKER" },
+        [367364] = { class = "EVOKER" },
+        [373862] = { class = "EVOKER", disabled = true },
+        [1291636] = { class = "EVOKER", disabled = true },
+        [409895] = { class = "EVOKER" },
+        [450769] = { class = "MONK", alts = { 450521, 450711, 450526, 450531 } },
+        [1292922] = { class = "MONK" },
+        [124682] = { class = "MONK" },
+        [467281] = { class = "MONK", alts = { 427296 }, disabled = true },
+        [388513] = { class = "MONK", disabled = true },
+        [450805] = { class = "MONK", disabled = true },
+        [119611] = { class = "MONK", disabled = true },
+        [115175] = { class = "MONK", alts = { 1260617, 198533 } },
+        [156910] = { class = "PALADIN", disabled = true },
+        [53563] = { class = "PALADIN", disabled = true },
+        [200025] = { class = "PALADIN", disabled = true },
+        [1244893] = { class = "PALADIN", disabled = true },
+        [431381] = { class = "PALADIN" },
+        [156322] = { class = "PALADIN", alts = { 461432 } },
+        [432502] = { class = "PALADIN" },
+        [469703] = { class = "PALADIN" },
+        [194384] = { class = "PRIEST", disabled = true },
+        [77489] = { class = "PRIEST" },
+        [17] = { class = "PRIEST", alts = { 1246768, 1254306, 1300008 } },
+        [41635] = { class = "PRIEST" },
+        [139] = { class = "PRIEST" },
+        [453846] = { class = "PRIEST", alts = { 453850 }, disabled = true },
+        [1253593] = { class = "PRIEST", alts = { 1300009 } },
+        [207400] = { class = "SHAMAN", disabled = true },
+        [383648] = { class = "SHAMAN", alts = { 974 }, disabled = true },
+        [444490] = { class = "SHAMAN" },
+        [61295] = { class = "SHAMAN" },
+    },
+    support = {
+        [360827] = { class = "EVOKER" },
+        [395152] = { class = "EVOKER", alts = { 395296 } },
+        [410263] = { class = "EVOKER", disabled = true },
+        [410089] = { class = "EVOKER" },
+        [413984] = { class = "EVOKER", disabled = true },
+        [369459] = { class = "EVOKER", disabled = true },
+        [406732] = { class = "EVOKER", disabled = true },
+        [361021] = { class = "EVOKER", disabled = true },
+        [361022] = { class = "EVOKER", disabled = true },
+    },
+    offensive = {
+        [1249658] = { class = "DEATHKNIGHT", alts = { 152279 } },
+        [42650] = { class = "DEATHKNIGHT" },
+        [51271] = { class = "DEATHKNIGHT" },
+        [191427] = { class = "DEMONHUNTER", alts = { 187827, 321067, 321068, 162264 } },
+        [471306] = { class = "DEMONHUNTER", alts = { 1217605, 473671, 1217607 } },
+        [194223] = { class = "DRUID", alts = { 102560 } },
+        [106951] = { class = "DRUID", alts = { 102543 } },
+        [50334] = { class = "DRUID", alts = { 102558 }, disabled = true },
+        [403631] = { class = "EVOKER", disabled = true },
+        [375087] = { class = "EVOKER" },
+        [186254] = { class = "HUNTER", alts = { 1235388, 1285912, 19574 } },
+        [288613] = { class = "HUNTER" },
+        [1250646] = { class = "HUNTER", alts = { 1251703 } },
+        [190319] = { class = "MAGE" },
+        [365350] = { class = "MAGE", alts = { 365362 } },
+        [1247908] = { class = "MAGE" },
+        [1249625] = { class = "MONK" },
+        [1248992] = { class = "MONK", disabled = true },
+        [31884] = { class = "PALADIN", alts = { 231895, 454351, 216331 } },
+        [10060] = { class = "PRIEST" },
+        [194249] = { class = "PRIEST" },
+        [13750] = { class = "ROGUE" },
+        [121471] = { class = "ROGUE" },
+        [185422] = { class = "ROGUE", disabled = true },
+        [1249810] = { class = "ROGUE" },
+        [114050] = { class = "SHAMAN", alts = { 114051, 114052, 1219480 } },
+        [466772] = { class = "SHAMAN" },
+        [442726] = { class = "WARLOCK" },
+        [1276767] = { class = "WARLOCK", disabled = true },
+        [1276166] = { class = "WARLOCK" },
+        [266087] = { class = "WARLOCK" },
+        [417282] = { class = "WARLOCK" },
+        [107574] = { class = "WARRIOR" },
+        [1719] = { class = "WARRIOR" },
+    },
+    movement = {
+        [48265] = { class = "DEATHKNIGHT" },
+        [212552] = { class = "DEATHKNIGHT" },
+        [444347] = { class = "DEATHKNIGHT" },
+        [1850] = { class = "DRUID", alts = { 61684 } },
+        [106898] = { class = "DRUID", alts = { 77761, 77764 } },
+        [252216] = { class = "DRUID" },
+        [5215] = { class = "DRUID" },
+        [340546] = { class = "DRUID" },
+        [400126] = { class = "DRUID" },
+        [186257] = { class = "HUNTER", alts = { 186258 } },
+        [118922] = { class = "HUNTER" },
+        [5384] = { class = "HUNTER" },
+        [199483] = { class = "HUNTER" },
+        [1267208] = { class = "HUNTER" },
+        [444754] = { class = "MAGE" },
+        [130] = { class = "MAGE" },
+        [55342] = { class = "MAGE" },
+        [108843] = { class = "MAGE" },
+        [110960] = { class = "MAGE" },
+        [382294] = { class = "MAGE" },
+        [119085] = { class = "MONK" },
+        [443569] = { class = "MONK" },
+        [101545] = { class = "MONK", disabled = true },
+        [116841] = { class = "MONK" },
+        [394112] = { class = "MONK" },
+        [432180] = { class = "MONK" },
+        [449609] = { class = "MONK" },
+        [276111] = { class = "PALADIN", alts = { 221886, 221883, 276112, 254474,
+            254472, 254471, 221885, 254473, 363608, 294133, 221887, 1272854,
+            453804, 1253874, 1253723, 1253881 } },
+        [1044] = { class = "PALADIN" },
+        [121557] = { class = "PRIEST" },
+        [65081] = { class = "PRIEST" },
+        [111759] = { class = "PRIEST" },
+        [2983] = { class = "ROGUE" },
+        [1784] = { class = "ROGUE" },
+        [31230] = { class = "ROGUE" },
+        [36554] = { class = "ROGUE" },
+        [114018] = { class = "ROGUE" },
+        [192082] = { class = "SHAMAN" },
+        [79206] = { class = "SHAMAN" },
+        [58875] = { class = "SHAMAN", alts = { 90328 } },
+        [2645] = { class = "SHAMAN" },
+        [111400] = { class = "WARLOCK" },
+        [333889] = { class = "WARLOCK" },
+        [387626] = { class = "WARLOCK" },
+        [387633] = { class = "WARLOCK" },
+        [202164] = { class = "WARRIOR" },
+        [1244157] = { class = "WARRIOR" },
+        [358267] = { class = "EVOKER" },
+        [358733] = { class = "EVOKER" },
+        [370889] = { class = "EVOKER" },
+        -- Time Spiral: the buff lands under a different spell id per RECIPIENT
+        -- class (each class gets its own empowered-movement aura).
+        [375234] = { class = "EVOKER", alts = { 375226, 375229, 375230, 375238,
+            375240, 375252, 375253, 375254, 375255, 375256, 375257, 375258 } },
+        [406732] = { class = "EVOKER" },
+    },
+    utility = {
+        [3714] = { class = "DEATHKNIGHT" },
+        [29166] = { class = "DRUID" },
+        [406732] = { class = "EVOKER", alts = { 406789 } },
+        [390386] = { class = "EVOKER", disabled = true },
+        [408233] = { class = "EVOKER", disabled = true },
+        [1224810] = { class = "HUNTER", alts = { 54216, 62305 } },
+        [466904] = { class = "HUNTER", disabled = true },
+        [264667] = { class = "HUNTER", alts = { 357650 }, disabled = true },
+        [80353] = { class = "MAGE", disabled = true },
+        [116841] = { class = "MONK" },
+        [1044] = { class = "PALADIN", alts = { 299256 } },
+        [115834] = { class = "ROGUE", alts = { 114018 } },
+        [2825] = { class = "SHAMAN", disabled = true },
+        [32182] = { class = "SHAMAN", disabled = true },
+    },
+    consumables = {
+        [1236998] = { class = "ALL" },
+        [1236616] = { class = "ALL" },
+        [1239479] = { class = "ALL" },
+        [1236994] = { class = "ALL" },
+    },
+},
+
+}
+
+--------------------------------------------------------------------------------
+-- PAB derivation (from EllesmereUIUnitFrames_PlayerAuraBars.lua)
+--------------------------------------------------------------------------------
+local BP = RETAIL_PRESETS
+
+-- spellID -> "CLASSFILE" (display-only hint for the Filter Editor grouping)
+local SPELL_CLASS_HINTS = {}
+-- { key, name, enabled = {sorted ids}, disabled = {sorted ids} } per preset
+local BM2_FILTER_SEED = {}
+-- primary -> alts
+local PRESET_ALTS = {}
+for i = 1, #BP.filters do
+    local def = BP.filters[i]
+    local list = BP.spells[def.key]
+    local enabled, disabled = {}, {}
+    if list then
+        for id, info in pairs(list) do
+            local dst = info.disabled and disabled or enabled
+            dst[#dst + 1] = id
+            if info.class ~= "ALL" then SPELL_CLASS_HINTS[id] = info.class end
+            if info.alts then
+                PRESET_ALTS[id] = info.alts
+                for j = 1, #info.alts do
+                    local alt = info.alts[j]
+                    dst[#dst + 1] = alt
+                    if info.class ~= "ALL" then SPELL_CLASS_HINTS[alt] = info.class end
+                end
+            end
+        end
+    end
+    table.sort(enabled)
+    table.sort(disabled)
+    BM2_FILTER_SEED[#BM2_FILTER_SEED + 1] =
+        { key = def.key, name = def.name, enabled = enabled, disabled = disabled }
+end
+
+-- Every member of a family (primary + alts) -> the whole member list.
+-- Used at RESOLUTION time: a filter/extra-spell holding any member shows all
+-- members, unless the owning filter has that member explicitly = false.
+local PAB_SPELL_FAMILY = {}
+for primary, alts in pairs(PRESET_ALTS) do
+    local fam = { primary }
+    for i = 1, #alts do fam[#fam + 1] = alts[i] end
+    for i = 1, #fam do PAB_SPELL_FAMILY[fam[i]] = fam end
+end
+
+-- Import (idempotent by NAME). filterStore = s.pabFilters = { nextId, list }.
+local function ImportPresets(filterStore)
+    local byName = {}
+    for i = 1, #filterStore.list do byName[filterStore.list[i].name] = filterStore.list[i] end
+    local created = 0
+    for i = 1, #BM2_FILTER_SEED do
+        local seed = BM2_FILTER_SEED[i]
+        local f = byName[seed.name]
+        if not f then
+            f = { id = filterStore.nextId, name = seed.name, spells = {} }
+            filterStore.nextId = filterStore.nextId + 1
+            filterStore.list[#filterStore.list + 1] = f
+            for j = 1, #seed.enabled do f.spells[seed.enabled[j]] = true end
+            for j = 1, #seed.disabled do f.spells[seed.disabled[j]] = false end
+            created = created + 1
+        end
+        f.preset = true   -- not renameable / deletable in the editor
+        -- additive curation merge: new curated ids join with seed state,
+        -- existing user states are never overwritten
+        for j = 1, #seed.enabled do
+            local id = seed.enabled[j]
+            if f.spells[id] == nil then f.spells[id] = true end
+        end
+        for j = 1, #seed.disabled do
+            local id = seed.disabled[j]
+            if f.spells[id] == nil then f.spells[id] = false end
+        end
+        -- family heal: checked primary pulls unchecked alts up (enable-only)
+        for primary, alts in pairs(PRESET_ALTS) do
+            if f.spells[primary] == true then
+                for k = 1, #alts do
+                    if f.spells[alts[k]] == false then f.spells[alts[k]] = true end
+                end
+            end
+        end
+    end
+    return created
+end
+
+UF.PAB_PRESETS = {
+	RETAIL_PRESETS = RETAIL_PRESETS,
+	BM2_FILTER_SEED = BM2_FILTER_SEED,
+	SPELL_CLASS_HINTS = SPELL_CLASS_HINTS,
+	PRESET_ALTS = PRESET_ALTS,
+	PAB_SPELL_FAMILY = PAB_SPELL_FAMILY,
+	ImportPresets = ImportPresets,
+}

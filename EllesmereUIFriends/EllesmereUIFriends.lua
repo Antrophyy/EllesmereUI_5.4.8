@@ -1,3246 +1,802 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
---  EllesmereUIFriends.lua -- Friends List skin. Direct skin of Blizzard's
---  native ScrollBox and buttons: no custom DataProvider, no friend groups.
+--  EllesmereUIFriends.lua (5.4.8 port of retail EllesmereUIFriends 9.4 and the
+--  friends parts of EllesmereUI_FriendsKit.lua)
+--
+--  Retail decorates Blizzard's own friends rows (no custom list, no friend
+--  groups: retail removed them). This port does the same on the 5.4.8 list
+--  (FriendsFrameFriendsScrollFrame, a HybridScrollFrame):
+--    * class icon per row (Class Icon Theme), the game icon for other games,
+--      the offline icon for offline friends;
+--    * class colored names (WoW friends: whole name, Battle.net: "(toon)");
+--    * faction banner behind each row (Enable Faction Banners);
+--    * status orb (online / AFK / DND / offline) after the name, replacing
+--      Blizzard's status icon;
+--    * the friend note appended to the info line;
+--    * tile wash, hover bar, house font (font key "friends");
+--    * auto-accept group invites from friends (and guildmates);
+--    * Border Size / Border Color: only while the Blizzard Skins+ "Friends
+--      List" window skin is off (retail: only this module's own flat look);
+--    * Enable Accent Colors: accent labels on the list's bottom buttons while
+--      the Blizzard Skins+ window skin draws them.
+--  Only decoration: Blizzard keeps the rows, the click handler, the
+--  right-click menus (FriendsFrame_ShowDropdown / _ShowBNDropdown), whisper
+--  and invite. No SetScript on Blizzard frames (hooksecurefunc / HookScript).
+--  Skipped (no 5.4.8 counterpart): region icons (no GetCurrentRegion, no
+--  retail realm list on this client), 12.1 Social UI tiles, the Raid tab and
+--  window chrome skin (Blizzard Skins+ draws the window here).
 -------------------------------------------------------------------------------
-local ADDON_NAME = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.FriendsKit) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
-local ns = select(2, ...)
-EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
-ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
+local addonName = ...
+local ns = EllesmereUI
 
-local EBS = EllesmereUI.Lite.NewAddon("EllesmereUIFriends")
+local FR = {}
+ns.Friends = FR
 
-local PP = EllesmereUI.PP
+local FONT_KEY = "friends"
+local MEDIA = "Interface\\AddOns\\" .. addonName .. "\\media\\"
+local OFFLINE_ICON = MEDIA .. "offline"
+local ORB_TEX = MEDIA .. "status-orb"
+local FACTION_TEX = {
+	Alliance = MEDIA .. "alliance",
+	Horde = MEDIA .. "horde",
+	Neutral = MEDIA .. "neutral",
+}
 
-local EG = EllesmereUI.ELLESMERE_GREEN
+-- 5.4.8 FriendsFrame.lua button types
+local TYPE_BNET = FRIENDS_BUTTON_TYPE_BNET or 2
+local TYPE_WOW = FRIENDS_BUTTON_TYPE_WOW or 3
 
--- External weak-keyed lookup table for frame state (prevents tainting Blizzard frames)
+-------------------------------------------------------------------------------
+--  Defaults / DB (EllesmereUIFriendsDB = retail profile.addons.EllesmereUIFriends:
+--  { friends = { ... } })
+-------------------------------------------------------------------------------
+local DEFAULTS = {
+	enabled = true,
+	scale = 1,
+	bgR = 0.05, bgG = 0.05, bgB = 0.055, bgAlpha = 1,
+	tileR = 0, tileG = 0, tileB = 0, tileAlpha = 0.35,
+	showBorder = true,
+	borderSize = 1,
+	borderR = 0, borderG = 0, borderB = 0, borderA = 1,
+	useClassColor = false,
+	useAccentTab = true,
+	showClassIcons = true,
+	iconStyle = "modern",
+	classColorNames = true,
+	nameColorR = 0.863, nameColorG = 0.820, nameColorB = 0.565,
+	accentColors = true,
+	factionBanners = false,
+	showRegionIcons = true,
+	useBlizzardStyle = false,
+	useClassicStyle = false,
+	autoAcceptFriendInvites = false,
+	autoAcceptGuildInvites = false,
+	showOffline = true,
+	visibility = "always",
+	visOnlyInstances = false,
+	visHideHousing = false,
+	visHideMounted = false,
+	visHideNoTarget = false,
+	visHideNoEnemy = false,
+}
+FR.DEFAULTS = DEFAULTS
+
+local function Root()
+	return ns.ModuleDB("EllesmereUIFriendsDB")
+end
+
+-- The friends settings table (defaults filled in).
+local function F()
+	local root = Root()
+	local f = root.friends
+	if type(f) ~= "table" then
+		f = {}
+		root.friends = f
+	end
+	for k, v in pairs(DEFAULTS) do
+		if f[k] == nil then f[k] = v end
+	end
+	return f
+end
+FR.DB = F
+
+-- First login: the user's retail "Naowh" values.
+local function SeedNaowh(root)
+	local f = root.friends
+	if type(f) ~= "table" then
+		f = {}
+		root.friends = f
+	end
+	f.borderSize = 0
+	f.autoAcceptFriendInvites = true
+	f.factionBanners = true
+	f.useAccentTab = false
+	f.autoAcceptGuildInvites = true
+	root._seeded = 1
+end
+
+-------------------------------------------------------------------------------
+--  Small helpers (5.4.8 has no C_Timer)
+-------------------------------------------------------------------------------
+local timerFrame = CreateFrame("Frame")
+local timers = {}
+timerFrame:Hide()
+timerFrame:SetScript("OnUpdate", function(self, elapsed)
+	local now = GetTime()
+	local i = 1
+	while i <= #timers do
+		local t = timers[i]
+		if now >= t.at then
+			table.remove(timers, i)
+			local ok, err = pcall(t.fn)
+			if not ok then geterrorhandler()(err) end
+		else
+			i = i + 1
+		end
+	end
+	if #timers == 0 then self:Hide() end
+end)
+local function After(delay, fn)
+	timers[#timers + 1] = { at = GetTime() + (delay or 0), fn = fn }
+	timerFrame:Show()
+end
+FR.After = After
+
+-- Weak-keyed state per Blizzard frame (no custom keys on Blizzard frames).
 local FFD = setmetatable({}, { __mode = "k" })
 local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
+	local d = FFD[frame]
+	if not d then
+		d = {}
+		FFD[frame] = d
+	end
+	return d
 end
 
--- Master kill-switch for modules held back from public release (Coming Soon), keyed by
--- module name; overrides that module's "enabled" flag to off regardless of the user's SavedVariables.
-local TEMP_DISABLED = {
-}
-_G._EBS_TEMP_DISABLED = TEMP_DISABLED
+local function StripRealm(name)
+	if type(name) ~= "string" then return nil end
+	return (name:match("^([^%-]+)") or name):lower()
+end
 
-local defaults = {
-    profile = {
-        friends = {
-            enabled        = true,
-            scale          = 1,
-            position       = nil,
-            bgR            = 0.05, bgG = 0.05, bgB = 0.055, bgAlpha = 1,
-            tileR          = 0,     tileG = 0,    tileB = 0,    tileAlpha = 0.35,
-            showBorder     = true,
-            borderSize     = 1,
-            borderR        = 0, borderG = 0, borderB = 0, borderA = 1,
-            useClassColor  = false,
-            useAccentTab   = true,
-            showClassIcons = true,
-            iconStyle      = "modern",
-            classColorNames = true,
-            nameColorR      = 0.863, nameColorG = 0.820, nameColorB = 0.565,
-            accentColors   = true,
-            factionBanners = false,
-            showRegionIcons = true,
-            -- Style page (reload-gated): Blizzard Style / Classic WoW UI
-            useBlizzardStyle = false,
-            useClassicStyle  = false,
-            autoAcceptFriendInvites = false,
-            autoAcceptGuildInvites = false,
-            showOffline    = true,
-            visibility     = "always",
-            visOnlyInstances = false,
-            visHideHousing   = false,
-            visHideMounted   = false,
-            visHideNoTarget  = false,
-            visHideNoEnemy   = false,
-        },
-    },
+local function Hex(r, g, b)
+	return string.format("|cff%02x%02x%02x", math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5))
+end
+
+local function Accent()
+	if ns.ResolveAccent then return ns.ResolveAccent() end
+	return 0.05, 0.82, 0.62
+end
+
+-------------------------------------------------------------------------------
+--  Class lookups
+-------------------------------------------------------------------------------
+-- Class Icon Theme: the choices the settings page lists (retail FriendsKit).
+FR.ICON_STYLE_VALUES = {
+	blizzard = "Blizzard",
+	modern = "Modern",
+	pixel = "Pixel",
+	pixelsComic = "Pixels Comic",
+	glyph = "Glyph",
+	arcade = "Arcade",
+	legend = "Legend",
+	midnight = "Midnight",
+	runic = "Runic",
+}
+FR.ICON_STYLE_ORDER = {
+	"blizzard", "modern", "pixel", "pixelsComic", "glyph",
+	"arcade", "legend", "midnight", "runic",
 }
 
--------------------------------------------------------------------------------
---  Utility
--------------------------------------------------------------------------------
-local function GetBorderColor(cfg)
-    if cfg.useClassColor then
-        return EG.r, EG.g, EG.b, 1
-    end
-    return cfg.borderR, cfg.borderG, cfg.borderB, cfg.borderA or 1
-end
-
--- Legacy FriendsFrame stays loaded-but-hidden under the Social UI; skinning it
--- re-anchors Blizzard scroll boxes and hooks mouse wheel, tainting Battle.net
--- whisper handling (SetTellTarget on a secret target) -- so the skin stays off
--- there; checked live since the switch can flip mid-session.
-local function LegacyFriendsRetired()
-    -- The Style page's stock styles keep Blizzard's own friends window on
-    -- either path, so the legacy skin stands down for them too.
-    local mns = EllesmereUI._ModuleNS[ADDON_NAME]
-    if mns and mns.FR_Style and mns.FR_Style() ~= "eui" then return true end
-    if not (C_SocialUI and C_SocialUI.IsSystemEnabled) then return false end
-    local ok, enabled = pcall(C_SocialUI.IsSystemEnabled)
-    return ok and enabled == true
-end
-
--------------------------------------------------------------------------------
---  Combat safety
--------------------------------------------------------------------------------
-local ApplyAll  -- forward declaration
-
--- Keyed queue entry: repeat requests before regen collapse into one apply.
-local function QueueApplyAll()
-    ns.CombatQueue.Defer("ApplyAll", ApplyAll)
-end
-
-local function StripTextures(f)
-    if not f then return end
-    local regions = { f:GetRegions() }
-    for i = 1, #regions do
-        local region = regions[i]
-        if region:IsObjectType("Texture") then
-            region:SetAlpha(0)
-        end
-    end
-end
-
--------------------------------------------------------------------------------
---  Raid Tab Skinning
--------------------------------------------------------------------------------
--- NEVER CreateTexture/CreateFrame/PP.CreateBorder on any frame in the RaidFrame
--- tree -- permanently taints it, breaking ClaimRaidFrame -> RaidFrame:SetParent().
--- Safe: SetTexture(""), FontString font/color, HookScript, BackdropTemplateMixin.
-
-local function SkinRaidRoleIcon(icon)
-    -- No-op: CreateTexture on protected parent taints
-end
-
-local function SkinRaidTabButton(btn)
-    if not btn or GetFFD(btn).btnSkinned then return end
-    GetFFD(btn).btnSkinned = true
-    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
-    local regions = { btn:GetRegions() }
-    for i = 1, #regions do
-        local region = regions[i]
-        if region and region:IsObjectType("Texture") then
-            region:SetTexture("")
-            region:SetAlpha(0)
-        end
-    end
-    if btn.SetNormalTexture then btn:SetNormalTexture("") end
-    if btn.SetPushedTexture then btn:SetPushedTexture("") end
-    if btn.SetHighlightTexture then btn:SetHighlightTexture("") end
-    if btn.SetDisabledTexture then btn:SetDisabledTexture("") end
-    local nt = btn.GetNormalTexture and btn:GetNormalTexture()
-    if nt then nt:SetTexture(""); nt:SetAlpha(0) end
-    local pt = btn.GetPushedTexture and btn:GetPushedTexture()
-    if pt then pt:SetTexture(""); pt:SetAlpha(0) end
-    local ht = btn.GetHighlightTexture and btn:GetHighlightTexture()
-    if ht then ht:SetTexture(""); ht:SetAlpha(0) end
-    local dt = btn.GetDisabledTexture and btn:GetDisabledTexture()
-    if dt then dt:SetTexture(""); dt:SetAlpha(0) end
-    if btn.Left then btn.Left:SetAlpha(0) end
-    if btn.Right then btn.Right:SetAlpha(0) end
-    if btn.Middle then btn.Middle:SetAlpha(0) end
-    if BackdropTemplateMixin then
-        Mixin(btn, BackdropTemplateMixin)
-        btn:SetBackdrop({
-            bgFile = "Interface\\Buttons\\WHITE8x8",
-            edgeFile = "Interface\\Buttons\\WHITE8x8",
-            edgeSize = 1,
-        })
-        btn:SetBackdropColor(0.025, 0.035, 0.045, 0.92)
-        btn:SetBackdropBorderColor(1, 1, 1, 0.4)
-    end
-    local text = btn:GetFontString()
-    if text then
-        text:SetFont(fontPath, 9, "")
-        text:SetTextColor(1, 1, 1, 0.5)
-        text:ClearAllPoints()
-        text:SetPoint("CENTER", btn, "CENTER", 0, 0)
-    end
-    btn:HookScript("OnEnter", function()
-        local r, g, b, a1, a2 = 1, 1, 1, 0.7, 0.6
-        if GetFFD(btn).accent then
-            r, g, b = EG.r, EG.g, EG.b
-            a1, a2 = 1, 0.8
-        end
-        if text then text:SetTextColor(r, g, b, a1) end
-        if btn.SetBackdropBorderColor then btn:SetBackdropBorderColor(r, g, b, a2) end
-    end)
-    btn:HookScript("OnLeave", function()
-        local r, g, b, a1, a2 = 1, 1, 1, 0.5, 0.4
-        if GetFFD(btn).accent then
-            r, g, b = EG.r, EG.g, EG.b
-            a1, a2 = 0.7, 0.5
-        end
-        if text then text:SetTextColor(r, g, b, a1) end
-        if btn.SetBackdropBorderColor then btn:SetBackdropBorderColor(r, g, b, a2) end
-    end)
-end
-
-local RAID_TAB_BUTTONS = {
-    "RaidFrameConvertToRaidButton",
-    "RaidFrameRaidInfoButton",
-    "QuickJoinFrame.JoinQueueButton",
+-- class-full sprite sheets (EllesmereUI CLASS_ICON_SPRITE_COORDS)
+local SPRITE = {
+	WARRIOR = { 0, 0.125, 0, 0.125 }, MAGE = { 0.125, 0.25, 0, 0.125 }, ROGUE = { 0.25, 0.375, 0, 0.125 },
+	DRUID = { 0.375, 0.5, 0, 0.125 }, HUNTER = { 0, 0.125, 0.125, 0.25 }, SHAMAN = { 0.125, 0.25, 0.125, 0.25 },
+	PRIEST = { 0.25, 0.375, 0.125, 0.25 }, WARLOCK = { 0.375, 0.5, 0.125, 0.25 }, PALADIN = { 0, 0.125, 0.25, 0.375 },
+	DEATHKNIGHT = { 0.125, 0.25, 0.25, 0.375 }, MONK = { 0.25, 0.375, 0.25, 0.375 },
+}
+-- Blizzard style: the character-create class sheet (CLASS_ICON_TCOORDS).
+local BLIZZ_CLASS_TEX = "Interface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES"
+local BLIZZ_COORDS = {
+	WARRIOR = { 0, 0.25, 0, 0.25 }, MAGE = { 0.25, 0.49609375, 0, 0.25 },
+	ROGUE = { 0.49609375, 0.7421875, 0, 0.25 }, DRUID = { 0.7421875, 0.98828125, 0, 0.25 },
+	HUNTER = { 0, 0.25, 0.25, 0.5 }, SHAMAN = { 0.25, 0.49609375, 0.25, 0.5 },
+	PRIEST = { 0.49609375, 0.7421875, 0.25, 0.5 }, WARLOCK = { 0.7421875, 0.98828125, 0.25, 0.5 },
+	PALADIN = { 0, 0.25, 0.5, 0.75 }, DEATHKNIGHT = { 0.25, 0.49609375, 0.5, 0.75 },
+	MONK = { 0.49609375, 0.7421875, 0.5, 0.75 },
 }
 
-local function SkinCheckbox(checkbox)
-    if not checkbox or GetFFD(checkbox).skinned then return end
-    GetFFD(checkbox).skinned = true
-    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
-    if checkbox.SetNormalTexture then checkbox:SetNormalTexture("") end
-    if checkbox.SetPushedTexture then checkbox:SetPushedTexture("") end
-    if checkbox.SetHighlightTexture then checkbox:SetHighlightTexture("") end
-    if checkbox.SetDisabledTexture then checkbox:SetDisabledTexture("") end
-    local regions = { checkbox:GetRegions() }
-    for i = 1, #regions do
-        local region = regions[i]
-        if region and region:IsObjectType("Texture") then
-            region:SetTexture("")
-        end
-    end
-    local text = checkbox.Text or checkbox.text or (checkbox.GetName and _G[checkbox:GetName().."Text"])
-    if text and text.SetFont then
-        text:SetFont(fontPath, 10, "")
-        text:SetTextColor(1, 1, 1, 0.8)
-    end
+local function ClassIconSprite(style)
+	if not FR.ICON_STYLE_VALUES[style or ""] or style == "blizzard" then
+		style = "modern"
+	end
+	return "Interface\\AddOns\\EllesmereUI\\media\\class\\" .. style -- shared class sheets (core media)
 end
 
-local function SkinRaidGroup(group)
-    if not group or GetFFD(group).skinned then return end
-    GetFFD(group).skinned = true
-    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
-    local ar, ag, ab = EG.r, EG.g, EG.b
-    local groupName = group:GetName()
-    local regions = { group:GetRegions() }
-    for i = 1, #regions do
-        local region = regions[i]
-        if region and region:IsObjectType("Texture") then
-            region:SetTexture("")
-        end
-    end
-    if BackdropTemplateMixin then
-        Mixin(group, BackdropTemplateMixin)
-        group:SetBackdrop({
-            bgFile = "Interface\\Buttons\\WHITE8x8",
-            edgeFile = "Interface\\Buttons\\WHITE8x8",
-            edgeSize = 1,
-        })
-        group:SetBackdropColor(0.025, 0.025, 0.03, 0.98)
-        group:SetBackdropBorderColor(0.25, 0.25, 0.25, 0.9)
-    end
-    local labelFrame = _G[groupName .. "Label"]
-    if labelFrame then
-        local regions2 = { labelFrame:GetRegions() }
-        for i = 1, #regions2 do
-            local region = regions2[i]
-            if region and region:IsObjectType("FontString") then
-                EllesmereUI.PrimeFontShadow(region, true)
-                region:SetFont(fontPath, 10, "")
-                region:SetTextColor(ar, ag, ab, 1)
-            end
-        end
-        local fontString = labelFrame.GetFontString and labelFrame:GetFontString()
-        if fontString and fontString.SetFont then
-            EllesmereUI.PrimeFontShadow(fontString, true)
-            fontString:SetFont(fontPath, 10, "")
-            fontString:SetTextColor(ar, ag, ab, 1)
-        end
-    end
+-- Localized class name -> class file (male and female names).
+local classByName
+local function ClassToken(name)
+	if type(name) ~= "string" or name == "" then return nil end
+	if not classByName then
+		classByName = {}
+		if GetNumClasses and GetClassInfo then
+			for i = 1, GetNumClasses() do
+				local loc, token = GetClassInfo(i)
+				if loc and token then classByName[loc] = token end
+			end
+		end
+		for _, list in ipairs({ LOCALIZED_CLASS_NAMES_MALE, LOCALIZED_CLASS_NAMES_FEMALE }) do
+			if type(list) == "table" then
+				for token, loc in pairs(list) do classByName[loc] = token end
+			end
+		end
+	end
+	local token = classByName[name]
+	if token then return token end
+	-- English names / tokens ("Death Knight" -> DEATHKNIGHT)
+	local guess = name:upper():gsub("%s+", "")
+	if RAID_CLASS_COLORS and RAID_CLASS_COLORS[guess] then return guess end
+	return nil
 end
+FR.ClassToken = ClassToken
 
-local function SkinRaidSlot(slot)
-    if not slot or GetFFD(slot).skinned then return end
-    GetFFD(slot).skinned = true
-    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
-    local regions = { slot:GetRegions() }
-    for i = 1, #regions do
-        local region = regions[i]
-        if region and region:IsObjectType("Texture") then
-            region:SetTexture("")
-        end
-    end
-    if BackdropTemplateMixin then
-        Mixin(slot, BackdropTemplateMixin)
-        slot:SetBackdrop({
-            bgFile = "Interface\\Buttons\\WHITE8x8",
-            edgeFile = "Interface\\Buttons\\WHITE8x8",
-            edgeSize = 1,
-        })
-        slot:SetBackdropColor(0.045, 0.045, 0.05, 0.9)
-        slot:SetBackdropBorderColor(0.15, 0.15, 0.15, 0.7)
-    end
-    local regions2 = { slot:GetRegions() }
-    for i = 1, #regions2 do
-        local region = regions2[i]
-        if region and region:IsObjectType("FontString") then
-            region:SetFont(fontPath, 9, "")
-        end
-    end
-    slot:HookScript("OnEnter", function()
-        if slot.SetBackdropColor then slot:SetBackdropColor(0.07, 0.07, 0.08, 0.95) end
-    end)
-    slot:HookScript("OnLeave", function()
-        if slot.SetBackdropColor then slot:SetBackdropColor(0.045, 0.045, 0.05, 0.9) end
-    end)
-end
-
-local function SkinRaidGroupButton(btn)
-    if not btn or GetFFD(btn).skinned then return end
-    GetFFD(btn).skinned = true
-    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
-    local regions = { btn:GetRegions() }
-    for i = 1, #regions do
-        local region = regions[i]
-        if region and region:IsObjectType("Texture") then
-            region:SetTexture("")
-        end
-    end
-    if BackdropTemplateMixin then
-        Mixin(btn, BackdropTemplateMixin)
-        btn:SetBackdrop({
-            bgFile = "Interface\\Buttons\\WHITE8x8",
-            edgeFile = "Interface\\Buttons\\WHITE8x8",
-            edgeSize = 1,
-        })
-        btn:SetBackdropColor(0.06, 0.06, 0.07, 0.95)
-        btn:SetBackdropBorderColor(0.3, 0.3, 0.3, 0.9)
-    end
-    local regions2 = { btn:GetRegions() }
-    for i = 1, #regions2 do
-        local region = regions2[i]
-        if region and region:IsObjectType("FontString") then
-            region:SetFont(fontPath, 9, "")
-        end
-    end
-    btn:HookScript("OnEnter", function()
-        if btn.SetBackdropColor then btn:SetBackdropColor(0.1, 0.1, 0.12, 1) end
-    end)
-    btn:HookScript("OnLeave", function()
-        if btn.SetBackdropColor then btn:SetBackdropColor(0.06, 0.06, 0.07, 0.95) end
-    end)
-end
-
-local function SkinRaidInfoFrame()
-    -- Intentionally left unstyled (Blizzard default)
-end
-
-local function SkinRaidTab()
-
-    for _, name in ipairs(RAID_TAB_BUTTONS) do
-        local btn
-        if name:find("%.") then
-            local parts = {strsplit(".", name)}
-            btn = _G[parts[1]]
-            for i = 2, #parts do
-                if btn then btn = btn[parts[i]] end
-            end
-        else
-            btn = _G[name]
-        end
-        if btn then SkinRaidTabButton(btn) end
-    end
-    for i = 1, 40 do
-        local playerBtn = _G["RaidGroupButton" .. i]
-        if playerBtn then SkinRaidGroupButton(playerBtn) end
-    end
-    for i = 1, 8 do
-        local groupFrame = _G["RaidGroup" .. i]
-        if groupFrame then
-            SkinRaidGroup(groupFrame)
-            for j = 1, 5 do
-                local slot = _G["RaidGroup" .. i .. "Slot" .. j]
-                if slot then SkinRaidSlot(slot) end
-            end
-        end
-    end
-    local raidFrame = _G.RaidFrame
-    if raidFrame then
-        local children = { raidFrame:GetChildren() }
-        for i = 1, #children do
-            local child = children[i]
-            if child then
-                local regions = { child:GetRegions() }
-                for j = 1, #regions do
-                    local region = regions[j]
-                    if region and region:IsObjectType("Texture") then
-                        local tex = region:GetTexture()
-                        if tex and type(tex) == "string" then
-                            local texLower = tex:lower()
-                            if texLower:find("role") or texLower:find("tank") or
-                               texLower:find("healer") or texLower:find("dps") or
-                               texLower:find("damager") then
-                                SkinRaidRoleIcon(region)
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    SkinRaidInfoFrame()
-
-    if raidFrame and not GetFFD(raidFrame).borderAdded then
-        GetFFD(raidFrame).borderAdded = true
-        if BackdropTemplateMixin then
-            Mixin(raidFrame, BackdropTemplateMixin)
-            raidFrame:SetBackdrop({
-                edgeFile = "Interface\\Buttons\\WHITE8x8",
-                edgeSize = 1,
-            })
-            raidFrame:SetBackdropBorderColor(1, 1, 1, 0.1)
-        end
-    end
-
-    local inMplus2 = C_ChallengeMode and C_ChallengeMode.IsChallengeModeActive and C_ChallengeMode.IsChallengeModeActive()
-    local _, iType2 = IsInInstance()
-    local inPvP2 = (iType2 == "pvp" or iType2 == "arena")
-    if InCombatLockdown() or inMplus2 or inPvP2 then return end
-
-    if raidFrame then
-        raidFrame:ClearAllPoints()
-        raidFrame:SetPoint("TOPLEFT", FriendsFrame, "TOPLEFT", 15, -76)
-        raidFrame:SetPoint("BOTTOMRIGHT", FriendsFrame, "BOTTOMRIGHT", -15, 35)
-    end
-
-    local convertBtn = _G.RaidFrameConvertToRaidButton
-    local raidInfoBtn = _G.RaidFrameRaidInfoButton
-    local scrollBox = FriendsListFrame and FriendsListFrame.ScrollBox
-    if scrollBox and (convertBtn or raidInfoBtn) then
-        local btnW = math.floor(raidFrame:GetWidth() / 3)
-        if convertBtn then
-            convertBtn:ClearAllPoints()
-            convertBtn:SetSize(btnW, 22)
-            convertBtn:SetPoint("BOTTOMRIGHT", scrollBox, "BOTTOMRIGHT", 0, -22)
-        end
-        if raidInfoBtn then
-            raidInfoBtn:ClearAllPoints()
-            raidInfoBtn:SetSize(btnW, 20)
-            raidInfoBtn:SetPoint("TOPRIGHT", scrollBox, "TOPRIGHT", 0, 48)
-        end
-    end
-
-    local checkBtn = _G.RaidFrameAllAssistCheckButton
-    if checkBtn and not GetFFD(checkBtn).shifted then
-        GetFFD(checkBtn).shifted = true
-        local p1, rel, p2, ox, oy = checkBtn:GetPoint(1)
-        if p1 then checkBtn:SetPoint(p1, rel, p2, (ox or 0) - 62, (oy or 0) + 59) end
-    end
-    if raidFrame then
-        local roleCount = raidFrame.RoleCount
-        if roleCount and not GetFFD(roleCount).shifted then
-            GetFFD(roleCount).shifted = true
-            local p1, rel, p2, ox, oy = roleCount:GetPoint(1)
-            if p1 then roleCount:SetPoint(p1, rel, p2, (ox or 0) - 62, (oy or 0) + 59) end
-        end
-    end
-
-    if raidFrame then
-        local groupW = math.floor((raidFrame:GetWidth() - 10) / 2)
-        for i = 1, 8 do
-            local gf = _G["RaidGroup" .. i]
-            if gf then
-                gf:ClearAllPoints()
-                gf:SetWidth(groupW)
-                for j = 1, 5 do
-                    local slot = _G["RaidGroup" .. i .. "Slot" .. j]
-                    if slot then slot:SetWidth(groupW - 6) end
-                end
-                if i == 1 then
-                    gf:SetPoint("TOPLEFT", raidFrame, "TOPLEFT", 0, 0)
-                elseif i == 2 then
-                    gf:SetPoint("TOPRIGHT", raidFrame, "TOPRIGHT", 0, 0)
-                elseif i % 2 == 1 then
-                    local above = _G["RaidGroup" .. (i - 2)]
-                    if above then gf:SetPoint("TOPLEFT", above, "BOTTOMLEFT", 0, -14) end
-                else
-                    local above = _G["RaidGroup" .. (i - 2)]
-                    if above then gf:SetPoint("TOPRIGHT", above, "BOTTOMRIGHT", 0, -14) end
-                end
-            end
-        end
-        for i = 1, 40 do
-            local btn = _G["RaidGroupButton" .. i]
-            if btn then btn:SetWidth(groupW - 6) end
-        end
-    end
-end
-
-local function UpdateRaidTabButtonAccent()
-    local fp = EBS.db and EBS.db.profile and EBS.db.profile.friends
-    if not fp then return end
-    local useAccent = fp.accentColors ~= false
-    for _, name in ipairs(RAID_TAB_BUTTONS) do
-        local btn
-        if name:find("%.") then
-            local parts = {strsplit(".", name)}
-            btn = _G[parts[1]]
-            for i = 2, #parts do
-                if btn then btn = btn[parts[i]] end
-            end
-        else
-            btn = _G[name]
-        end
-        if btn and GetFFD(btn).btnSkinned then
-            local text = btn:GetFontString()
-            GetFFD(btn).accent = useAccent
-            if useAccent then
-                if text then text:SetTextColor(EG.r, EG.g, EG.b, 0.7) end
-                if btn.SetBackdropBorderColor then btn:SetBackdropBorderColor(EG.r, EG.g, EG.b, 0.5) end
-            else
-                if text then text:SetTextColor(1, 1, 1, 0.5) end
-                if btn.SetBackdropBorderColor then btn:SetBackdropBorderColor(1, 1, 1, 0.4) end
-            end
-        end
-    end
+local function ClassColor(token)
+	local c = token and ((CUSTOM_CLASS_COLORS and CUSTOM_CLASS_COLORS[token]) or (RAID_CLASS_COLORS and RAID_CLASS_COLORS[token]))
+	if c then return c.r, c.g, c.b end
 end
 
 -------------------------------------------------------------------------------
---  Friends List Skin
+--  Window chrome: who draws the frame
 -------------------------------------------------------------------------------
-local friendsSkinned = false
-
--- The class icon sprites, the status orb art and the region icon button come
--- from the friends kit (EllesmereUI_FriendsKit.lua), shared with the tiles.
-local FriendsKit = EllesmereUI.FriendsKit
-local CLASS_SPRITE_COORDS = EllesmereUI.CLASS_ICON_SPRITE_COORDS
-
--- Filled on demand for displayed rows; only search needs the complete list.
--- BNet keyed [id], WoW [id+10000].
-local _friendCache = {}
-local _FC_WOW_OFFSET = 10000
-local _friendCacheDirty = true
-local _friendCacheComplete = false
-
-local function ResetFriendCacheIfDirty()
-    if not _friendCacheDirty then return end
-    wipe(_friendCache)
-    _friendCacheDirty = false
-    _friendCacheComplete = false
+-- True while the Blizzard Skins+ "Friends List" window skin draws the window
+-- (retail: a Window Skins style other than Blizz Default).
+function FR.ChromeShell()
+	local BS = ns.BlizzSkin
+	if not (BS and BS.GetWindowStyle) then return false end
+	local ok, style = pcall(BS.GetWindowStyle, "socialui")
+	return ok and style ~= "off"
 end
 
-local function GetCachedFriendInfo(button)
-    if not button or not button.buttonType or not button.id then return nil, nil end
-    ResetFriendCacheIfDirty()
-    local key
-    if button.buttonType == FRIENDS_BUTTON_TYPE_BNET then
-        key = button.id
-    elseif button.buttonType == FRIENDS_BUTTON_TYPE_WOW then
-        key = button.id + _FC_WOW_OFFSET
-    end
-    if not key then return nil, nil end
-    local cached = _friendCache[key]
-    if cached then
-        if button.buttonType == FRIENDS_BUTTON_TYPE_BNET then
-            return cached, nil
-        else
-            return nil, cached
-        end
-    end
-    -- Read only the friend needed by this row.
-    if button.buttonType == FRIENDS_BUTTON_TYPE_BNET then
-        local info = C_BattleNet and C_BattleNet.GetFriendAccountInfo(button.id)
-        if info then _friendCache[button.id] = info end
-        return info, nil
-    elseif button.buttonType == FRIENDS_BUTTON_TYPE_WOW then
-        local info = C_FriendList and C_FriendList.GetFriendInfoByIndex(button.id)
-        if info then _friendCache[button.id + _FC_WOW_OFFSET] = info end
-        return nil, info
-    end
-    return nil, nil
+-------------------------------------------------------------------------------
+--  Friend data of a row (5.4.8 GetFriendInfo / BNGetFriendInfo / BNGetToonInfo)
+-------------------------------------------------------------------------------
+local info = {}
+local function ReadFriend(button)
+	wipe(info)
+	local bt, id = button.buttonType, button.id
+	if not id then return nil end
+	if bt == TYPE_WOW then
+		local name, level, class, area, connected, status, note = GetFriendInfo(id)
+		if not name then return nil end
+		info.kind = "wow"
+		info.online = connected and true or false
+		info.state = connected and "wow" or "offline"
+		info.classFile = ClassToken(class)
+		info.faction = UnitFactionGroup("player")
+		info.afk = status == CHAT_FLAG_AFK
+		info.dnd = status == CHAT_FLAG_DND
+		info.note = note
+		return info
+	elseif bt == TYPE_BNET then
+		local presenceID, presenceName, battleTag, isBTag, toonName, toonID, client, isOnline, lastOnline, isAFK, isDND, messageText, noteText = BNGetFriendInfo(id)
+		if not presenceID then return nil end
+		info.kind = "bnet"
+		info.online = isOnline and true or false
+		info.afk = isAFK and true or false
+		info.dnd = isDND and true or false
+		info.note = noteText
+		if isOnline then
+			if client == (BNET_CLIENT_WOW or "WoW") then
+				info.state = "wow"
+				if toonID and BNGetToonInfo then
+					local _, _, _, _, _, faction, _, class = BNGetToonInfo(toonID)
+					info.faction = faction
+					info.classFile = ClassToken(class)
+				end
+			else
+				info.state = "other"
+			end
+		else
+			info.state = "offline"
+		end
+		return info
+	end
+	return nil
 end
 
-local function RefreshFriendCache()
-    ResetFriendCacheIfDirty()
-    if _friendCacheComplete then return end
-    local numBNet = BNGetNumFriends and BNGetNumFriends() or 0
-    for i = 1, numBNet do
-        if not _friendCache[i] then
-            local info = C_BattleNet and C_BattleNet.GetFriendAccountInfo(i)
-            if info then _friendCache[i] = info end
-        end
-    end
-    local numWoW = C_FriendList and C_FriendList.GetNumFriends and C_FriendList.GetNumFriends() or 0
-    for i = 1, numWoW do
-        if not _friendCache[i + _FC_WOW_OFFSET] then
-            local info = C_FriendList.GetFriendInfoByIndex(i)
-            if info then _friendCache[i + _FC_WOW_OFFSET] = info end
-        end
-    end
-    _friendCacheComplete = true
+-------------------------------------------------------------------------------
+--  Row decoration
+-------------------------------------------------------------------------------
+local function ApplyFont(fs, size)
+	if fs and fs.SetFont then ns.ApplyModuleFont(fs, size, FONT_KEY) end
 end
 
-local function GetFriendClassFile(bnetInfo, wowInfo)
-    if bnetInfo and bnetInfo.gameAccountInfo then
-        local gi = bnetInfo.gameAccountInfo
-        if gi.classID and gi.classID > 0 then
-            local _, classFile = GetClassInfo(gi.classID)
-            return classFile
-        end
-        if gi.className then
-            return EllesmereUI.ClassTokenFromLocalized(gi.className)
-        end
-    elseif wowInfo and wowInfo.className then
-        return EllesmereUI.ClassTokenFromLocalized(wowInfo.className)
-    end
-    return nil
+-- One-time parts of a row (retail SkinFriendButton).
+local function SkinRow(button, d)
+	if d.skinned then return end
+	d.skinned = true
+
+	d.tileBg = button:CreateTexture(nil, "BACKGROUND", nil, 2)
+	d.tileBg:SetAllPoints()
+	d.tileBg:SetTexture(0, 0, 0, 0.10)
+
+	d.factionBg = button:CreateTexture(nil, "BACKGROUND", nil, 3)
+	d.factionBg:SetAllPoints()
+	d.factionBg:SetAlpha(0.2)
+
+	-- Hover bar (retail: the groupfinder highlight atlas, tinted blue).
+	local hover = button:CreateTexture(nil, "ARTWORK", nil, -7)
+	hover:SetAllPoints()
+	hover:SetTexture(1, 1, 1, 1)
+	hover:SetGradientAlpha("HORIZONTAL", 0.4, 0.7, 1, 0.25, 0.4, 0.7, 1, 0)
+	hover:Hide()
+	local hoverFill = button:CreateTexture(nil, "ARTWORK", nil, -8)
+	hoverFill:SetAllPoints()
+	hoverFill:SetTexture(1, 1, 1, 0.02)
+	hoverFill:SetBlendMode("ADD")
+	hoverFill:Hide()
+	button:HookScript("OnEnter", function() hover:Show(); hoverFill:Show() end)
+	button:HookScript("OnLeave", function() hover:Hide(); hoverFill:Hide() end)
+
+	d.classIcon = button:CreateTexture(nil, "ARTWORK", nil, 2)
+	d.orb = button:CreateTexture(nil, "OVERLAY", nil, 3)
+	d.orb:SetSize(18, 18)
+	d.orb:SetTexture(ORB_TEX)
+
+	-- Name moves right for the class icon; info sits under the name.
+	local name, infoFS = button.name, button.info
+	if name then
+		local p1, rel, p2, x, y = name:GetPoint(1)
+		if p1 then
+			name:SetPoint(p1, rel, p2, (x or 0) + 20, y or 0)
+		end
+	end
+	if infoFS and name then
+		infoFS:ClearAllPoints()
+		infoFS:SetPoint("TOPLEFT", name, "BOTTOMLEFT", 0, -3)
+	end
 end
 
-local OFFLINE_ICON = "Interface\\AddOns\\EllesmereUI\\media\\friends\\offline.png"
-
-local function UpdateClassIcon(button, bnetInfo, wowInfo)
-    if button.buttonType == FRIENDS_BUTTON_TYPE_DIVIDER then return end
-    if not button.buttonType then return end
-
-    local p = EBS.db.profile.friends
-
-    local gameIcon = button.gameIcon
-    if gameIcon then gameIcon:SetAlpha(0) end
-
-    if not p.showClassIcons then
-        if GetFFD(button).classIcon then GetFFD(button).classIcon:Hide() end
-        return
-    end
-
-    if not GetFFD(button).classIcon then
-        GetFFD(button).classIcon = button:CreateTexture(nil, "ARTWORK", nil, 2)
-    end
-    local icon = GetFFD(button).classIcon
-    local h = button:GetHeight() - 4
-    if h <= 0 then icon:Hide(); return end
-
-    local state = "offline"
-    if bnetInfo and bnetInfo.gameAccountInfo then
-        local gi = bnetInfo.gameAccountInfo
-        if gi.isOnline then
-            if gi.clientProgram == BNET_CLIENT_WOW and (gi.wowProjectID == 1 or gi.wowProjectID == nil) then
-                state = "retail"
-            else
-                state = "other_game"
-            end
-        end
-    elseif wowInfo then
-        state = wowInfo.connected and "retail" or "offline"
-    end
-
-    icon:ClearAllPoints()
-
-    if state == "retail" then
-        local inset = math.floor(h * 0.025 + 0.5)
-        icon:SetPoint("LEFT", button, "LEFT", 4, 0)
-        icon:SetPoint("TOP", button, "TOP", 0, -(2 + inset))
-        icon:SetPoint("BOTTOM", button, "BOTTOM", 0, 2 + inset)
-        local iconH = h - inset * 2
-        if iconH > 0 then icon:SetWidth(iconH) end
-
-        local classFile = GetFriendClassFile(bnetInfo, wowInfo)
-        if not classFile then icon:Hide(); return end
-
-        local style = p.iconStyle or "modern"
-        if style == "blizzard" then
-            icon:SetTexture("Interface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES")
-            local coords = CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[classFile]
-            if coords then icon:SetTexCoord(unpack(coords)) end
-        else
-            local coords = CLASS_SPRITE_COORDS[classFile]
-            if coords then
-                icon:SetTexture(FriendsKit.ClassIconSprite(style))
-                icon:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
-            end
-        end
-        icon:SetDesaturated(false)
-        icon:SetAlpha(1)
-
-    elseif state == "other_game" then
-        local smallH = math.floor(h * 0.75)
-        icon:SetSize(smallH, smallH)
-        icon:SetPoint("LEFT", button, "LEFT", 4 + math.floor((h - smallH) / 2), 0)
-        if gameIcon then
-            local tex = gameIcon:GetTexture()
-            if tex then
-                icon:SetTexture(tex)
-                icon:SetTexCoord(0, 1, 0, 1)
-            end
-        end
-        icon:SetDesaturated(false)
-        icon:SetAlpha(1)
-
-    else -- offline
-        local smallH = math.floor(h * 0.75)
-        icon:SetSize(smallH, smallH)
-        icon:SetPoint("LEFT", button, "LEFT", 4 + math.floor((h - smallH) / 2), 0)
-        icon:SetTexture(OFFLINE_ICON)
-        icon:SetTexCoord(0, 1, 0, 1)
-        icon:SetDesaturated(false)
-        icon:SetAlpha(0.5)
-    end
-
-    icon:Show()
+local function HideParts(d)
+	if not d.skinned then return end
+	d.classIcon:Hide()
+	d.orb:Hide()
+	d.factionBg:Hide()
 end
 
--- Class color escape per class file (lazy-built cache, EllesmereUI_FriendsKit.lua)
-local _getClassColorCode = EllesmereUI.FriendsKit.ClassColorCode
-
-local function UpdateNameColor(button, bnetInfo, wowInfo)
-    local p = EBS.db.profile.friends
-    local nameText = button.name or button.Name
-    if not nameText then return end
-
-    if not p.classColorNames then return end
-
-    local classFile = GetFriendClassFile(bnetInfo, wowInfo)
-    if not classFile then return end
-
-    if wowInfo then
-        local cc = RAID_CLASS_COLORS[classFile]
-        if cc then nameText:SetTextColor(cc.r, cc.g, cc.b) end
-    elseif bnetInfo then
-        local text = nameText:GetText()
-        if not text then return end
-        local colorCode = _getClassColorCode(classFile)
-        if not colorCode then return end
-        local colored = text:gsub("%((.-)%)", "(" .. colorCode .. "%1|r)")
-        if colored ~= text then
-            nameText:SetText(colored)
-        end
-    end
+local function UpdateClassIcon(button, d, p, fi)
+	local icon = d.classIcon
+	if button.gameIcon then button.gameIcon:SetAlpha(0) end
+	if not p.showClassIcons then
+		icon:Hide()
+		return
+	end
+	local h = (button:GetHeight() or 34) - 4
+	if h <= 0 then
+		icon:Hide()
+		return
+	end
+	icon:ClearAllPoints()
+	if fi.state == "wow" then
+		local inset = math.floor(h * 0.025 + 0.5)
+		local iconH = h - inset * 2
+		icon:SetPoint("LEFT", button, "LEFT", 4, 0)
+		icon:SetSize(iconH, iconH)
+		local cf = fi.classFile
+		if not cf then
+			icon:Hide()
+			return
+		end
+		local style = p.iconStyle or "modern"
+		local c
+		if style == "blizzard" then
+			c = (CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[cf]) or BLIZZ_COORDS[cf]
+			icon:SetTexture(BLIZZ_CLASS_TEX)
+		else
+			c = SPRITE[cf]
+			icon:SetTexture(ClassIconSprite(style))
+		end
+		if not c then
+			icon:Hide()
+			return
+		end
+		icon:SetTexCoord(c[1], c[2], c[3], c[4])
+		icon:SetAlpha(1)
+	else
+		local smallH = math.floor(h * 0.75)
+		icon:SetSize(smallH, smallH)
+		icon:SetPoint("LEFT", button, "LEFT", 4 + math.floor((h - smallH) / 2), 0)
+		icon:SetTexCoord(0, 1, 0, 1)
+		if fi.state == "other" then
+			local tex = button.gameIcon and button.gameIcon:GetTexture()
+			if not tex then
+				icon:Hide()
+				return
+			end
+			icon:SetTexture(tex)
+			icon:SetAlpha(1)
+		else
+			icon:SetTexture(OFFLINE_ICON)
+			icon:SetAlpha(0.5)
+		end
+	end
+	icon:SetDesaturated(false)
+	icon:Show()
 end
 
-local FACTION_TEX_ALLIANCE = "Interface\\AddOns\\EllesmereUI\\media\\friends\\alliance.png"
-local FACTION_TEX_HORDE    = "Interface\\AddOns\\EllesmereUI\\media\\friends\\horde.png"
-local FACTION_TEX_NEUTRAL  = "Interface\\AddOns\\EllesmereUI\\media\\friends\\neutral.png"
-
-local function UpdateFactionOverlay(button, bnetInfo, wowInfo)
-    local factionName
-    local isRetail = false
-    if bnetInfo and bnetInfo.gameAccountInfo then
-        local gi = bnetInfo.gameAccountInfo
-        factionName = gi.factionName
-        if gi.clientProgram == BNET_CLIENT_WOW and (gi.wowProjectID == 1 or gi.wowProjectID == nil) and gi.isOnline then
-            isRetail = true
-        end
-    elseif wowInfo then
-        factionName = UnitFactionGroup("player")
-        isRetail = true
-    end
-
-    if not GetFFD(button).factionBg then
-        GetFFD(button).factionBg = button:CreateTexture(nil, "BACKGROUND", nil, 3)
-    end
-
-    local fp = EBS.db and EBS.db.profile and EBS.db.profile.friends
-    local showFaction = fp and fp.factionBanners ~= false
-    local texPath
-    if showFaction and isRetail and factionName == "Alliance" then
-        texPath = FACTION_TEX_ALLIANCE
-    elseif showFaction and isRetail and factionName == "Horde" then
-        texPath = FACTION_TEX_HORDE
-    else
-        texPath = FACTION_TEX_NEUTRAL
-    end
-
-    local tex = GetFFD(button).factionBg
-    tex:SetTexture(texPath)
-    tex:SetTexCoord(0, 1, 0, 1)
-    tex:ClearAllPoints()
-    tex:SetPoint("TOPLEFT", button, "TOPLEFT", 0, 0)
-    tex:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 0, 0)
-    tex:SetAlpha(0.2)
-    tex:Show()
+local function UpdateFaction(d, p, fi)
+	local tex = FACTION_TEX.Neutral
+	if p.factionBanners ~= false and fi.state == "wow" and fi.online then
+		if fi.faction == "Alliance" then
+			tex = FACTION_TEX.Alliance
+		elseif fi.faction == "Horde" then
+			tex = FACTION_TEX.Horde
+		end
+	end
+	d.factionBg:SetTexture(tex)
+	d.factionBg:SetTexCoord(0, 1, 0, 1)
+	d.factionBg:SetAlpha(0.2)
+	d.factionBg:Show()
 end
 
-local function SkinFriendButton(button)
-    if GetFFD(button).skinned then return end
-    GetFFD(button).skinned = true
+-- fresh: Blizzard just wrote this row's texts. Our own repaints (settings
+-- changes) start again from Blizzard's last texts, so nothing doubles up.
+local function DecorateRow(button)
+	local d = GetFFD(button)
+	local p = F()
+	local bt = button.buttonType
+	if not p.enabled or (bt ~= TYPE_WOW and bt ~= TYPE_BNET) or not button:IsShown() then
+		HideParts(d)
+		return
+	end
+	local fi = ReadFriend(button)
+	if not fi then
+		HideParts(d)
+		return
+	end
+	SkinRow(button, d)
 
-    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
+	local nameFS, infoFS = button.name, button.info
+	ApplyFont(nameFS, 12)
+	ApplyFont(infoFS, 9)
 
-    local function ApplyFont(fs, size)
-        if not fs or not fs.SetFont then return end
-        EllesmereUI.PrimeFontShadow(fs, true)
-        fs:SetFont(fontPath, size, "")
-    end
+	-- Blizzard's status icon gives way to the orb.
+	if button.status then button.status:SetAlpha(0) end
 
-    local tileBg = button:CreateTexture(nil, "BACKGROUND", nil, 2)
-    tileBg:SetAllPoints()
-    tileBg:SetColorTexture(0, 0, 0, 0.10)
-    GetFFD(button).tileBg = tileBg
+	-- Texts Blizzard wrote (ours are recognised and replaced by the originals).
+	local curName = nameFS and nameFS:GetText()
+	if curName ~= d.lastName or d.origName == nil then
+		d.origName = curName
+		if nameFS then d.origR, d.origG, d.origB = nameFS:GetTextColor() end
+	end
+	local curInfo = infoFS and infoFS:GetText()
+	if curInfo ~= d.lastInfo or d.origInfo == nil then
+		d.origInfo = curInfo or ""
+	end
 
-    -- Blizzard's own highlight texture is left intact for native selection/hover.
-    local hover = button:CreateTexture(nil, "ARTWORK", nil, -7)
-    hover:SetAllPoints()
-    hover:SetAtlas("groupfinder-highlightbar-green")
-    hover:SetDesaturated(true)
-    hover:SetVertexColor(0.4, 0.7, 1.0)
-    hover:SetAlpha(1)
-    hover:Hide()
-    local hoverFill = button:CreateTexture(nil, "ARTWORK", nil, -8)
-    hoverFill:SetAllPoints()
-    hoverFill:SetColorTexture(1, 1, 1, 0.02)
-    hoverFill:SetBlendMode("ADD")
-    hoverFill:Hide()
-    button:HookScript("OnEnter", function() hover:Show(); hoverFill:Show() end)
-    button:HookScript("OnLeave", function() hover:Hide(); hoverFill:Hide() end)
+	-- Name: Blizzard's text and color, then the class color.
+	local nameText = d.origName
+	if nameFS and nameText then
+		if d.origR then nameFS:SetTextColor(d.origR, d.origG, d.origB) end
+		if p.classColorNames and fi.classFile then
+			local r, g, b = ClassColor(fi.classFile)
+			if r then
+				if fi.kind == "wow" then
+					nameFS:SetTextColor(r, g, b)
+				else
+					local code = Hex(r, g, b)
+					nameText = nameText:gsub("%((.-)%)", function(inner)
+						inner = inner:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+						return "(" .. code .. inner .. "|r)"
+					end)
+				end
+			end
+		end
+		nameFS:SetText(nameText)
+		d.lastName = nameText
+	end
 
-    local nameText = button.name or button.Name
-    ApplyFont(nameText, 12)
-    local infoText = button.info or button.Info
-    ApplyFont(infoText, 9)
-    local statusText = button.status or button.Status
-    ApplyFont(statusText, 9)
-    local gameText = button.gameText or button.GameText
-    ApplyFont(gameText, 9)
+	-- Info: Blizzard's line plus the friend note.
+	if infoFS then
+		local text = d.origInfo
+		local note = fi.note
+		if type(note) == "string" and note ~= "" then
+			if text ~= "" then
+				text = text .. "  |cff888888|  " .. note .. "|r"
+			else
+				text = "|cff888888" .. note .. "|r"
+			end
+		end
+		infoFS:SetText(text)
+		d.lastInfo = text
+	end
 
-    -- Offset name text right for class icon
-    if nameText then
-        local p1, rel, p2, x, y = nameText:GetPoint(1)
-        if p1 then
-            nameText:SetPoint(p1, rel, p2, (x or 0) + 20, y or 0)
-        end
-    end
+	-- Status orb right after the name.
+	local orb = d.orb
+	orb:ClearAllPoints()
+	if nameFS then
+		local w = nameFS:GetStringWidth() or 0
+		orb:SetPoint("TOPLEFT", nameFS, "TOPLEFT", w - 1, 3)
+	end
+	if fi.online then
+		if fi.dnd then
+			orb:SetVertexColor(1, 0.2, 0.2, 1)
+		elseif fi.afk then
+			orb:SetVertexColor(1, 0.8, 0, 1)
+		else
+			orb:SetVertexColor(0.2, 1, 0.2, 1)
+		end
+	else
+		orb:SetVertexColor(0.4, 0.4, 0.4, 0.6)
+	end
+	orb:Show()
+
+	UpdateClassIcon(button, d, p, fi)
+	UpdateFaction(d, p, fi)
+end
+FR.DecorateRow = DecorateRow
+
+local function ScrollFrame()
+	return FriendsFrameFriendsScrollFrame
 end
 
--- Runs from our deferred driver, outside Blizzard's row initializer.
-local function PostUpdateFriendButton(button)
-    if not FriendsFrame:IsShown() then return end
-    if not EBS.db or not EBS.db.profile.friends.enabled then return end
-    if button.buttonType == FRIENDS_BUTTON_TYPE_DIVIDER then return end
-    if not button.buttonType then return end
-
-    local curType = button.buttonType
-    local curId = button.id or 0
-    if GetFFD(button).stampType == curType and GetFFD(button).stampId == curId then return end
-
-    local bnetInfo, wowInfo = GetCachedFriendInfo(button)
-    SkinFriendButton(button)
-
-    -- Hide Blizzard elements we replace (its selection highlight stays).
-    local fav = button.Favorite
-    if fav then fav:SetAlpha(0) end
-    local statusIcon = button.statusIcon or button.StatusIcon
-    if statusIcon then statusIcon:SetAlpha(0) end
-    local statusTex = button.status
-    if statusTex and statusTex.IsObjectType and statusTex:IsObjectType("Texture") then
-        statusTex:SetAlpha(0)
-    end
-    local gameIcon = button.gameIcon
-    if gameIcon then gameIcon:SetAlpha(0) end
-
-    -- Fill blank info text for BNet app users
-    if button.buttonType == FRIENDS_BUTTON_TYPE_BNET and button.id then
-        local infoFS = button.info or button.Info
-        if infoFS and (not infoFS:GetText() or infoFS:GetText() == "") then
-            local cached = _friendCache[button.id]
-            if cached and cached.gameAccountInfo then
-                local gi = cached.gameAccountInfo
-                local cp = gi.clientProgram
-                if gi.isOnline and (cp == "App" or cp == "BSAp") then
-                    local locale = GetLocale()
-                    infoFS:SetText((locale == "enUS" or locale == "enGB") and "In App" or "Battle.Net")
-                end
-            end
-        end
-    end
-
-    GetFFD(button).stampType = curType
-    GetFFD(button).stampId = curId
-    GetFFD(button)._origInfo = nil  -- clear so note re-captures from Blizzard's fresh text
-
-    local nameText = button.name or button.Name
-    local infoText = button.info or button.Info
-    if infoText and nameText then
-        infoText:ClearAllPoints()
-        infoText:SetPoint("TOPLEFT", nameText, "BOTTOMLEFT", 0, -3)
-    end
-
-    -- Append friend note (legacy EUI group tag stripped); Blizzard's original text is cached first so a re-skin can't double-append.
-    if infoText and button.buttonType and button.id then
-        local origInfo = GetFFD(button)._origInfo
-        if not origInfo then
-            origInfo = infoText:GetText() or ""
-            -- Button recycling can leave our own suffix behind; strip it.
-            origInfo = origInfo:match("^(.-)  |cff888888|") or origInfo
-            GetFFD(button)._origInfo = origInfo
-        end
-        local userNote
-        if button.buttonType == FRIENDS_BUTTON_TYPE_BNET then
-            local cached = _friendCache[button.id]
-            if cached then userNote = EllesmereUI.StripFriendNoteTag(cached.note) end
-        elseif button.buttonType == FRIENDS_BUTTON_TYPE_WOW then
-            local cached = _friendCache[button.id + _FC_WOW_OFFSET]
-            if cached then userNote = EllesmereUI.StripFriendNoteTag(cached.notes) end
-        end
-        if userNote then
-            if origInfo ~= "" then
-                infoText:SetText(origInfo .. "  |cff888888|  " .. userNote .. "|r")
-            else
-                infoText:SetText(EllesmereUI.COLOR_CODES.DIM .. userNote .. "|r")
-            end
-        end
-    end
-
-    -- Status orb. AFK/DND can be secret values, so gate every read.
-    local isOnline, isAFK, isDND = false, false, false
-    local _isv = issecretvalue
-    if bnetInfo then
-        isOnline = bnetInfo.gameAccountInfo and bnetInfo.gameAccountInfo.isOnline
-        local rawAFK = bnetInfo.isAFK
-        local rawDND = bnetInfo.isDND
-        isAFK = (not _isv or not _isv(rawAFK)) and rawAFK or false
-        isDND = (not _isv or not _isv(rawDND)) and rawDND or false
-    elseif wowInfo then
-        isOnline = wowInfo.connected
-        local rawAFK = wowInfo.afk
-        local rawDND = wowInfo.dnd
-        isAFK = (not _isv or not _isv(rawAFK)) and rawAFK or false
-        isDND = (not _isv or not _isv(rawDND)) and rawDND or false
-    end
-
-    if not GetFFD(button).statusOrb then
-        GetFFD(button).statusOrb = button:CreateTexture(nil, "OVERLAY", nil, 3)
-        GetFFD(button).statusOrb:SetSize(18, 18)
-        FriendsKit.StatusOrbArt(GetFFD(button).statusOrb)
-    end
-    local orb = GetFFD(button).statusOrb
-    orb:ClearAllPoints()
-    local nm = button.name or button.Name
-    if nm then
-        local textW = nm:GetStringWidth() or 0
-        orb:SetPoint("TOPLEFT", nm, "TOPLEFT", textW - 1, 2)
-    end
-    if isOnline then
-        if isDND then
-            orb:SetVertexColor(1, 0.2, 0.2, 1)
-        elseif isAFK then
-            orb:SetVertexColor(1, 0.8, 0, 1)
-        else
-            orb:SetVertexColor(0.2, 1, 0.2, 1)
-        end
-        orb:Show()
-    else
-        orb:SetVertexColor(0.4, 0.4, 0.4, 0.6)
-        orb:Show()
-    end
-
-    UpdateClassIcon(button, bnetInfo, wowInfo)
-    UpdateNameColor(button, bnetInfo, wowInfo)
-    UpdateFactionOverlay(button, bnetInfo, wowInfo)
-
-    -- Region icon: shown only when the friend's region differs from ours.
-    local fp2 = EBS.db and EBS.db.profile and EBS.db.profile.friends
-    FriendsKit.UpdateRegionButton(button, GetFFD(button), bnetInfo and bnetInfo.gameAccountInfo,
-        button.travelPassButton, not (fp2 and fp2.showRegionIcons == false))
+function FR.DecorateAll()
+	local sf = ScrollFrame()
+	if not (sf and sf.buttons) then return end
+	if FriendsFrame and not FriendsFrame:IsShown() then return end
+	for i = 1, #sf.buttons do
+		DecorateRow(sf.buttons[i])
+	end
 end
 
-local function ProcessFriendButtons(force)
-    if LegacyFriendsRetired() then return end
-    local scrollBox = FriendsListFrame and FriendsListFrame.ScrollBox
-    if not scrollBox or not scrollBox:IsVisible() then return end
-    for _, button in scrollBox:EnumerateFrames() do
-        if button.buttonType == FRIENDS_BUTTON_TYPE_BNET or button.buttonType == FRIENDS_BUTTON_TYPE_WOW then
-            if force then GetFFD(button).stampType = nil end
-            PostUpdateFriendButton(button)
-        end
-    end
+-------------------------------------------------------------------------------
+--  Window border (only while Blizzard Skins+ does not draw the window)
+-------------------------------------------------------------------------------
+local borderHost
+local function UpdateBorder()
+	if not FriendsFrame then return end
+	local p = F()
+	local size = p.borderSize or 0
+	local want = p.enabled and not FR.ChromeShell() and size > 0
+	if not want then
+		if borderHost then borderHost:Hide() end
+		return
+	end
+	local PP = ns.PP
+	if not (PP and PP.CreateBorder) then return end
+	if not borderHost then
+		borderHost = CreateFrame("Frame", nil, FriendsFrame)
+		borderHost:SetAllPoints(FriendsFrame)
+		borderHost:SetFrameLevel(FriendsFrame:GetFrameLevel() + 2)
+		PP.CreateBorder(borderHost, 0, 0, 0, 1, size, "OVERLAY", 7)
+	end
+	PP.SetBorderSize(borderHost, size)
+	local r, g, b, a
+	if p.useClassColor then
+		r, g, b = Accent()
+		a = 1
+	else
+		r, g, b, a = p.borderR or 0, p.borderG or 0, p.borderB or 0, p.borderA or 1
+	end
+	PP.SetBorderColor(borderHost, r, g, b, a)
+	borderHost:Show()
 end
 
-
-local function SkinOneScrollbar(scrollBox, scrollBar)
-    if not scrollBox or not scrollBar then return end
-    if GetFFD(scrollBox).track then return end
-
-    scrollBar:SetAlpha(0)
-    GetFFD(scrollBox).scrollBar = scrollBar
-
-    local track = CreateFrame("Frame", nil, UIParent)
-    track:Hide()
-    track:SetFrameStrata("HIGH")
-    track:SetWidth(4)
-    track:SetPoint("TOPLEFT", scrollBox, "TOPRIGHT", 2, 0)
-    track:SetPoint("BOTTOMLEFT", scrollBox, "BOTTOMRIGHT", 2, 0)
-    track:SetFrameLevel(scrollBox:GetFrameLevel() + 10)
-    GetFFD(scrollBox).track = track
-
-    local trackBg = track:CreateTexture(nil, "BACKGROUND")
-    trackBg:SetColorTexture(1, 1, 1, 0)
-    trackBg:SetAllPoints()
-
-    local thumb = CreateFrame("Button", nil, track)
-    thumb:SetWidth(4)
-    thumb:SetHeight(60)
-    thumb:SetPoint("TOP", track, "TOP", 0, 0)
-    thumb:SetFrameLevel(track:GetFrameLevel() + 1)
-    thumb:EnableMouse(true)
-    thumb:RegisterForDrag("LeftButton")
-
-    local thumbTex = thumb:CreateTexture(nil, "ARTWORK")
-    thumbTex:SetColorTexture(1, 1, 1, 0.4)
-    thumbTex:SetAllPoints()
-
-    local hitArea = CreateFrame("Button", nil, UIParent)
-    hitArea:SetFrameStrata("HIGH")
-    hitArea:Hide()
-    track._hitArea = hitArea
-    hitArea:SetWidth(16)
-    hitArea:SetPoint("TOPLEFT", scrollBox, "TOPRIGHT", -4, -2)
-    hitArea:SetPoint("BOTTOMLEFT", scrollBox, "BOTTOMRIGHT", -4, 2)
-    hitArea:SetFrameLevel(track:GetFrameLevel() + 2)
-    hitArea:EnableMouse(true)
-    hitArea:RegisterForDrag("LeftButton")
-
-    local SCROLL_STEP = 40
-    local SCROLLBAR_ALPHA = 0.35
-    local isDragging = false
-    local dragStartY, dragStartPct
-
-    local function GetPct()
-        return scrollBar.GetScrollPercentage and scrollBar:GetScrollPercentage() or 0
-    end
-
-    local function GetExtent()
-        return scrollBar.GetVisibleExtentPercentage and scrollBar:GetVisibleExtentPercentage() or 1
-    end
-
-    local function StepToPct()
-        local ext = GetExtent()
-        if ext >= 1 then return 0 end
-        local totalH = scrollBox:GetHeight() / ext
-        if totalH <= 0 then return 0 end
-        return SCROLL_STEP / totalH
-    end
-
-    local function StopScrollDrag()
-        if not isDragging then return end
-        isDragging = false
-        thumb:SetScript("OnUpdate", nil)
-    end
-
-    local function UpdateScrollThumb()
-        local ext = GetExtent()
-        if ext >= 1 then track:SetAlpha(0); return end
-        track:SetAlpha(SCROLLBAR_ALPHA)
-        local pct = GetPct()
-        local trackH = track:GetHeight()
-        local thumbH = math.max(20, trackH * ext)
-        thumb:SetHeight(thumbH)
-        local maxTravel = trackH - thumbH
-        thumb:ClearAllPoints()
-        thumb:SetPoint("TOP", track, "TOP", 0, -(pct * maxTravel))
-    end
-
-    scrollBox:SetScript("OnMouseWheel", function(_, delta)
-        if GetExtent() >= 1 then return end
-        local step = StepToPct()
-        local newPct = math.max(0, math.min(1, GetPct() - delta * step))
-        scrollBar:SetScrollPercentage(newPct)
-        UpdateScrollThumb()
-    end)
-
-    local function ScrollThumbOnUpdate(self)
-        if not IsMouseButtonDown("LeftButton") then StopScrollDrag(); return end
-        local _, cursorY = GetCursorPosition()
-        cursorY = cursorY / self:GetEffectiveScale()
-        local deltaY = dragStartY - cursorY
-        local trackH = track:GetHeight()
-        local maxTravel = trackH - self:GetHeight()
-        if maxTravel <= 0 then return end
-        local newPct = math.max(0, math.min(1, dragStartPct + deltaY / maxTravel))
-        scrollBar:SetScrollPercentage(newPct)
-        UpdateScrollThumb()
-    end
-
-    thumb:SetScript("OnMouseDown", function(self, mouseBtn)
-        if mouseBtn ~= "LeftButton" then return end
-        isDragging = true
-        local _, cursorY = GetCursorPosition()
-        dragStartY = cursorY / self:GetEffectiveScale()
-        dragStartPct = GetPct()
-        self:SetScript("OnUpdate", ScrollThumbOnUpdate)
-    end)
-    thumb:SetScript("OnMouseUp", function(_, mouseBtn)
-        if mouseBtn ~= "LeftButton" then return end
-        StopScrollDrag()
-    end)
-
-    hitArea:SetScript("OnMouseDown", function(_, mouseBtn)
-        if mouseBtn ~= "LeftButton" then return end
-        if GetExtent() >= 1 then return end
-        local _, cy = GetCursorPosition()
-        cy = cy / track:GetEffectiveScale()
-        local top = track:GetTop() or 0
-        local trackH = track:GetHeight()
-        local thumbH = thumb:GetHeight()
-        if trackH <= thumbH then return end
-        local frac = (top - cy - thumbH / 2) / (trackH - thumbH)
-        frac = math.max(0, math.min(1, frac))
-        scrollBar:SetScrollPercentage(frac)
-        UpdateScrollThumb()
-        isDragging = true
-        dragStartY = cy
-        dragStartPct = frac
-        thumb:SetScript("OnUpdate", ScrollThumbOnUpdate)
-    end)
-    hitArea:SetScript("OnMouseUp", function(_, mouseBtn)
-        if mouseBtn ~= "LeftButton" then return end
-        StopScrollDrag()
-    end)
-
-    if scrollBar.RegisterCallback then
-        scrollBar:RegisterCallback("OnScroll", UpdateScrollThumb)
-    end
-    if scrollBox.RegisterCallback then
-        scrollBox:RegisterCallback("OnDataRangeChanged", UpdateScrollThumb)
-    end
-    C_Timer.After(0.1, UpdateScrollThumb)
-end
-
-local function SkinBottomButton(btn)
-    if not btn or GetFFD(btn).btnSkinned then return end
-    GetFFD(btn).btnSkinned = true
-
-    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
-
-    StripTextures(btn)
-
-    GetFFD(btn).bg = btn:CreateTexture(nil, "BACKGROUND", nil, -6)
-    GetFFD(btn).bg:SetColorTexture(0.025, 0.035, 0.045, 0.92)
-    GetFFD(btn).bg:SetAllPoints()
-
-    PP.CreateBorder(btn, 1, 1, 1, 0.4, 1, "OVERLAY", 7)
-
-    local text = btn:GetFontString()
-    if text then
-        text:SetFont(fontPath, 9, "")
-        text:SetTextColor(1, 1, 1, 0.5)
-        text:ClearAllPoints()
-        text:SetPoint("CENTER", btn, "CENTER", 0, 0)
-    end
-
-    btn:HookScript("OnEnter", function()
-        local r, g, b, a1, a2 = 1, 1, 1, 0.7, 0.6
-        if GetFFD(btn).accent then
-            r, g, b = EG.r, EG.g, EG.b
-            a1, a2 = 1, 0.8
-        end
-        if text then text:SetTextColor(r, g, b, a1) end
-        if PP.GetBorders(btn) then PP.SetBorderColor(btn, r, g, b, a2) end
-    end)
-    btn:HookScript("OnLeave", function()
-        local r, g, b, a1, a2 = 1, 1, 1, 0.5, 0.4
-        if GetFFD(btn).accent then
-            r, g, b = EG.r, EG.g, EG.b
-            a1, a2 = 0.7, 0.5
-        end
-        if text then text:SetTextColor(r, g, b, a1) end
-        if PP.GetBorders(btn) then PP.SetBorderColor(btn, r, g, b, a2) end
-    end)
-end
-
-local KNOWN_BUTTONS = {
-    "FriendsFrameAddFriendButton",
-    "FriendsFrameSendMessageButton",
-    "WhoFrameWhoButton",
-    "WhoFrameAddFriendButton",
-    "WhoFrameGroupInviteButton",
+-------------------------------------------------------------------------------
+--  Accent colors on the bottom buttons (retail UpdateBottomButtonAccent)
+-------------------------------------------------------------------------------
+local ACCENT_BUTTONS = {
+	"FriendsFrameSendMessageButton",
+	"WhoFrameWhoButton",
+	"WhoFrameAddFriendButton",
+	"WhoFrameGroupInviteButton",
 }
+local accentHooked = {}
 
-local function UpdateBottomButtonAccent()
-    local fp = EBS.db and EBS.db.profile and EBS.db.profile.friends
-    if not fp then return end
-    local useAccent = fp.accentColors ~= false
-
-    local function ApplyAccentToBtn(btn, labelFS)
-        if not btn then return end
-        GetFFD(btn).accent = useAccent
-        if useAccent then
-            if labelFS then labelFS:SetTextColor(EG.r, EG.g, EG.b, 0.7) end
-            if PP.GetBorders(btn) then PP.SetBorderColor(btn, EG.r, EG.g, EG.b, 0.5) end
-        else
-            if labelFS then labelFS:SetTextColor(1, 1, 1, 0.5) end
-            if PP.GetBorders(btn) then PP.SetBorderColor(btn, 1, 1, 1, 0.4) end
-        end
-    end
-
-    for _, name in ipairs(KNOWN_BUTTONS) do
-        local btn = _G[name]
-        if btn and GetFFD(btn).btnSkinned and btn:IsEnabled()
-           and name ~= "FriendsFrameAddFriendButton" then
-            ApplyAccentToBtn(btn, btn:GetFontString())
-        end
-    end
-
-    -- Send Message: text plus a border overlay skinned outside SkinBottomButton.
-    local msgBtn = _G.FriendsFrameSendMessageButton
-    if msgBtn then
-        local text = msgBtn:GetFontString()
-        if text then
-            if useAccent then text:SetTextColor(EG.r, EG.g, EG.b, 0.7)
-            else text:SetTextColor(1, 1, 1, 0.5) end
-        end
-    end
-    local ffd = FriendsFrame and GetFFD(FriendsFrame)
-    if ffd then
-        if ffd.msgBdr then
-            if useAccent then PP.SetBorderColor(ffd.msgBdr, EG.r, EG.g, EG.b, 0.5)
-            else PP.SetBorderColor(ffd.msgBdr, 1, 1, 1, 0.4) end
-        end
-    end
+local function PaintButtonLabel(btn)
+	local lab = btn and btn.GetFontString and btn:GetFontString()
+	if not lab then return end
+	local p = F()
+	if not (p.enabled and p.accentColors ~= false and FR.ChromeShell()) then
+		if GetFFD(btn).accentPainted then
+			GetFFD(btn).accentPainted = nil
+			-- Hand the label back to the window skin's colors.
+			if btn:IsEnabled() then lab:SetTextColor(1, 1, 1) else lab:SetTextColor(0.5, 0.5, 0.5) end
+		end
+		return
+	end
+	if btn:IsEnabled() then
+		local r, g, b = Accent()
+		lab:SetTextColor(r, g, b, 0.9)
+		GetFFD(btn).accentPainted = true
+	end
 end
 
-local FRAME_BG_R, FRAME_BG_G, FRAME_BG_B = 0.03, 0.045, 0.05
-
--------------------------------------------------------------------------------
---  Window-skin layer over this window's chrome. Follows the Window Skins
---  "Friends List" card (winKey socialui): EllesmereUI = the Character Sheet
---  look, Modern = the global Modern backdrop, Blizz Default / the window-skin
---  kill switch / Blizz UI Enhanced not loaded = this module's own flat look.
---  Repaints only regions and frames SkinFriendsFrame already created.
--------------------------------------------------------------------------------
-local CHROME = {
-    BG_TEX = "Interface\\AddOns\\EllesmereUI\\media\\modern_blizz.png",
-    DARKEN = 0.38,                        -- the window shell's 0.62 black overlay, folded into the vertex color
-    TAB    = { 0.068, 0.056, 0.052 },     -- Character Sheet tab block
-    TAB_HL = 0.02,
-    PANE   = { 0, 0, 0, 0.1 },            -- Character Sheet pane wash
-    EDIT   = { 0.02, 0.02, 0.02, 1 },     -- window engine input box fill
-    EDGE   = { 0.2, 0.2, 0.2, 1 },        -- window engine control border
-    MENU   = { 0.08, 0.08, 0.08, 0.97 },  -- window engine fill, kept opaque over the list
-    CLOSE  = "|A:uitools-icon-close:14:14|a",
-}
-
--- The window-skin engine, when Blizz UI Enhanced is loaded (not a dependency).
--- Probed for this build's exports: a mismatched install paints the flat look.
-local function ChromeEngine()
-    local bs = EllesmereUI._ModuleNS.EllesmereUIBlizzardSkin
-    local ws = bs and bs.WSkin
-    return ws and ws.CoverFit and ws or nil
-end
-
-local function ChromeStyle(ws)
-    local s = ws and ws.GetStyle("socialui")
-    if s == "eui" or s == "modern" then return s end
-    return "flat"
-end
-
--- One input box or menu: its fill texture (ours) and the PP border on its host.
-local function PaintControl(tex, host, shell, fill, fr, fg, fb, fa, edgeA)
-    if not (tex and host) then return end
-    if shell then
-        local edge = CHROME.EDGE
-        tex:SetColorTexture(fill[1], fill[2], fill[3], fill[4])
-        PP.SetBorderColor(host, edge[1], edge[2], edge[3], edge[4])
-    else
-        tex:SetColorTexture(fr, fg, fb, fa)
-        PP.SetBorderColor(host, 1, 1, 1, edgeA)
-    end
-end
-
--- The look PaintChrome last painted (style, and the Modern color on Modern):
--- the style-refresh gate below compares against it.
-local chromePainted = {}
-
-local function PaintChrome()
-    local frame = FriendsFrame
-    if not (friendsSkinned and frame) or LegacyFriendsRetired() then return end
-    local ws = ChromeEngine()
-    local style = ChromeStyle(ws)
-    local shell = style ~= "flat"
-    local fd = GetFFD(frame)
-    local p = EBS.db.profile.friends
-    local seen = chromePainted
-    seen.style = style
-    if style == "modern" then seen.r, seen.g, seen.b, seen.a = ws.GetModernBG() end
-
-    local bg = fd.bg
-    if bg then
-        if style == "eui" then
-            bg:SetTexture(CHROME.BG_TEX)
-            ws.CoverFit(bg, frame:GetSize())
-            bg:SetVertexColor(CHROME.DARKEN, CHROME.DARKEN, CHROME.DARKEN, 1)
-        else
-            bg:SetTexCoord(0, 1, 0, 1)
-            bg:SetVertexColor(1, 1, 1, 1)
-            if style == "modern" then
-                bg:SetColorTexture(seen.r, seen.g, seen.b, seen.a)
-            else
-                bg:SetColorTexture(FRAME_BG_R, FRAME_BG_G, FRAME_BG_B)
-            end
-        end
-        bg:SetAlpha(1)
-    end
-
-    -- Frame border: the thin border under the flat look; the window skin's
-    -- atlas frame otherwise, hung on that same border container (ours).
-    local r, g, b, a = GetBorderColor(p)
-    local bsz = p.borderSize or 1
-    if shell or bsz <= 0 then
-        PP.SetBorderColor(frame, r, g, b, 0)
-    else
-        PP.UpdateBorder(frame, bsz, r, g, b, a)
-    end
-    if shell and fd.atlasFrame == nil then
-        local host = PP.GetBorders(frame)
-        if host then
-            ws.AtlasBorder(host)
-            fd.atlasFrame = ws.GetFFD(host).atlasBorderFrame or false
-        end
-    end
-    if fd.atlasFrame then fd.atlasFrame:SetShown(shell) end
-
-    -- Tabs, tab bar, panes.
-    local tr, tg, tb = FRAME_BG_R, FRAME_BG_G, FRAME_BG_B
-    if shell then tr, tg, tb = CHROME.TAB[1], CHROME.TAB[2], CHROME.TAB[3] end
-    local tabs = fd.tabs
-    if tabs then
-        for i = 1, #tabs do
-            local td = FFD[tabs[i]]
-            if td then
-                if td.bg then td.bg:SetColorTexture(tr, tg, tb, 1) end
-                if td.activeHL then td.activeHL:SetColorTexture(1, 1, 1, shell and CHROME.TAB_HL or 0.05) end
-            end
-        end
-    end
-    if fd.tabBarBg then
-        fd.tabBarBg:SetColorTexture(tr, tg, tb)
-        fd.tabBarBg:SetAlpha(1)
-    end
-    local pane = CHROME.PANE
-    if fd.listBg then
-        if shell then fd.listBg:SetColorTexture(pane[1], pane[2], pane[3], pane[4])
-        else fd.listBg:SetColorTexture(FRAME_BG_R, FRAME_BG_G, FRAME_BG_B, 1) end
-    end
-    if fd.whoBg then
-        if shell then fd.whoBg:SetColorTexture(pane[1], pane[2], pane[3], pane[4])
-        else fd.whoBg:SetColorTexture(0, 0.08, 0.10, 0.35) end
-    end
-
-    -- Who / Quick Join button fills (SkinBottomButton's own texture): none
-    -- under a window skin, so every bottom button is outline-only like the
-    -- Contacts pair, which carries no fill.
-    local fillA = shell and 0 or 0.92
-    for i = 1, #KNOWN_BUTTONS do
-        local btn = _G[KNOWN_BUTTONS[i]]
-        local bd = btn and FFD[btn]
-        if bd and bd.bg then bd.bg:SetColorTexture(0.025, 0.035, 0.045, fillA) end
-    end
-    local qjf = _G.QuickJoinFrame
-    local jb = qjf and qjf.JoinQueueButton
-    local jd = jb and FFD[jb]
-    if jd and jd.bg then jd.bg:SetColorTexture(0.025, 0.035, 0.045, fillA) end
-
-    -- Input boxes and the search results menu: the window engine's control
-    -- recipe under a skin, this module's creation values otherwise.
-    PaintControl(fd.searchBg, fd.searchBox, shell, CHROME.EDIT, 0, 0, 0, 0.4, 0.1)
-    PaintControl(fd.whoEditBg, fd.whoEdit, shell, CHROME.EDIT, 0, 0, 0, 0.4, 0.1)
-    PaintControl(fd.searchMenuBg, fd.searchDropdown, shell, CHROME.MENU, 0.04, 0.05, 0.06, 0.97, 0.15)
-
-    -- Close glyph: the house close atlas inline in our own FontString.
-    local cb = fd.closeBtn
-    local cd = cb and FFD[cb]
-    if cd and cd.x then
-        cd.idleA  = shell and 0.75 or 0.5
-        cd.hoverA = shell and 1 or 0.9
-        cd.x:SetText(shell and CHROME.CLOSE or "x")
-        cd.x:SetTextColor(1, 1, 1, 1)
-        cd.x:SetAlpha(cd.idleA)
-        cd.x:ClearAllPoints()
-        cd.x:SetPoint("CENTER", cb, "CENTER", -2, shell and 0 or -3)
-    end
-end
-
--- Window Skins refresh (a style pick or Modern color edit on ANY card): paint
--- only when this window's look changed. Its other inputs (border size/color,
--- class color, accent) change through ApplyFriends, which paints directly.
-local function OnChromeStylesChanged()
-    local ws = ChromeEngine()
-    local style = ChromeStyle(ws)
-    local seen = chromePainted
-    if style == seen.style then
-        if style ~= "modern" then return end
-        local r, g, b, a = ws.GetModernBG()
-        if r == seen.r and g == seen.g and b == seen.b and a == seen.a then return end
-    end
-    PaintChrome()
-end
-
--- Options: the Border rows stand down while a window skin draws the frame.
-EllesmereUI._ModuleNS[ADDON_NAME].FR_ChromeShell = function()
-    return ChromeStyle(ChromeEngine()) ~= "flat"
+local function UpdateButtonAccent()
+	for _, n in ipairs(ACCENT_BUTTONS) do
+		local btn = _G[n]
+		if btn then
+			if not accentHooked[btn] then
+				accentHooked[btn] = true
+				-- After the window skin's own state hook (deferred one frame).
+				local function later() After(0, function() PaintButtonLabel(btn) end) end
+				btn:HookScript("OnEnable", later)
+				btn:HookScript("OnDisable", later)
+				btn:HookScript("OnShow", later)
+			end
+			PaintButtonLabel(btn)
+		end
+	end
 end
 
 -------------------------------------------------------------------------------
---  SkinFriendsFrame (one-time structural setup)
+--  Auto-accept group invites from friends (retail FriendsKit.SyncAutoAccept)
 -------------------------------------------------------------------------------
-local function SkinFriendsFrame()
-    if LegacyFriendsRetired() then return end
-    local frame = FriendsFrame
-    if not frame or friendsSkinned then return end
-    friendsSkinned = true
-    local p = EBS.db.profile.friends
-    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
-
-    if frame.NineSlice then frame.NineSlice:Hide() end
-    if frame.Bg then frame.Bg:Hide() end
-    if frame.TitleBg then frame.TitleBg:Hide() end
-    if frame.TopTileStreaks then frame.TopTileStreaks:SetAlpha(0) end
-    if frame.PortraitContainer then frame.PortraitContainer:Hide() end
-    if frame.portrait then frame.portrait:Hide() end
-    if frame.PortraitFrame then frame.PortraitFrame:Hide() end
-    if FriendsFramePortrait then FriendsFramePortrait:Hide() end
-    if FriendsFrameIcon then FriendsFrameIcon:Hide() end
-
-    for _, key in ipairs({"TopBorder", "TopRightCorner", "RightBorder",
-                          "BottomRightCorner", "BottomBorder", "BottomLeftCorner",
-                          "LeftBorder", "TopLeftCorner", "BtnCornerLeft",
-                          "BtnCornerRight"}) do
-        if frame[key] then frame[key]:Hide() end
-    end
-
-    if frame.Inset then
-        if frame.Inset.NineSlice then frame.Inset.NineSlice:Hide() end
-        if frame.Inset.Bg then frame.Inset.Bg:Hide() end
-    end
-
-    if not GetFFD(frame).sizeSet then
-        GetFFD(frame).sizeSet = true
-        local origW = frame:GetWidth()
-        local origH = frame:GetHeight()
-        local origListH = FriendsListFrame:GetHeight()
-        local EXTRA_H = 50
-        local LIST_TOP = -92
-        local LIST_BOTTOM = 35
-        local LIST_LEFT = 15
-        local LIST_RIGHT = -15
-        local _sizeApplied = false
-        local function ApplySize()
-            if _sizeApplied then return end
-            _sizeApplied = true
-            frame:SetWidth(origW - 40)
-            frame:SetHeight(origH + EXTRA_H)
-            FriendsListFrame:SetHeight(origListH + EXTRA_H)
-            FriendsListFrame.ScrollBox:ClearAllPoints()
-            FriendsListFrame.ScrollBox:SetPoint("TOPLEFT", frame, "TOPLEFT", LIST_LEFT, LIST_TOP)
-            FriendsListFrame.ScrollBox:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", LIST_RIGHT, LIST_BOTTOM)
-            local function FitToListPane(f)
-                if not f then return end
-                f:ClearAllPoints()
-                f:SetPoint("TOPLEFT", frame, "TOPLEFT", LIST_LEFT, LIST_TOP)
-                f:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", LIST_RIGHT, LIST_BOTTOM)
-                StripTextures(f)
-                if f.Bg then f.Bg:Hide() end
-                if f.NineSlice then f.NineSlice:Hide() end
-                if f.List then
-                    f.List:ClearAllPoints()
-                    f.List:SetAllPoints(f)
-                    StripTextures(f.List)
-                    if f.List.ScrollBox then
-                        f.List.ScrollBox:ClearAllPoints()
-                        f.List.ScrollBox:SetAllPoints(f.List)
-                    end
-                end
-            end
-            FitToListPane(_G.RecentAlliesFrame)
-            -- Skin Recent Allies scrollbar identically to Friends list
-            local raFrame = _G.RecentAlliesFrame
-            if raFrame and raFrame.List then
-                local raBar = raFrame.List.ScrollBar or raFrame.ScrollBar
-                if raBar then
-                    StripTextures(raBar)
-                    if raBar.Background then raBar.Background:Hide() end
-                    if raBar.Back then raBar.Back:SetAlpha(0); raBar.Back:SetSize(1, 0.001) end
-                    if raBar.Forward then raBar.Forward:SetAlpha(0); raBar.Forward:SetSize(1, 0.001) end
-                    local raTrack = raBar.Track
-                    if raTrack then
-                        raTrack:DisableDrawLayer("ARTWORK")
-                        raTrack:DisableDrawLayer("BACKGROUND")
-                        raTrack:ClearAllPoints()
-                        raTrack:SetPoint("TOPLEFT", raBar, "TOPLEFT", 0, 0)
-                        raTrack:SetPoint("BOTTOMRIGHT", raBar, "BOTTOMRIGHT", 0, 0)
-                    end
-                    local raThumb = raBar.GetThumb and raBar:GetThumb()
-                    if raThumb then
-                        raThumb:DisableDrawLayer("ARTWORK")
-                        raThumb:DisableDrawLayer("BACKGROUND")
-                        local raTex = raThumb:CreateTexture(nil, "OVERLAY")
-                        raTex:SetColorTexture(1, 1, 1, 0.4)
-                        raTex:SetWidth(3)
-                        raTex:SetPoint("TOP", raThumb, "TOP", 0, 0)
-                        raTex:SetPoint("BOTTOM", raThumb, "BOTTOM", 0, 0)
-                        raTex:SetPoint("RIGHT", raThumb, "RIGHT", 0, 0)
-                    end
-                    raBar:SetWidth(5)
-                    local p1, rel, p2, ox, oy = raBar:GetPoint(1)
-                    if p1 then
-                        raBar:SetPoint(p1, rel, p2, (ox or 0) - 6, (oy or 0) + 4)
-                    end
-                    raBar:SetAlpha(0.6)
-                    raBar:HookScript("OnEnter", function() raBar:SetAlpha(0.95) end)
-                    raBar:HookScript("OnLeave", function() raBar:SetAlpha(0.6) end)
-                    if raThumb then
-                        raThumb:HookScript("OnEnter", function() raBar:SetAlpha(0.95) end)
-                        raThumb:HookScript("OnLeave", function() raBar:SetAlpha(0.6) end)
-                    end
-                end
-            end
-            local raf = _G.RecruitAFriendFrame
-            if raf then
-                raf:ClearAllPoints()
-                raf:SetPoint("TOPLEFT", frame, "TOPLEFT", LIST_LEFT, -20)
-                raf:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", LIST_RIGHT, LIST_BOTTOM - 20)
-                StripTextures(raf)
-                if raf.Bg then raf.Bg:Hide() end
-                if raf.NineSlice then raf.NineSlice:Hide() end
-            end
-        end
-
-        hooksecurefunc(frame, "Show", function()
-            local _mplus = C_ChallengeMode and C_ChallengeMode.IsChallengeModeActive and C_ChallengeMode.IsChallengeModeActive()
-            local _, _iT = IsInInstance()
-            local _pvp = (_iT == "pvp" or _iT == "arena")
-            if not InCombatLockdown() and not _mplus and not _pvp then
-                ApplySize()
-            end
-        end)
-        ApplySize()
-    end
-
-    GetFFD(frame).bg = frame:CreateTexture(nil, "BACKGROUND", nil, -8)
-    GetFFD(frame).bg:SetColorTexture(FRAME_BG_R, FRAME_BG_G, FRAME_BG_B)
-    GetFFD(frame).bg:SetAllPoints()
-    GetFFD(frame).bg:SetAlpha(1)
-
-    do
-        local r, g, b, a = GetBorderColor(p)
-        local borderAlpha = (p.showBorder ~= false) and a or 0
-        PP.CreateBorder(frame, r, g, b, borderAlpha, p.borderSize or 1, "OVERLAY", 7)
-    end
-
-    -- Float these above the resized panel instead of clipping inside it.
-    if frame.IgnoreListWindow then
-        frame.IgnoreListWindow:SetParent(UIParent)
-        frame.IgnoreListWindow:SetFrameStrata("DIALOG")
-    end
-
-    if _G.RaidInfoFrame then
-        _G.RaidInfoFrame:SetFrameStrata("DIALOG")
-    end
-
-    if FriendsTooltip then
-        FriendsTooltip:SetParent(UIParent)
-        FriendsTooltip:SetFrameStrata("TOOLTIP")
-    end
-
-    local firstTab = _G.FriendsFrameTab1
-    if firstTab then
-        GetFFD(frame).tabBarBg = frame:CreateTexture(nil, "BACKGROUND", nil, -7)
-        GetFFD(frame).tabBarBg:SetColorTexture(FRAME_BG_R, FRAME_BG_G, FRAME_BG_B)
-        GetFFD(frame).tabBarBg:SetAlpha(1)
-        GetFFD(frame).tabBarBg:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", 0, 2)
-        GetFFD(frame).tabBarBg:SetPoint("TOPRIGHT", frame, "BOTTOMRIGHT", 0, 2)
-        GetFFD(frame).tabBarBg:SetPoint("BOTTOM", firstTab, "BOTTOM", 0, 0)
-    end
-
-    -- Restyle Blizzard's tabs in-place
-    local customTabs = {}
-    for i = 1, frame.numTabs or 4 do
-        local tab = _G["FriendsFrameTab" .. i]
-        if tab then
-            local regions = { tab:GetRegions() }
-            for j = 1, #regions do
-                local region = regions[j]
-                if region and region:IsObjectType("Texture") then
-                    region:SetTexture("")
-                    if region.SetAtlas then region:SetAtlas("") end
-                end
-            end
-            if tab.Left then tab.Left:SetTexture("") end
-            if tab.Middle then tab.Middle:SetTexture("") end
-            if tab.Right then tab.Right:SetTexture("") end
-            if tab.LeftDisabled then tab.LeftDisabled:SetTexture("") end
-            if tab.MiddleDisabled then tab.MiddleDisabled:SetTexture("") end
-            if tab.RightDisabled then tab.RightDisabled:SetTexture("") end
-            local hl = tab:GetHighlightTexture()
-            if hl then hl:SetTexture("") end
-
-            if not GetFFD(tab).bg then
-                GetFFD(tab).bg = tab:CreateTexture(nil, "BACKGROUND")
-                GetFFD(tab).bg:SetAllPoints()
-                GetFFD(tab).bg:SetColorTexture(FRAME_BG_R, FRAME_BG_G, FRAME_BG_B, 1)
-            end
-
-            local tfd = GetFFD(tab)
-            if not tfd.activeHL then
-                local activeHL = tab:CreateTexture(nil, "ARTWORK", nil, -6)
-                activeHL:SetAllPoints()
-                activeHL:SetColorTexture(1, 1, 1, 0.05)
-                activeHL:SetBlendMode("ADD")
-                activeHL:Hide()
-                tfd.activeHL = activeHL
-            end
-
-            local blizLabel = tab:GetFontString()
-            local labelText = blizLabel and blizLabel:GetText() or ("Tab " .. i)
-            if blizLabel then blizLabel:SetTextColor(0, 0, 0, 0) end
-            tab:SetPushedTextOffset(0, 0)
-            local label = tab:CreateFontString(nil, "OVERLAY")
-            label:SetFont(fontPath, 9, "")
-            label:SetPoint("CENTER", tab, "CENTER", 0, 0)
-            label:SetJustifyH("CENTER")
-            label:SetText(labelText)
-            tfd.label = label
-
-            if not tfd.underline then
-                local underline = tab:CreateTexture(nil, "OVERLAY", nil, 6)
-                PP.DisablePixelSnap(underline)
-                underline:SetHeight(PP.mult or 1)
-                underline:SetPoint("BOTTOMLEFT", tab, "BOTTOMLEFT", 0, 0)
-                underline:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", 0, 0)
-                local ar, ag, ab = EG.r, EG.g, EG.b
-                underline:SetColorTexture(ar, ag, ab, 1)
-                EllesmereUI.RegAccent({ type = "solid", obj = underline, a = 1 })
-                underline:Hide()
-                tfd.underline = underline
-            end
-
-            customTabs[i] = tab
-        end
-    end
-    GetFFD(frame).tabs = customTabs
-
-    local _activeSubTab = 1
-
-    local function UpdateCustomTabs(overrideTab)
-        local selected = overrideTab or PanelTemplates_GetSelectedTab(FriendsFrame) or 1
-        local isContacts = (selected == 1)
-        local fp = EBS.db and EBS.db.profile and EBS.db.profile.friends
-        local useAccent = fp and fp.accentColors ~= false
-        for i, ct in ipairs(customTabs) do
-            local isActive = (i == selected)
-            local ctd = GetFFD(ct)
-            if ctd.label then ctd.label:SetTextColor(1, 1, 1, isActive and 1 or 0.5) end
-            if ctd.underline then
-                ctd.underline:SetShown(isActive)
-                if isActive then
-                    if useAccent then
-                        local ar, ag, ab = EG.r, EG.g, EG.b
-                        ctd.underline:SetColorTexture(ar, ag, ab, 1)
-                    else
-                        ctd.underline:SetColorTexture(1, 1, 1, 0.6)
-                    end
-                end
-            end
-            if ctd.activeHL then ctd.activeHL:SetShown(isActive) end
-        end
-        local showContactsUI = isContacts and _activeSubTab == 1
-        local addBtn = _G.FriendsFrameAddFriendButton
-        local msgBtn = _G.FriendsFrameSendMessageButton
-        if addBtn then addBtn:SetAlpha(showContactsUI and 1 or 0); addBtn:EnableMouse(showContactsUI) end
-        if msgBtn then msgBtn:SetAlpha(showContactsUI and 1 or 0); msgBtn:EnableMouse(showContactsUI) end
-        if GetFFD(frame).addBdr then GetFFD(frame).addBdr:SetShown(showContactsUI) end
-        if GetFFD(frame).msgBdr then GetFFD(frame).msgBdr:SetShown(showContactsUI) end
-        local showListChrome = isContacts and _activeSubTab ~= 3
-        if GetFFD(frame).listOverlay then GetFFD(frame).listOverlay:SetShown(showListChrome) end
-        if GetFFD(frame).listBdr then GetFFD(frame).listBdr:SetShown(showListChrome) end
-        if GetFFD(frame).searchBox then GetFFD(frame).searchBox:SetShown(isContacts) end
-        if not isContacts and GetFFD(frame).searchDropdown then GetFFD(frame).searchDropdown:Hide() end
-        local showTopUI = (selected ~= 3)
-        if not isContacts and GetFFD(frame).subTabs then
-            for _, ct in ipairs(GetFFD(frame).subTabs) do
-                ct._label:SetTextColor(1, 1, 1, 0.53)
-                ct:SetShown(showTopUI)
-            end
-        elseif GetFFD(frame).subTabs then
-            for _, ct in ipairs(GetFFD(frame).subTabs) do
-                ct:Show()
-            end
-            if GetFFD(frame).updateSubTabs then GetFFD(frame).updateSubTabs() end
-        end
-        if GetFFD(frame).statusOrb then GetFFD(frame).statusOrb:SetShown(isContacts) end
-        if GetFFD(frame).broadcastBtn then GetFFD(frame).broadcastBtn:SetShown(isContacts) end
-        if GetFFD(frame).titleBtn then GetFFD(frame).titleBtn:Show() end
-        if GetFFD(frame).titleDiv then GetFFD(frame).titleDiv:Show() end
-        local function SetTrackVisSB(sb, vis)
-            if sb and GetFFD(sb).track then
-                GetFFD(sb).track:SetShown(vis)
-                if GetFFD(sb).track._hitArea then GetFFD(sb).track._hitArea:SetShown(vis) end
-            end
-        end
-        local shown = frame:IsShown()
-        local raf = _G.RecentAlliesFrame
-        if raf and raf.List then SetTrackVisSB(raf.List.ScrollBox, shown and isContacts and _activeSubTab == 2) end
-        local who = _G.WhoFrame
-        if who then SetTrackVisSB(who.ScrollBox or (who.List and who.List.ScrollBox), shown and selected == 2) end
-    end
-
-    GetFFD(frame).updateCustomTabs = UpdateCustomTabs
-
-    -- Tab changes are detected from each content frame's OnShow.
-    local tabFrames = {
-        { _G.FriendsListFrame, 1 },
-        { _G.WhoFrame,         2 },
-        { _G.RaidFrame,        3 },
-        { _G.QuickJoinFrame,   4 },
-    }
-    for _, entry in ipairs(tabFrames) do
-        local sf, tabIdx = entry[1], entry[2]
-        if sf then
-            sf:HookScript("OnShow", function()
-                UpdateCustomTabs(tabIdx)
-                if tabIdx == 3 then C_Timer.After(0, SkinRaidTab); C_Timer.After(0.2, SkinRaidTab) end
-            end)
-        end
-    end
-    if not _G.RaidFrame then
-        C_Timer.After(0.25, function()
-            local rf = _G.RaidFrame
-            if rf then
-                rf:HookScript("OnShow", function()
-                    UpdateCustomTabs(3)
-                    C_Timer.After(0, SkinRaidTab); C_Timer.After(0.2, SkinRaidTab)
-                end)
-            end
-        end)
-    end
-    hooksecurefunc(frame, "Show", function()
-        UpdateCustomTabs()
-    end)
-
-    hooksecurefunc(frame, "Hide", function()
-        local function HideTrackSB(sb)
-            if sb and GetFFD(sb).track then
-                GetFFD(sb).track:Hide()
-                if GetFFD(sb).track._hitArea then GetFFD(sb).track._hitArea:Hide() end
-            end
-        end
-        _activeSubTab = 1
-        local raf = _G.RecentAlliesFrame
-        if raf and raf.List then HideTrackSB(raf.List.ScrollBox) end
-        local who = _G.WhoFrame
-        if who then HideTrackSB(who.ScrollBox or (who.List and who.List.ScrollBox)) end
-    end)
-
-    -- Blizzard's title is hidden and replaced with a clickable BattleTag label.
-    if frame.TitleContainer then
-        local blizTitle = frame.TitleContainer.TitleText or frame.TitleContainer:GetFontString()
-        if blizTitle then blizTitle:SetAlpha(0) end
-    elseif FriendsFrameTitleText then
-        FriendsFrameTitleText:SetAlpha(0)
-    end
-
-    local _, battleTag = BNGetInfo()
-    local titleText = battleTag or (FRIENDS or "Friends")
-    local titleBtn = CreateFrame("Button", nil, frame)
-    -- Above the window skin's atlas frame (+7), below the search results (+10).
-    titleBtn:SetFrameLevel(frame:GetFrameLevel() + 8)
-
-    local titleLabel = titleBtn:CreateFontString(nil, "OVERLAY")
-    titleLabel:SetFont(fontPath, 12, "")
-    titleLabel:SetTextColor(1, 1, 1, 0.75)
-    titleLabel:SetPoint("CENTER", titleBtn, "CENTER", 0, 0)
-    titleLabel:SetJustifyH("CENTER")
-    titleLabel:SetText(titleText)
-
-    local textW = titleLabel:GetStringWidth() or 60
-    titleBtn:SetSize(textW + 16, 20)
-    titleBtn:SetPoint("TOP", frame, "TOP", 0, -5)
-
-    titleBtn._label = titleLabel
-    GetFFD(frame).titleBtn = titleBtn
-
-    titleBtn:SetScript("OnEnter", function()
-        titleLabel:SetTextColor(1, 1, 1, 1)
-    end)
-    titleBtn:SetScript("OnLeave", function()
-        titleLabel:SetTextColor(1, 1, 1, 0.75)
-    end)
-
-    local copyBackdrop, copyPopup
-    local function HideCopyPopup()
-        if copyPopup then copyPopup:Hide() end
-        if copyBackdrop then copyBackdrop:Hide() end
-    end
-
-    local function ShowCopyPopup(text, anchorBtn)
-        if not copyPopup then
-            copyBackdrop = CreateFrame("Button", nil, UIParent)
-            copyBackdrop:SetFrameStrata("DIALOG")
-            copyBackdrop:SetFrameLevel(499)
-            copyBackdrop:SetAllPoints(UIParent)
-            local bdTex = copyBackdrop:CreateTexture(nil, "BACKGROUND")
-            bdTex:SetAllPoints()
-            bdTex:SetColorTexture(0, 0, 0, 0.10)
-            local fadeIn = copyBackdrop:CreateAnimationGroup()
-            fadeIn:SetToFinalAlpha(true)
-            local a = fadeIn:CreateAnimation("Alpha")
-            a:SetFromAlpha(0); a:SetToAlpha(1); a:SetDuration(0.2)
-            copyBackdrop._fadeIn = fadeIn
-            copyBackdrop:RegisterForClicks("AnyUp")
-            copyBackdrop:SetScript("OnClick", HideCopyPopup)
-            copyBackdrop:Hide()
-
-            copyPopup = CreateFrame("Frame", nil, UIParent)
-            copyPopup:SetFrameStrata("DIALOG")
-            copyPopup:SetFrameLevel(500)
-            copyPopup:SetSize(220, 52)
-            local popFade = copyPopup:CreateAnimationGroup()
-            popFade:SetToFinalAlpha(true)
-            local pa = popFade:CreateAnimation("Alpha")
-            pa:SetFromAlpha(0); pa:SetToAlpha(1); pa:SetDuration(0.2)
-            copyPopup._fadeIn = popFade
-
-            local bg = copyPopup:CreateTexture(nil, "BACKGROUND")
-            bg:SetAllPoints()
-            bg:SetColorTexture(0.077, 0.068, 0.058, 0.97)
-            PP.CreateBorder(copyPopup, 1, 1, 1, 0.15, 1, "OVERLAY", 7)
-
-            local hint = copyPopup:CreateFontString(nil, "OVERLAY")
-            hint:SetFont(fontPath, 8, "")
-            hint:SetTextColor(1, 1, 1, 0.5)
-            hint:SetPoint("TOP", copyPopup, "TOP", 0, -6)
-            hint:SetText("Ctrl+C to copy, Escape to close")
-
-            local eb = CreateFrame("EditBox", nil, copyPopup)
-            eb:SetSize(160, 16)
-            eb:SetPoint("TOP", hint, "BOTTOM", 0, -4)
-            eb:SetFontObject(GameFontHighlight)
-            eb:SetAutoFocus(false)
-            eb:SetJustifyH("CENTER")
-            local ebBg = eb:CreateTexture(nil, "BACKGROUND")
-            ebBg:SetColorTexture(0.112, 0.105, 0.098, 1)
-            ebBg:SetPoint("TOPLEFT", -6, 4); ebBg:SetPoint("BOTTOMRIGHT", 6, -4)
-            PP.CreateBorder(eb, 1, 1, 1, 0.02, 1, "OVERLAY", 7)
-            eb:SetScript("OnEscapePressed", function(self) self:ClearFocus(); HideCopyPopup() end)
-            eb:SetScript("OnKeyDown", function(self, key)
-                if key == "C" and IsControlKeyDown() then
-                    C_Timer.After(0.05, HideCopyPopup)
-                end
-            end)
-            eb:SetScript("OnMouseUp", function(self) self:HighlightText() end)
-            copyPopup:EnableMouse(true)
-            copyPopup:SetScript("OnMouseDown", function() copyPopup._eb:SetFocus(); copyPopup._eb:HighlightText() end)
-            copyPopup._eb = eb
-        end
-        copyPopup._eb:SetText(text)
-        copyPopup:ClearAllPoints()
-        copyPopup:SetPoint("BOTTOM", anchorBtn, "TOP", 0, 8)
-        copyBackdrop:SetAlpha(0); copyBackdrop:Show(); copyBackdrop._fadeIn:Play()
-        copyPopup:SetAlpha(0); copyPopup:Show(); copyPopup._fadeIn:Play()
-        copyPopup._eb:SetFocus(); copyPopup._eb:HighlightText()
-    end
-
-    titleBtn:SetScript("OnClick", function(self)
-        ShowCopyPopup(titleText, self)
-    end)
-
-    GetFFD(frame).titleDiv = frame:CreateTexture(nil, "OVERLAY", nil, 1)
-    GetFFD(frame).titleDiv:SetColorTexture(1, 1, 1, 0.06)
-    GetFFD(frame).titleDiv:SetHeight(1)
-    GetFFD(frame).titleDiv:SetPoint("TOPLEFT", frame, "TOPLEFT", 8, -30)
-    GetFFD(frame).titleDiv:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -8, -30)
-
-    -- BattleNet ID bar reskin
-    local statusDD = _G.FriendsFrameStatusDropdown
-    if statusDD then
-        statusDD:SetAlpha(0)
-        statusDD:EnableMouse(false)
-        statusDD:SetSize(1, 1)
-    end
-
-    local bnetFrame = _G.FriendsFrameBattlenetFrame
-    if bnetFrame then
-        StripTextures(bnetFrame)
-        local children = { bnetFrame:GetChildren() }
-        for i = 1, #children do
-            local child = children[i]
-            child:SetAlpha(0)
-            child:EnableMouse(false)
-        end
-        local regions = { bnetFrame:GetRegions() }
-        for i = 1, #regions do
-            local region = regions[i]
-            if region:IsObjectType("FontString") then
-                region:SetAlpha(0)
-            end
-        end
-        if bnetFrame.BroadcastFrame then
-            local bf = bnetFrame.BroadcastFrame
-            bf:SetParent(FriendsFrame)
-            bf:SetAlpha(1)
-            bf:EnableMouse(true)
-            bf:ClearAllPoints()
-            bf:SetPoint("TOPLEFT", FriendsFrame, "TOPRIGHT", 5, 0)
-        end
-        bnetFrame:SetHeight(1)
-    end
-
-    -- UnitIsDND/UnitIsAFK can return secret values; gate both reads.
-    local function GetPlayerStatusName()
-        local dnd = UnitIsDND("player")
-        if not issecretvalue or not issecretvalue(dnd) then
-            if dnd then return BUSY or "Busy" end
-        end
-        local afk = UnitIsAFK("player")
-        if not issecretvalue or not issecretvalue(afk) then
-            if afk then return AWAY or "Away" end
-        end
-        return FRIENDS_LIST_ONLINE or "Online"
-    end
-    GetFFD(frame).getPlayerStatus = GetPlayerStatusName
-
-    -- Custom sub-tabs (Friends/Recent Allies/Recruit A Friend)
-    local customSubTabs = {}
-    GetFFD(frame).subTabs = customSubTabs
-    local function SkinSubTabs()
-        local tabHeader = _G.FriendsTabHeader
-        if not tabHeader then return end
-        local tabSystem = tabHeader.TabSystem
-        if not tabSystem then return end
-
-        local blizSubTabs = {}
-        local children = { tabSystem:GetChildren() }
-        for i = 1, #children do
-            local st = children[i]
-            if st and st:IsObjectType("Button") then
-                local text = st:GetFontString()
-                local name = text and text:GetText() or ("Tab " .. i)
-                blizSubTabs[#blizSubTabs + 1] = { blizTab = st, name = name }
-            end
-        end
-
-        for _, info in ipairs(blizSubTabs) do
-            info.blizTab:SetAlpha(0)
-            info.blizTab:SetHeight(1)
-            info.blizTab:EnableMouse(false)
-        end
-        StripTextures(tabHeader)
-        if tabSystem then StripTextures(tabSystem) end
-
-        local function UpdateSubTabs()
-            local fp3 = EBS.db and EBS.db.profile and EBS.db.profile.friends
-            local useAccent = fp3 and fp3.accentColors ~= false
-            local ar, ag, ab = EG.r, EG.g, EG.b
-            for i, ct in ipairs(customSubTabs) do
-                local bliz = blizSubTabs[i] and blizSubTabs[i].blizTab
-                local isSelected = bliz and bliz.IsEnabled and not bliz:IsEnabled()
-                if isSelected then
-                    if useAccent then
-                        ct._label:SetTextColor(ar, ag, ab, 1)
-                    else
-                        ct._label:SetTextColor(1, 1, 1, 1)
-                    end
-                else
-                    ct._label:SetTextColor(1, 1, 1, 0.53)
-                end
-            end
-        end
-        local function UpdateSubTabWidths()
-            for _, ct in ipairs(customSubTabs) do
-                local w = ct._label:GetStringWidth() or 40
-                ct:SetWidth(w)
-            end
-        end
-        GetFFD(frame).updateSubTabs = function()
-            UpdateSubTabWidths()
-            UpdateSubTabs()
-        end
-
-        local ar, ag, ab = EG.r, EG.g, EG.b
-        for i, info in ipairs(blizSubTabs) do
-            local ct = CreateFrame("Button", nil, frame)
-            ct:SetFrameLevel(frame:GetFrameLevel() + 5)
-            ct:SetHeight(20)
-
-            local label = ct:CreateFontString(nil, "OVERLAY")
-            label:SetFont(fontPath, 11, "")
-            label:SetPoint("LEFT", ct, "LEFT", 0, 0)
-            label:SetJustifyH("LEFT")
-            label:SetText(info.name:match("^(%S+)") or info.name)
-            ct._label = label
-
-            ct:SetScript("OnEnter", function()
-                local isContacts = (PanelTemplates_GetSelectedTab(FriendsFrame) or 1) == 1
-                if not isContacts then return end
-                local bliz = blizSubTabs[i] and blizSubTabs[i].blizTab
-                local isSelected = bliz and bliz.IsEnabled and not bliz:IsEnabled()
-                if not isSelected then ct._label:SetTextColor(1, 1, 1, 0.86) end
-            end)
-            ct:SetScript("OnLeave", function()
-                local isContacts = (PanelTemplates_GetSelectedTab(FriendsFrame) or 1) == 1
-                if not isContacts then return end
-                local bliz = blizSubTabs[i] and blizSubTabs[i].blizTab
-                local isSelected = bliz and bliz.IsEnabled and not bliz:IsEnabled()
-                if isSelected then
-                    local fp4 = EBS.db and EBS.db.profile and EBS.db.profile.friends
-                    if fp4 and fp4.accentColors ~= false then
-                        ct._label:SetTextColor(EG.r, EG.g, EG.b, 1)
-                    else
-                        ct._label:SetTextColor(1, 1, 1, 1)
-                    end
-                else
-                    ct._label:SetTextColor(1, 1, 1, 0.53)
-                end
-            end)
-
-            ct:SetScript("OnClick", function()
-                local bliz = blizSubTabs[i] and blizSubTabs[i].blizTab
-                local isSelected = bliz and bliz.IsEnabled and not bliz:IsEnabled()
-                if isSelected then return end
-                local tabName = info.name or ""
-                if strfind(tabName, "Recruit") then
-                    -- Let Blizzard show the full RAF page natively; its tab is mouse-enabled just long enough for the click to register.
-                    if bliz then
-                        bliz:EnableMouse(true)
-                        bliz:Click()
-                        bliz:EnableMouse(false)
-                    end
-                    _activeSubTab = i
-                    UpdateSubTabs()
-                    UpdateCustomTabs()
-                    return
-                else
-                    local bottomTab = PanelTemplates_GetSelectedTab(FriendsFrame) or 1
-                    if bottomTab ~= 1 then
-                        PanelTemplates_SetTab(FriendsFrame, 1)
-                        FriendsFrame_Update()
-                        UpdateCustomTabs()
-                    end
-                    if bliz then
-                        bliz:EnableMouse(true)
-                        bliz:Click()
-                        bliz:EnableMouse(false)
-                    end
-                end
-                _activeSubTab = i
-                UpdateSubTabs()
-                UpdateCustomTabs()
-            end)
-
-            ct:SetWidth(60)
-            if i == 1 then
-                ct:SetPoint("TOPLEFT", FriendsListFrame, "TOPLEFT", 15, -70)
-            else
-                ct:SetPoint("LEFT", customSubTabs[i - 1], "RIGHT", 20, 0)
-            end
-
-            customSubTabs[i] = ct
-        end
-
-        -- Extra sub-tab: "Ignored"
-        do
-            local idx = #customSubTabs + 1
-            local ct = CreateFrame("Button", nil, frame)
-            ct:SetFrameLevel(frame:GetFrameLevel() + 5)
-            ct:SetHeight(20)
-
-            local label = ct:CreateFontString(nil, "OVERLAY")
-            label:SetFont(fontPath, 11, "")
-            label:SetPoint("LEFT", ct, "LEFT", 0, 0)
-            label:SetJustifyH("LEFT")
-            label:SetText(IGNORE or "Ignored")
-            ct._label = label
-            ct._label:SetTextColor(1, 1, 1, 0.53)
-
-            ct:SetScript("OnEnter", function()
-                ct._label:SetTextColor(1, 1, 1, 0.86)
-            end)
-            ct:SetScript("OnLeave", function()
-                ct._label:SetTextColor(1, 1, 1, 0.53)
-            end)
-            ct:SetScript("OnClick", function()
-                local ilw = FriendsFrame and FriendsFrame.IgnoreListWindow
-                if ilw and ilw.ToggleFrame then
-                    ilw:ToggleFrame()
-                end
-            end)
-
-            ct:SetWidth(60)
-            ct:SetPoint("LEFT", customSubTabs[idx - 1], "RIGHT", 20, 0)
-            customSubTabs[idx] = ct
-        end
-
-        local lastSubTab = customSubTabs[#customSubTabs]
-        if lastSubTab then
-            local orbBtn = CreateFrame("Button", nil, frame)
-            orbBtn:SetSize(26, 26)
-            orbBtn:SetFrameLevel(frame:GetFrameLevel() + 5)
-            orbBtn:SetPoint("RIGHT", FriendsListFrame, "TOPRIGHT", -10, -80)
-            local orbTex = orbBtn:CreateTexture(nil, "ARTWORK", nil, 2)
-            orbTex:SetAllPoints()
-            local orbInfo2 = C_Texture.GetAtlasInfo("lootroll-animreveal-a")
-            if orbInfo2 then
-                orbTex:SetTexture(orbInfo2.file)
-                local aL = orbInfo2.leftTexCoord or 0
-                local aR = orbInfo2.rightTexCoord or 1
-                local aT = orbInfo2.topTexCoord or 0
-                local aB = orbInfo2.bottomTexCoord or 1
-                local aW, aH = aR - aL, aB - aT
-                orbTex:SetTexCoord(aL, aL + aW/6, aT, aT + aH/2)
-            end
-
-            local function UpdatePlayerOrb()
-                local status = GetPlayerStatusName()
-                if status == (BUSY or "Busy") then
-                    orbTex:SetVertexColor(1, 0.2, 0.2, 1)
-                elseif status == (AWAY or "Away") then
-                    orbTex:SetVertexColor(1, 0.8, 0, 1)
-                else
-                    orbTex:SetVertexColor(0.2, 1, 0.2, 1)
-                end
-            end
-            UpdatePlayerOrb()
-
-            orbBtn:SetScript("OnClick", function()
-                if InCombatLockdown() then return end
-                local status = GetPlayerStatusName()
-                if status == (FRIENDS_LIST_ONLINE or "Online") then
-                    SendChatMessage("", "AFK")
-                    if BNSetAFK then BNSetAFK(true) end
-                elseif status == (AWAY or "Away") then
-                    SendChatMessage("", "AFK")
-                    SendChatMessage("", "DND")
-                    if BNSetAFK then BNSetAFK(false) end
-                    if BNSetDND then BNSetDND(true) end
-                else
-                    SendChatMessage("", "DND")
-                    if BNSetDND then BNSetDND(false) end
-                    if BNSetAFK then BNSetAFK(false) end
-                end
-            end)
-            orbBtn:SetScript("OnEnter", function(self)
-                EllesmereUI.ShowWidgetTooltip(self, "Status: " .. GetPlayerStatusName() .. "\nClick to change")
-            end)
-            orbBtn:SetScript("OnLeave", function()
-                EllesmereUI.HideWidgetTooltip()
-            end)
-
-            -- Listener runs only while the panel is shown; the Show hook repaints once on open to catch flags changed while closed.
-            local statusEvt = CreateFrame("Frame")
-            statusEvt:SetScript("OnEvent", function() UpdatePlayerOrb() end)
-            if frame:IsShown() then
-                statusEvt:RegisterEvent("PLAYER_FLAGS_CHANGED")
-            end
-            GetFFD(frame).statusEvt = statusEvt
-            GetFFD(frame).updatePlayerOrb = UpdatePlayerOrb
-
-            GetFFD(frame).statusOrb = orbBtn
-
-            local bcBtn = CreateFrame("Button", nil, frame)
-            bcBtn:SetSize(20, 20)
-            bcBtn:SetFrameLevel(orbBtn:GetFrameLevel())
-            bcBtn:SetPoint("RIGHT", orbBtn, "LEFT", -2, 0)
-            local bcIcon = bcBtn:CreateTexture(nil, "ARTWORK")
-            bcIcon:SetAllPoints()
-            bcIcon:SetAtlas("voicechat-icon-textchat-silenced")
-            bcIcon:SetDesaturated(true)
-            bcIcon:SetVertexColor(1, 1, 1)
-            bcBtn:SetAlpha(0.6)
-            bcBtn:SetScript("OnEnter", function(self)
-                EllesmereUI.ShowWidgetTooltip(self, "Set Status Message")
-            end)
-            bcBtn:SetScript("OnLeave", function()
-                EllesmereUI.HideWidgetTooltip()
-            end)
-            bcBtn:SetScript("OnClick", function()
-                if InCombatLockdown() then return end
-                local bf = FriendsFrameBattlenetFrame and FriendsFrameBattlenetFrame.BroadcastFrame
-                if not bf then return end
-                if bf:IsShown() then bf:Hide() else bf:Show() end
-            end)
-            GetFFD(frame).broadcastBtn = bcBtn
-        end
-
-        if customSubTabs[1] then
-            customSubTabs[1]._label:SetTextColor(1, 1, 1, 1)
-        end
-        C_Timer.After(0.1, UpdateSubTabs)
-        C_Timer.After(0.5, UpdateSubTabs)
-        hooksecurefunc(frame, "Show", function()
-            C_Timer.After(0.1, UpdateSubTabs)
-        end)
-    end
-    SkinSubTabs()
-
-    -- Scrollbars: NEVER RegisterCallback/SetScript on Blizzard's ScrollBar (the taint source) -- textures and points only.
-    do
-        local bar = FriendsListFrame and FriendsListFrame.ScrollBar
-        if bar then
-            StripTextures(bar)
-            if bar.Background then bar.Background:Hide() end
-            -- Collapse arrows to zero height so track fills full length
-            if bar.Back then bar.Back:SetAlpha(0); bar.Back:SetSize(1, 0.001) end
-            if bar.Forward then bar.Forward:SetAlpha(0); bar.Forward:SetSize(1, 0.001) end
-            local track = bar.Track
-            if track then
-                track:DisableDrawLayer("ARTWORK")
-                track:DisableDrawLayer("BACKGROUND")
-                track:ClearAllPoints()
-                track:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, 0)
-                track:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 0, 0)
-            end
-            local thumb = bar.GetThumb and bar:GetThumb()
-            if thumb then
-                thumb:DisableDrawLayer("ARTWORK")
-                thumb:DisableDrawLayer("BACKGROUND")
-                local thumbTex = thumb:CreateTexture(nil, "OVERLAY")
-                thumbTex:SetColorTexture(1, 1, 1, 0.4)
-                thumbTex:SetWidth(3)
-                thumbTex:SetPoint("TOP", thumb, "TOP", 0, 0)
-                thumbTex:SetPoint("BOTTOM", thumb, "BOTTOM", 0, 0)
-                thumbTex:SetPoint("RIGHT", thumb, "RIGHT", 0, 0)
-            end
-            bar:SetWidth(5)
-            local p1, rel, p2, ox, oy = bar:GetPoint(1)
-            if p1 then
-                bar:SetPoint(p1, rel, p2, (ox or 0) - 6, (oy or 0) + 4)
-            end
-            bar:SetAlpha(0.6)
-            bar:HookScript("OnEnter", function() bar:SetAlpha(0.95) end)
-            bar:HookScript("OnLeave", function() bar:SetAlpha(0.6) end)
-            if thumb then
-                thumb:HookScript("OnEnter", function() bar:SetAlpha(0.95) end)
-                thumb:HookScript("OnLeave", function() bar:SetAlpha(0.6) end)
-            end
-        end
-    end
-
-
-    ---------------------------------------------------------------------------
-    --  Search bar with instant dropdown results
-    ---------------------------------------------------------------------------
-    do -- search bar
-        local search = CreateFrame("EditBox", nil, frame)
-        search:SetSize(FriendsListFrame:GetWidth() - 30, 20)
-        search:SetPoint("TOPLEFT", FriendsListFrame, "TOPLEFT", 15, -40)
-        search:SetPoint("TOPRIGHT", FriendsListFrame, "TOPRIGHT", -15, -40)
-        search:SetFrameLevel(frame:GetFrameLevel() + 5)
-        search:SetAutoFocus(false)
-        search:SetMaxLetters(20)
-        search:SetJustifyH("LEFT")
-        search:SetFont(fontPath, 10, "")
-        search:SetTextColor(1, 1, 1, 0.9)
-
-        local sBg = search:CreateTexture(nil, "BACKGROUND")
-        sBg:SetAllPoints()
-        sBg:SetColorTexture(0, 0, 0, 0.4)
-        PP.CreateBorder(search, 1, 1, 1, 0.1, 1, "OVERLAY", 7)
-        GetFFD(frame).searchBg = sBg
-
-        local sPh = search:CreateFontString(nil, "OVERLAY")
-        sPh:SetFont(fontPath, 10, "")
-        sPh:SetTextColor(0.5, 0.5, 0.5, 0.6)
-        sPh:SetPoint("LEFT", search, "LEFT", 6, 0)
-        sPh:SetText("Invite Friend...")
-
-        local clearBtn = CreateFrame("Button", nil, search)
-        clearBtn:SetSize(14, 14)
-        clearBtn:SetPoint("RIGHT", search, "RIGHT", -4, 0)
-        clearBtn:SetFrameLevel(search:GetFrameLevel() + 1)
-        local clearX = clearBtn:CreateFontString(nil, "OVERLAY")
-        clearX:SetFont(fontPath, 11, "")
-        clearX:SetText("x")
-        clearX:SetTextColor(1, 1, 1, 0.3)
-        clearX:SetPoint("CENTER", 0, 0)
-        clearBtn:SetScript("OnEnter", function() clearX:SetTextColor(1, 1, 1, 0.7) end)
-        clearBtn:SetScript("OnLeave", function() clearX:SetTextColor(1, 1, 1, 0.3) end)
-        clearBtn:SetScript("OnClick", function()
-            search:SetText("")
-            search:ClearFocus()
-        end)
-        clearBtn:Hide()
-        search:SetTextInsets(6, 18, 0, 0)
-        search:SetScript("OnEditFocusLost", function(self)
-            C_Timer.After(0.15, function()
-                if not search:HasFocus() then
-                    search:SetText("")
-                    clearBtn:Hide()
-                end
-            end)
-        end)
-
-        local dropdown = CreateFrame("Frame", nil, frame)
-        dropdown:SetPoint("TOPLEFT", search, "BOTTOMLEFT", 0, -2)
-        dropdown:SetPoint("TOPRIGHT", search, "BOTTOMRIGHT", 0, -2)
-        dropdown:SetFrameLevel(frame:GetFrameLevel() + 10)
-        dropdown:Hide()
-
-        local ddBg = dropdown:CreateTexture(nil, "BACKGROUND")
-        ddBg:SetAllPoints()
-        ddBg:SetColorTexture(0.04, 0.05, 0.06, 0.97)
-        PP.CreateBorder(dropdown, 1, 1, 1, 0.15, 1, "OVERLAY", 7)
-        GetFFD(frame).searchMenuBg = ddBg
-
-        local ROW_H = 24
-        local MAX_RESULTS = 8
-        local resultRows = {}
-
-        local function GetResultRow(idx)
-            if resultRows[idx] then return resultRows[idx] end
-            local row = CreateFrame("Button", nil, dropdown)
-            row:SetHeight(ROW_H)
-            row:SetPoint("TOPLEFT", dropdown, "TOPLEFT", 1, -1 - (idx - 1) * ROW_H)
-            row:SetPoint("TOPRIGHT", dropdown, "TOPRIGHT", -1, -1 - (idx - 1) * ROW_H)
-
-            local hover = row:CreateTexture(nil, "HIGHLIGHT")
-            hover:SetAllPoints()
-            hover:SetColorTexture(1, 1, 1, 0.06)
-
-            local nameFS = row:CreateFontString(nil, "OVERLAY")
-            nameFS:SetFont(fontPath, 11, "")
-            nameFS:SetPoint("LEFT", row, "LEFT", 8, 0)
-            nameFS:SetWidth((FriendsListFrame:GetWidth() - 30) * 0.75)
-            nameFS:SetJustifyH("LEFT")
-            nameFS:SetWordWrap(false)
-            row._name = nameFS
-
-            local infoFS = row:CreateFontString(nil, "OVERLAY")
-            infoFS:SetFont(fontPath, 9, "")
-            infoFS:SetTextColor(0.5, 0.5, 0.5, 0.8)
-            infoFS:SetPoint("RIGHT", row, "RIGHT", -8, 0)
-            infoFS:SetJustifyH("RIGHT")
-            row._info = infoFS
-
-            row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-            row:SetScript("OnClick", function(_, mouseBtn)
-                local targetType = row._matchType
-                local targetId = row._matchId
-                local cached = row._cached
-
-                if cached and targetType == FRIENDS_BUTTON_TYPE_BNET then
-                    if cached.gameAccountInfo and cached.gameAccountInfo.isOnline then
-                        local charName = cached.gameAccountInfo.characterName
-                        local realmName = cached.gameAccountInfo.realmName
-                        if charName then
-                            -- Canonical "Name-Realm" (the helper returns nil for an
-                            -- empty name; fall back rather than invite nil).
-                            local fullName = EllesmereUI.BuildFullName(charName, realmName) or charName
-                            C_PartyInfo.InviteUnit(fullName)
-                        end
-                    end
-                elseif cached and targetType == FRIENDS_BUTTON_TYPE_WOW then
-                    if cached.name and cached.connected then
-                        C_PartyInfo.InviteUnit(EllesmereUI.BuildFullName(cached.name) or cached.name)
-                    end
-                end
-                search:SetText("")
-                search:ClearFocus()
-            end)
-
-            resultRows[idx] = row
-            return row
-        end
-
-        local function UpdateDropdown(term)
-            if term == "" then dropdown:Hide(); return end
-
-            RefreshFriendCache()
-            local matches = {}
-            for key, info in pairs(_friendCache) do
-                if key <= _FC_WOW_OFFSET then
-                    local btag = (info.battleTag or ""):lower()
-                    local acctName = (info.accountName or ""):lower()
-                    local charName = ""
-                    if info.gameAccountInfo and info.gameAccountInfo.characterName then
-                        charName = info.gameAccountInfo.characterName:lower()
-                    end
-                    local areaName = ""
-                    if info.gameAccountInfo and info.gameAccountInfo.areaName then
-                        areaName = info.gameAccountInfo.areaName:lower()
-                    end
-                    if strfind(btag, term, 1, true) or strfind(acctName, term, 1, true) or strfind(charName, term, 1, true) or strfind(areaName, term, 1, true) then
-                        local displayName = info.accountName or info.battleTag or ""
-                        local charDisplay = info.gameAccountInfo and info.gameAccountInfo.characterName or ""
-                        local areaDisplay = info.gameAccountInfo and info.gameAccountInfo.areaName or ""
-                        local isOnline = info.gameAccountInfo and info.gameAccountInfo.isOnline
-                        local classFile = GetFriendClassFile(info, nil)
-                        matches[#matches + 1] = {
-                            buttonType = FRIENDS_BUTTON_TYPE_BNET,
-                            id = key,
-                            display = displayName,
-                            char = charDisplay,
-                            area = areaDisplay,
-                            online = isOnline,
-                            classFile = classFile,
-                            sortName = btag,
-                        }
-                    end
-                else
-                    local wowId = key - _FC_WOW_OFFSET
-                    local name = (info.name or ""):lower()
-                    if strfind(name, term, 1, true) then
-                        local classFile = GetFriendClassFile(nil, info)
-                        matches[#matches + 1] = {
-                            buttonType = FRIENDS_BUTTON_TYPE_WOW,
-                            id = wowId,
-                            display = info.name or "",
-                            char = "",
-                            online = info.connected,
-                            classFile = classFile,
-                            sortName = name,
-                        }
-                    end
-                end
-            end
-
-            if #matches == 0 then dropdown:Hide(); return end
-
-            table.sort(matches, function(a, b)
-                if a.online ~= b.online then return a.online end
-                return a.sortName < b.sortName
-            end)
-
-            local sb = FriendsListFrame and FriendsListFrame.ScrollBox
-            local dp = sb and sb:GetDataProvider()
-
-            local shown = math.min(#matches, MAX_RESULTS)
-            for i = 1, shown do
-                local m = matches[i]
-                local row = GetResultRow(i)
-                local nameText = m.display
-                if m.online then
-                    -- Class-color the character name portion, append zone
-                    local areaSuffix = (m.area and m.area ~= "") and (" |cff888888- " .. m.area .. "|r") or ""
-                    if m.classFile and m.char ~= "" then
-                        local cc = _getClassColorCode(m.classFile)
-                        if cc then
-                            nameText = nameText .. " (" .. cc .. m.char .. "|r)" .. areaSuffix
-                        else
-                            nameText = nameText .. " (" .. m.char .. ")" .. areaSuffix
-                        end
-                    elseif m.char ~= "" then
-                        nameText = nameText .. " |cff888888(" .. m.char .. ")|r" .. areaSuffix
-                    end
-                    local bnc = FRIENDS_BNET_NAME_COLOR or { r = 0.510, g = 0.773, b = 1.0 }
-                    row._name:SetTextColor(bnc.r, bnc.g, bnc.b)
-                else
-                    if m.char ~= "" then
-                        nameText = nameText .. " |cff555555(" .. m.char .. ")|r"
-                    end
-                    row._name:SetTextColor(0.5, 0.5, 0.5)
-                end
-                row._name:SetText(nameText)
-                row._info:SetText(m.online and "|cff33ff33Online|r" or "|cff666666Offline|r")
-
-                row._matchType = m.buttonType
-                row._matchId = m.id
-                -- Store cached data for whisper/invite
-                if m.buttonType == FRIENDS_BUTTON_TYPE_BNET then
-                    row._cached = _friendCache[m.id]
-                else
-                    row._cached = _friendCache[m.id + _FC_WOW_OFFSET]
-                end
-                row._dpIndex = nil
-                if dp then
-                    local idx = 0
-                    for _, ed in dp:Enumerate() do
-                        idx = idx + 1
-                        if ed.buttonType == m.buttonType and ed.id == m.id then
-                            row._dpIndex = idx
-                            break
-                        end
-                    end
-                end
-                row:Show()
-            end
-
-            for i = shown + 1, #resultRows do
-                resultRows[i]:Hide()
-            end
-
-            dropdown:SetHeight(shown * ROW_H + 2)
-            dropdown:Show()
-        end
-
-        search:SetScript("OnTextChanged", function(self)
-            local t = strtrim(self:GetText())
-            sPh:SetShown(t == "")
-            clearBtn:SetShown(t ~= "")
-            UpdateDropdown(t:lower())
-        end)
-        search:SetScript("OnEscapePressed", function(self)
-            self:SetText("")
-            self:ClearFocus()
-        end)
-        search:SetScript("OnEnterPressed", function(self)
-            self:ClearFocus()
-        end)
-
-        GetFFD(frame).searchBox = search
-        GetFFD(frame).searchDropdown = dropdown
-    end
-
-    local function SyncFriendsTabLabels()
-        for i = 1, (FriendsFrame and FriendsFrame.numTabs) or 4 do
-            local tab = _G["FriendsFrameTab" .. i]
-            if tab then
-                local tfd = GetFFD(tab)
-                if tfd.label then
-                    local bliz = tab:GetFontString()
-                    local txt = bliz and bliz:GetText()
-                    if txt then tfd.label:SetText(txt) end
-                end
-            end
-        end
-    end
-
-    -- Dirty flag drains next frame so addon code never runs inside Blizzard's secure dispatch; driver frame stays hidden while clean.
-    local _forceFriendSkin = false
-    local skinDriver = CreateFrame("Frame")
-    skinDriver:Hide()
-    skinDriver:SetScript("OnUpdate", function(self)
-        self:Hide()
-        local force = _forceFriendSkin
-        _forceFriendSkin = false
-        ProcessFriendButtons(force)
-    end)
-    local function MarkSkinDirty(force)
-        _forceFriendSkin = _forceFriendSkin or force
-        local sb = FriendsListFrame and FriendsListFrame.ScrollBox
-        if not sb or not sb:IsVisible() or LegacyFriendsRetired() then return end
-        skinDriver:Show()
-    end
-
-    -- The native initializer runs for recycled rows on every scroll path, too.
-    -- Only mark external state here; defer all API reads and styling.
-    if FriendsFrame_UpdateFriendButton then
-        hooksecurefunc("FriendsFrame_UpdateFriendButton", function(button)
-            if not button or (button.buttonType ~= FRIENDS_BUTTON_TYPE_BNET
-                and button.buttonType ~= FRIENDS_BUTTON_TYPE_WOW) then return end
-            GetFFD(button).stampType = nil
-            MarkSkinDirty()
-        end)
-    end
-
-    -- Visibility edges ride FriendsListFrame (the tab content frame), NEVER
-    -- the ScrollBox: that object's interaction surface is mapped radioactive
-    -- for whisper taint (see the module history above), and the parent
-    -- carries the exact same show/hide edge -- the ScrollBox is visible iff
-    -- its tab content frame is.
-    if FriendsListFrame then
-        FriendsListFrame:HookScript("OnShow", function()
-            _friendCacheDirty = true
-            MarkSkinDirty(true)
-        end)
-        FriendsListFrame:HookScript("OnHide", function()
-            skinDriver:Hide()
-            _forceFriendSkin = false
-        end)
-        if FriendsListFrame:IsVisible() then MarkSkinDirty(true) end
-    end
-
-    local friendsEventFrame = CreateFrame("Frame")
-    friendsEventFrame:SetScript("OnEvent", function(_, event)
-        _friendCacheDirty = true
-        SyncFriendsTabLabels()
-        MarkSkinDirty(true)
-    end)
-
-    local function RegisterFriendsEvents()
-        friendsEventFrame:RegisterEvent("FRIENDLIST_UPDATE")
-        friendsEventFrame:RegisterEvent("BN_FRIEND_LIST_SIZE_CHANGED")
-        friendsEventFrame:RegisterEvent("BN_FRIEND_INFO_CHANGED")
-        friendsEventFrame:RegisterEvent("BN_FRIEND_INVITE_ADDED")
-        friendsEventFrame:RegisterEvent("BN_FRIEND_INVITE_REMOVED")
-    end
-    local function UnregisterFriendsEvents()
-        friendsEventFrame:UnregisterAllEvents()
-    end
-    if FriendsFrame:IsShown() then RegisterFriendsEvents() end
-
-    -- Events live only while the panel is open.
-    frame:HookScript("OnHide", function()
-        UnregisterFriendsEvents()
-        local fd = GetFFD(frame)
-        if fd.statusEvt then fd.statusEvt:UnregisterAllEvents() end
-    end)
-    frame:HookScript("OnShow", function()
-        RegisterFriendsEvents()
-        _friendCacheDirty = true
-        MarkSkinDirty(true)
-        local fd = GetFFD(frame)
-        if fd.statusEvt then
-            fd.statusEvt:RegisterEvent("PLAYER_FLAGS_CHANGED")
-            if fd.updatePlayerOrb then fd.updatePlayerOrb() end
-        end
-    end)
-
-    ---------------------------------------------------------------------------
-    --  Skin Who / Raid / Quick Join tabs
-    ---------------------------------------------------------------------------
-    local function StripFrameChrome(f)
-        if not f then return end
-        StripTextures(f)
-        if f.NineSlice then f.NineSlice:Hide() end
-        if f.Bg then f.Bg:Hide() end
-        if f.Inset then
-            StripTextures(f.Inset)
-            if f.Inset.NineSlice then f.Inset.NineSlice:Hide() end
-            if f.Inset.Bg then f.Inset.Bg:Hide() end
-        end
-    end
-
-    -- Who tab
-    do
-        local who = WhoFrame
-        if who then
-            StripFrameChrome(who)
-            who:ClearAllPoints()
-            who:SetPoint("TOPLEFT", frame, "TOPLEFT", 7, 0)
-            who:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -11, 0)
-
-            local whoInset = _G.WhoFrameListInset
-            if whoInset then
-                StripTextures(whoInset)
-                if whoInset.Bg then whoInset.Bg:Hide() end
-                if whoInset.NineSlice then
-                    StripTextures(whoInset.NineSlice)
-                    whoInset.NineSlice:Hide()
-                end
-                whoInset:SetClipsChildren(true)
-                whoInset:ClearAllPoints()
-                whoInset:SetPoint("TOPLEFT", frame, "TOPLEFT", 15, -92)
-                whoInset:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -15, 35)
-                local whoBg = whoInset:CreateTexture(nil, "BACKGROUND", nil, -5)
-                whoBg:SetAllPoints()
-                whoBg:SetColorTexture(0, 0.08, 0.10, 0.35)
-                GetFFD(frame).whoBg = whoBg
-                PP.CreateBorder(whoInset, 1, 1, 1, 0.1, 1, "OVERLAY", 5)
-            end
-
-            for i = 1, 4 do
-                local col = _G["WhoFrameColumnHeader" .. i]
-                if col then
-                    hooksecurefunc(col, "SetPoint", function(self)
-                        if GetFFD(self).adjusting then return end
-                        GetFFD(self).adjusting = true
-                        local p1, rel, p2, x, y = self:GetPoint(1)
-                        if p1 then
-                            self:ClearAllPoints()
-                            local xOff = (i == 1) and 5 or 0
-                            self:SetPoint(p1, rel, p2, (x or 0) + xOff, (y or 0) + 10)
-                        end
-                        GetFFD(self).adjusting = false
-                    end)
-                end
-            end
-
-            local col1 = _G["WhoFrameColumnHeader1"]
-            local whoInset2 = _G.WhoFrameListInset
-            if col1 and whoInset2 then
-                local headerBg = who:CreateTexture(nil, "BACKGROUND", nil, -6)
-                headerBg:SetPoint("TOPLEFT", col1, "TOPLEFT", 0, 0)
-                headerBg:SetPoint("RIGHT", whoInset2, "RIGHT", 0, 0)
-                headerBg:SetHeight(col1:GetHeight())
-                headerBg:SetColorTexture(0, 0, 0, 0.3)
-            end
-
-            for i = 1, 4 do
-                local col = _G["WhoFrameColumnHeader" .. i]
-                if col then
-                    StripTextures(col)
-                    local text = col:GetFontString()
-                    if text then
-                        text:SetFont(fontPath, 10, "")
-                        text:SetTextColor(1, 1, 1, 0.5)
-                    end
-                    col:SetClipsChildren(true)
-                    local hlTex = col:CreateTexture(nil, "HIGHLIGHT")
-                    local nextCol = _G["WhoFrameColumnHeader" .. (i + 1)]
-                    if nextCol then
-                        hlTex:SetPoint("TOPLEFT", col, "TOPLEFT", 0, 0)
-                        hlTex:SetPoint("BOTTOMRIGHT", nextCol, "BOTTOMLEFT", 0, 0)
-                    else
-                        local whoInset3 = _G.WhoFrameListInset
-                        if whoInset3 then
-                            hlTex:SetPoint("TOPLEFT", col, "TOPLEFT", 0, 0)
-                            hlTex:SetPoint("BOTTOM", col, "BOTTOM", 0, 0)
-                            hlTex:SetPoint("RIGHT", whoInset3, "RIGHT", 0, 0)
-                        else
-                            hlTex:SetAllPoints()
-                        end
-                    end
-                    hlTex:SetColorTexture(1, 1, 1, 0.1)
-                    hlTex:SetBlendMode("ADD")
-                    if i > 1 then
-                        local div = col:CreateTexture(nil, "OVERLAY", nil, 7)
-                        PP.DisablePixelSnap(div)
-                        div:SetWidth(PP.mult or 1)
-                        div:SetColorTexture(1, 1, 1, 0.1)
-                        div:SetPoint("TOPLEFT", col, "TOPLEFT", 0, -2)
-                        div:SetPoint("BOTTOMLEFT", col, "BOTTOMLEFT", 0, 2)
-                    end
-                end
-            end
-
-            local zoneDropdown = _G.WhoFrameDropdown
-            if zoneDropdown then
-                zoneDropdown:SetAlpha(0)
-                zoneDropdown:SetSize(1, 1)
-                zoneDropdown:EnableMouse(false)
-                zoneDropdown:ClearAllPoints()
-                zoneDropdown:SetPoint("TOPLEFT", who, "TOPLEFT", 0, 0)
-            end
-
-            local editBox = _G.WhoFrameEditBox
-            if editBox then
-                StripTextures(editBox)
-                editBox:SetScale(0.9)
-                local p1, rel, p2, ox, oy = editBox:GetPoint(1)
-                if p1 then
-                    editBox:SetPoint(p1, rel, p2, (ox or 0) - 1, (oy or 0) + 3)
-                end
-                local ebBg = editBox:CreateTexture(nil, "BACKGROUND", nil, -6)
-                ebBg:SetColorTexture(0, 0, 0, 0.4)
-                ebBg:SetAllPoints()
-                editBox:SetTextColor(1, 1, 1, 0.8)
-                PP.CreateBorder(editBox, 1, 1, 1, 0.1, 1, "OVERLAY", 7)
-                GetFFD(frame).whoEdit = editBox
-                GetFFD(frame).whoEditBg = ebBg
-            end
-
-            local totalCount = _G.WhoFrameTotals
-            if totalCount and totalCount.SetFont then
-                totalCount:SetFont(fontPath, 10, "")
-                totalCount:SetTextColor(1, 1, 1, 0.5)
-            end
-
-            local whoInsetRef = _G.WhoFrameListInset
-            local whoBtnNames = {"WhoFrameWhoButton", "WhoFrameAddFriendButton", "WhoFrameGroupInviteButton"}
-            if whoInsetRef then
-                local function LayoutWhoBtns()
-                    local totalW2 = whoInsetRef:GetWidth()
-                    local btnW = math.floor(totalW2 / 3)
-                    local btnY = -22 - 10 + 10
-                    local btns = {}
-                    for _, name in ipairs(whoBtnNames) do
-                        btns[#btns + 1] = _G[name]
-                    end
-                    if btns[1] then
-                        btns[1]:ClearAllPoints()
-                        btns[1]:SetSize(btnW, 22)
-                        btns[1]:SetPoint("BOTTOMLEFT", whoInsetRef, "BOTTOMLEFT", 0, btnY)
-                    end
-                    if btns[2] then
-                        btns[2]:ClearAllPoints()
-                        btns[2]:SetSize(btnW, 22)
-                        btns[2]:SetPoint("BOTTOMLEFT", whoInsetRef, "BOTTOMLEFT", btnW, btnY)
-                    end
-                    if btns[3] then
-                        btns[3]:ClearAllPoints()
-                        btns[3]:SetSize(btnW, 22)
-                        btns[3]:SetPoint("BOTTOMRIGHT", whoInsetRef, "BOTTOMRIGHT", 0, btnY)
-                    end
-                end
-                for _, name in ipairs(whoBtnNames) do
-                    local btn = _G[name]
-                    if btn then
-                        SkinBottomButton(btn)
-                        hooksecurefunc(btn, "Disable", function(self) self:SetAlpha(0.4) end)
-                        hooksecurefunc(btn, "Enable", function(self) self:SetAlpha(1) end)
-                        if not btn:IsEnabled() then btn:SetAlpha(0.4) end
-                    end
-                end
-                LayoutWhoBtns()
-                who:HookScript("OnShow", LayoutWhoBtns)
-            end
-
-            local function SkinWhoRows()
-                for i = 1, 22 do
-                    local btn = _G["WhoFrameButton" .. i]
-                    if btn and not GetFFD(btn).skinned then
-                        GetFFD(btn).skinned = true
-                        StripTextures(btn)
-                        local hover2 = btn:CreateTexture(nil, "HIGHLIGHT")
-                        hover2:SetAllPoints()
-                        hover2:SetColorTexture(1, 1, 1, 0.04)
-                        hover2:SetBlendMode("ADD")
-                        for _, key in ipairs({"Name", "Level", "Class", "Variable"}) do
-                            local txt = _G["WhoFrameButton" .. i .. key]
-                            if txt and txt.SetFont then
-                                txt:SetFont(fontPath, 11, "")
-                            end
-                        end
-                    end
-                end
-            end
-            SkinWhoRows()
-            who:HookScript("OnShow", SkinWhoRows)
-
-            local sb = who.ScrollBox or (who.scrollFrame)
-            if sb then
-                local p1, rel, p2, x, y = sb:GetPoint(1)
-                if p1 then
-                    sb:SetPoint(p1, rel, p2, (x or 0) + 5, (y or 0) - 35)
-                end
-            end
-
-            who:ClearAllPoints()
-            who:SetPoint("TOPLEFT", frame, "TOPLEFT", 7, -10)
-            who:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -11, 10)
-
-            if col1 then
-                col1:ClearAllPoints()
-                col1:SetPoint("TOPLEFT", frame, "TOPLEFT", 7, -102)
-            end
-
-            local bar = sb and (sb.ScrollBar or who.ScrollBar) or who.ScrollBar
-            if sb and bar then SkinOneScrollbar(sb, bar) end
-        end
-    end
-
-    -- Quick Join tab
-    do
-        local qjf = _G.QuickJoinFrame
-        if qjf then
-            local qjScroll = qjf.ScrollBox or (qjf.List and qjf.List.ScrollBox)
-            if qjScroll then
-                qjScroll:ClearAllPoints()
-                qjScroll:SetPoint("TOPLEFT", frame, "TOPLEFT", 15, -92)
-                qjScroll:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -15, 35)
-
-                if not GetFFD(qjScroll).borderAdded then
-                    GetFFD(qjScroll).borderAdded = true
-                    local bdr = CreateFrame("Frame", nil, qjf)
-                    bdr:SetPoint("TOPLEFT", qjScroll, "TOPLEFT", 0, 0)
-                    bdr:SetPoint("BOTTOMRIGHT", qjScroll, "BOTTOMRIGHT", 0, 0)
-                    bdr:SetFrameLevel(qjScroll:GetFrameLevel() + 2)
-                    PP.CreateBorder(bdr, 1, 1, 1, 0.1, 1, "OVERLAY", 7)
-                end
-
-                local qjBar = qjScroll.ScrollBar or (qjf.List and qjf.List.ScrollBar) or qjf.ScrollBar
-                if qjBar then
-                    SkinOneScrollbar(qjScroll, qjBar)
-                end
-            end
-
-            local joinBtn = qjf.JoinQueueButton
-            if joinBtn and qjScroll then
-                SkinBottomButton(joinBtn)
-                -- Width from FriendsFrame, never qjScroll: QuickJoinFrame is
-                -- XML-hidden at skin time, so qjScroll has no layout pass and
-                -- GetWidth() is 0 -- and SetSize with width 0 UNSETS the width,
-                -- leaving an anchored frame with no resolvable rect (never
-                -- drawn, yet IsShown/IsVisible/alpha all read healthy).
-                -- qjScroll is inset 15 each side of the frame, so (w - 30) / 3
-                -- matches LayoutFriendBtns' sizing for the sibling buttons.
-                -- A failed measure leaves the button untouched: ClearAllPoints
-                -- only runs when a re-point follows.
-                local function LayoutJoinBtn()
-                    local w = frame:GetWidth()
-                    if not w or w <= 0 then return end
-                    joinBtn:ClearAllPoints()
-                    joinBtn:SetSize(math.max(1, math.floor((w - 30) / 3)), 22)
-                    joinBtn:SetPoint("BOTTOMRIGHT", qjScroll, "BOTTOMRIGHT", 0, -22)
-                end
-                LayoutJoinBtn()
-                -- Re-apply on show so a zero-measure pass self-repairs.
-                -- HookScript, not hooksecurefunc: method hooks in this module
-                -- taint BNet whispers; script hooks register C-side (same shape
-                -- as the tab watcher's hook on this frame).
-                qjf:HookScript("OnShow", LayoutJoinBtn)
-            end
-        end
-    end
-
-    -- Border/bg live on frames we own; NEVER reference FriendsListFrame.ScrollBox, even as an anchor -- it taints BNet whispers.
-    if not GetFFD(frame).listOverlay then
-        local overlay = CreateFrame("Frame", nil, frame)
-        overlay:SetPoint("TOPLEFT", frame, "TOPLEFT", 15, -92)
-        overlay:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -15, 35)
-        overlay:SetFrameLevel(frame:GetFrameLevel() + 1)
-        local sbBg = overlay:CreateTexture(nil, "BACKGROUND", nil, -8)
-        sbBg:SetAllPoints()
-        sbBg:SetColorTexture(FRAME_BG_R, FRAME_BG_G, FRAME_BG_B, 1)
-        GetFFD(frame).listBg = sbBg
-        GetFFD(frame).listOverlay = overlay
-
-        local bdr = CreateFrame("Frame", nil, frame)
-        bdr:SetPoint("TOPLEFT", frame, "TOPLEFT", 15, -92)
-        bdr:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -15, 35)
-        bdr:SetFrameLevel(frame:GetFrameLevel() + 3)
-        PP.CreateBorder(bdr, 1, 1, 1, 0.1, 1, "OVERLAY", 7)
-        GetFFD(frame).listBdr = bdr
-    end
-
-    -- Bottom buttons: anchored to the frame, never to the ScrollBox.
-    SkinRaidTab()
-    do
-        local BTN_H = 22
-        local btnFont = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
-        local addBtn = _G.FriendsFrameAddFriendButton
-        local msgBtn = _G.FriendsFrameSendMessageButton
-        local fp8 = EBS.db and EBS.db.profile and EBS.db.profile.friends
-        local btnAccent = fp8 and fp8.accentColors ~= false
-        for _, btn in ipairs({addBtn, msgBtn}) do
-            if btn then
-                StripTextures(btn)
-                local text = btn:GetFontString()
-                if text then
-                    text:SetFont(btnFont, 9, "")
-                    if btn == msgBtn and btnAccent then
-                        text:SetTextColor(EG.r, EG.g, EG.b, 0.7)
-                    else
-                        text:SetTextColor(1, 1, 1, 0.5)
-                    end
-                end
-            end
-        end
-        if addBtn and msgBtn then
-            local BTN_GAP = 10
-            local btnY = -BTN_H - BTN_GAP + 10
-
-            -- Border-only overlays on frames we own (no background).
-            local addBdr = CreateFrame("Frame", nil, frame)
-            addBdr:SetFrameLevel(frame:GetFrameLevel() + 3)
-            PP.CreateBorder(addBdr, 1, 1, 1, 0.4, 1, "OVERLAY", 7)
-            GetFFD(frame).addBdr = addBdr
-
-            local msgBdr = CreateFrame("Frame", nil, frame)
-            msgBdr:SetFrameLevel(frame:GetFrameLevel() + 3)
-            local fp7 = EBS.db and EBS.db.profile and EBS.db.profile.friends
-            local useAccent = fp7 and fp7.accentColors ~= false
-            if useAccent then
-                PP.CreateBorder(msgBdr, EG.r, EG.g, EG.b, 0.5, 1, "OVERLAY", 7)
-            else
-                PP.CreateBorder(msgBdr, 1, 1, 1, 0.4, 1, "OVERLAY", 7)
-            end
-            GetFFD(frame).msgBdr = msgBdr
-
-            local function LayoutFriendBtns()
-                local totalW4 = frame:GetWidth() - 30
-                local btnW = math.floor(totalW4 / 3)
-                addBtn:ClearAllPoints()
-                addBtn:SetSize(btnW, BTN_H)
-                addBtn:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 15, 35 + btnY)
-                msgBtn:ClearAllPoints()
-                msgBtn:SetSize(btnW, BTN_H)
-                msgBtn:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -15, 35 + btnY)
-                addBdr:ClearAllPoints()
-                addBdr:SetAllPoints(addBtn)
-                msgBdr:ClearAllPoints()
-                msgBdr:SetAllPoints(msgBtn)
-            end
-            LayoutFriendBtns()
-            hooksecurefunc(frame, "Show", LayoutFriendBtns)
-        end
-    end
-
-    local TAB_H = 26
-    local numCustomTabs = #customTabs
-    if numCustomTabs > 0 then
-        local m = PP.mult or 1
-        local function pxSnap(x)
-            if m == 1 then return x end
-            return math.floor(x / m + 0.5) * m
-        end
-        local snappedTabH = pxSnap(TAB_H)
-        local onePx = m
-        local lastCT
-
-        local TAB_WIDTHS = { 0.22, 0.22, 0.22, 0.34 }
-        local frameW = frame:GetWidth() or 300
-        for i, ct in ipairs(customTabs) do
-            ct:ClearAllPoints()
-            ct:SetHeight(snappedTabH)
-            if i == 1 then
-                ct:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", 0, 0)
-            else
-                ct:SetPoint("TOPLEFT", customTabs[i - 1], "TOPRIGHT", 0, 0)
-            end
-            if i == numCustomTabs then
-                ct:SetPoint("RIGHT", frame, "BOTTOMRIGHT", 0, 0)
-            else
-                ct:SetWidth(frameW * (TAB_WIDTHS[i] or 0.25))
-            end
-
-            if i > 1 then
-                local ctd = GetFFD(ct)
-                if not ctd.div then
-                    ctd.div = ct:CreateTexture(nil, "OVERLAY", nil, 7)
-                    PP.DisablePixelSnap(ctd.div)
-                end
-                ctd.div:SetColorTexture(1, 1, 1, 0.08)
-                ctd.div:SetSize(onePx, snappedTabH)
-                ctd.div:ClearAllPoints()
-                ctd.div:SetPoint("TOPLEFT", ct, "TOPLEFT", 0, 0)
-            end
-            lastCT = ct
-        end
-
-        if GetFFD(frame).tabBarBg and lastCT then
-            GetFFD(frame).tabBarBg:SetParent(customTabs[1])
-            GetFFD(frame).tabBarBg:ClearAllPoints()
-            GetFFD(frame).tabBarBg:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", 0, 0)
-            GetFFD(frame).tabBarBg:SetPoint("BOTTOMRIGHT", lastCT, "BOTTOMRIGHT", 0, 0)
-            GetFFD(frame).tabBarBg:SetDrawLayer("BACKGROUND", -8)
-        end
-
-        if not GetFFD(frame).tabTopBorder then
-            GetFFD(frame).tabTopBorder = customTabs[1]:CreateTexture(nil, "OVERLAY", nil, 7)
-            PP.DisablePixelSnap(GetFFD(frame).tabTopBorder)
-            GetFFD(frame).tabTopBorder:SetColorTexture(1, 1, 1, 0.08)
-            GetFFD(frame).tabTopBorder:SetHeight(onePx)
-            GetFFD(frame).tabTopBorder:ClearAllPoints()
-            GetFFD(frame).tabTopBorder:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", 0, 0)
-            GetFFD(frame).tabTopBorder:SetPoint("TOPRIGHT", lastCT, "TOPRIGHT", 0, 0)
-        end
-
-        UpdateCustomTabs()
-    end
-
-    local closeBtn = frame.CloseButton or _G.FriendsFrameCloseButton
-    if closeBtn then
-        StripTextures(closeBtn)
-        GetFFD(frame).closeBtn = closeBtn
-        GetFFD(closeBtn).x = closeBtn:CreateFontString(nil, "OVERLAY")
-        GetFFD(closeBtn).x:SetFont(fontPath, 14, "")
-        GetFFD(closeBtn).x:SetText("x")
-        GetFFD(closeBtn).x:SetTextColor(1, 1, 1, 1)
-        GetFFD(closeBtn).x:SetAlpha(0.5)
-        GetFFD(closeBtn).x:SetPoint("CENTER", -2, -3)
-        -- Idle / hover alphas follow the window-skin look (PaintChrome).
-        closeBtn:HookScript("OnEnter", function()
-            local cd = GetFFD(closeBtn); cd.x:SetAlpha(cd.hoverA or 0.9)
-        end)
-        closeBtn:HookScript("OnLeave", function()
-            local cd = GetFFD(closeBtn); cd.x:SetAlpha(cd.idleA or 0.5)
-        end)
-    end
-
-    -- Window Skins style picks and the Modern color repaint this live. The
-    -- first paint follows every build call (ApplyFriends, EBS:OnEnable).
-    local ws = ChromeEngine()
-    if ws then ws.OnStylesChanged(OnChromeStylesChanged) end
-
-    C_Timer.After(0, UpdateCustomTabs)
+local function IsFriendName(name)
+	local want = StripRealm(name)
+	if not want then return false end
+	for i = 1, (GetNumFriends and GetNumFriends() or 0) do
+		local n = GetFriendInfo(i)
+		if StripRealm(n) == want then return true end
+	end
+	if BNGetNumFriends then
+		local num = BNGetNumFriends() or 0
+		for i = 1, num do
+			local _, _, _, _, toonName, _, client = BNGetFriendInfo(i)
+			if client == (BNET_CLIENT_WOW or "WoW") and StripRealm(toonName) == want then return true end
+			local toons = BNGetNumFriendToons and BNGetNumFriendToons(i) or 0
+			for j = 1, toons do
+				local _, tName, tClient = BNGetFriendToonInfo(i, j)
+				if tClient == (BNET_CLIENT_WOW or "WoW") and StripRealm(tName) == want then return true end
+			end
+		end
+	end
+	return false
 end
 
--- Live updates: colors, border, opacity
-local function ApplyFriends()
-    -- Every profile apply (live switch, spec switch, import) re-syncs the
-    -- auto-accept listener before any look or combat gate below.
-    if _G._EFR_SyncAutoAccept then _G._EFR_SyncAutoAccept() end
-    if LegacyFriendsRetired() then return end
-    local _mplus = C_ChallengeMode and C_ChallengeMode.IsChallengeModeActive and C_ChallengeMode.IsChallengeModeActive()
-    local _, _iT = IsInInstance()
-    local _pvp = (_iT == "pvp" or _iT == "arena")
-    if InCombatLockdown() or _mplus or _pvp then QueueApplyAll(); return end
+local function IsGuildmateName(name)
+	if not (IsInGuild and IsInGuild()) then return false end
+	local want = StripRealm(name)
+	if not want then return false end
+	for i = 1, (GetNumGuildMembers() or 0) do
+		local n = GetGuildRosterInfo(i)
+		if StripRealm(n) == want then return true end
+	end
+	return false
+end
+FR.IsFriendName = IsFriendName
 
-    local p = EBS.db.profile.friends
-    p.enabled = true
-
-    if not p.enabled then
-        return
-    end
-
-    if not FriendsFrame then return end
-    SkinFriendsFrame()
-
-    -- Backdrop, frame border, tabs, panes, inputs and close glyph for the
-    -- current window-skin look (this module's own flat look when none applies).
-    PaintChrome()
-
-    local scrollBox = FriendsListFrame and FriendsListFrame.ScrollBox
-    if scrollBox then
-        for _, button in scrollBox:EnumerateFrames() do
-            if GetFFD(button).tileBg then
-                GetFFD(button).tileBg:SetColorTexture(0, 0, 0, 0.10)
-            end
-        end
-    end
-
-    UpdateBottomButtonAccent()
-    UpdateRaidTabButtonAccent()
-    if GetFFD(FriendsFrame).updateCustomTabs then GetFFD(FriendsFrame).updateCustomTabs() end
-    if GetFFD(FriendsFrame).updateSubTabs then GetFFD(FriendsFrame).updateSubTabs() end
-
-    if GetFFD(FriendsFrame).applyScaleAndPosition then
-        GetFFD(FriendsFrame).applyScaleAndPosition()
-    end
+local autoFrame
+local hidePopup = false
+local function AutoAcceptOnEvent(self, event, inviter)
+	if event == "PARTY_INVITE_REQUEST" then
+		local p = F()
+		if not (p.enabled and p.autoAcceptFriendInvites) then return end
+		if not inviter or inviter == "" or IsInGroup() then return end
+		local ok = IsFriendName(inviter)
+		if not ok and p.autoAcceptGuildInvites then
+			ok = IsGuildmateName(inviter)
+		end
+		if ok then
+			AcceptGroup()
+			hidePopup = true
+			self:RegisterEvent("GROUP_ROSTER_UPDATE")
+		end
+	elseif event == "GROUP_ROSTER_UPDATE" and hidePopup then
+		hidePopup = false
+		self:UnregisterEvent("GROUP_ROSTER_UPDATE")
+		StaticPopup_Hide("PARTY_INVITE")
+		StaticPopup_Hide("PARTY_INVITE_XREALM")
+		if LFGInvitePopup and LFGInvitePopup:IsShown() then
+			StaticPopupSpecial_Hide(LFGInvitePopup)
+		end
+	end
 end
 
--- Visibility
-local function UpdateFriendsVisibility()
-    if LegacyFriendsRetired() then return end
-    local p = EBS.db and EBS.db.profile and EBS.db.profile.friends
-    if not p or not p.enabled then return end
-    if not FriendsFrame or not FriendsFrame:IsShown() then return end
-    local vis = EllesmereUI.EvalVisibility(p)
-    if vis == "mouseover" then
-        FriendsFrame:SetAlpha(0)
-    else
-        FriendsFrame:SetAlpha(vis and 1 or 0)
-    end
-end
-
--- Apply All
-ApplyAll = function()
-    ApplyFriends()
-    if EllesmereUI.RequestVisibilityUpdate then
-        C_Timer.After(0, EllesmereUI.RequestVisibilityUpdate)
-    end
+function FR.SyncAutoAccept()
+	local p = F()
+	local on = p.enabled and p.autoAcceptFriendInvites
+	if on and not autoFrame then
+		autoFrame = CreateFrame("Frame")
+		autoFrame:SetScript("OnEvent", AutoAcceptOnEvent)
+	end
+	if not autoFrame then return end
+	if on then
+		autoFrame:RegisterEvent("PARTY_INVITE_REQUEST")
+	else
+		autoFrame:UnregisterEvent("PARTY_INVITE_REQUEST")
+	end
 end
 
 -------------------------------------------------------------------------------
---  Lifecycle
+--  Apply / hooks
 -------------------------------------------------------------------------------
--- This profile's friends table: the settings the shared friends kit reads
--- (EllesmereUI_FriendsKit.lua: the 12.1 tiles and the invite auto-accept).
-local function FriendsSettings()
-    local db = EBS.db
-    return db and db.profile and db.profile.friends
+function FR.Apply()
+	FR.SyncAutoAccept()
+	UpdateBorder()
+	UpdateButtonAccent()
+	FR.DecorateAll()
 end
 
-function EBS:OnInitialize()
-    EBS.db = EllesmereUI.Lite.NewDB("EllesmereUIFriendsDB", defaults)
-
-    -- Global bridge for options <-> main communication
-    _G._EFR_DB                   = EBS.db
-    _G._EFR_ApplyFriends         = ApplyFriends
-    _G._EFR_ProcessFriendButtons = function() ProcessFriendButtons(true) end
-
-    -- Auto-accept group invites from friends (and guildmates, from its cog):
-    -- EllesmereUI_FriendsKit.lua, reading this profile's friends table.
-    _G._EFR_SyncAutoAccept = function()
-        EllesmereUI.FriendsKit.SyncAutoAccept(FriendsSettings)
-    end
-    _G._EFR_SyncAutoAccept()
-
-    -- Visibility updater + mouseover target register only while the panel is shown;
-    -- both bill this addon (dispatcher fan-out per event, mouseover scan every 0.15s)
-    -- but are true no-ops closed: updater early-outs on IsShown, proxy has no rect.
-    local visProxy
-    if EllesmereUI.RegisterMouseoverTarget then
-        visProxy = CreateFrame("Frame")
-        visProxy.IsShown     = function() return FriendsFrame and FriendsFrame:IsShown() end
-        visProxy.IsMouseOver = function() return FriendsFrame and FriendsFrame:IsMouseOver() end
-        visProxy.SetAlpha    = function(_, a2) if FriendsFrame then FriendsFrame:SetAlpha(a2) end end
-    end
-    local function VisWantsHover()
-        local p2 = EBS.db and EBS.db.profile and EBS.db.profile.friends
-        if not (p2 and p2.enabled) then return false end
-        -- Hover-gated sets only reveal while their conditions pass
-        return EllesmereUI.VisWantsMouseover(p2, "visibility")
-    end
-    local visRegistered = false
-    local function RegisterVis()
-        if visRegistered then return end
-        visRegistered = true
-        EllesmereUI.RegisterVisibilityUpdater(UpdateFriendsVisibility)
-        if visProxy then
-            EllesmereUI.RegisterMouseoverTarget(visProxy, VisWantsHover)
-        end
-    end
-    local function UnregisterVis()
-        if not visRegistered then return end
-        visRegistered = false
-        EllesmereUI.UnregisterVisibilityUpdater(UpdateFriendsVisibility)
-        if visProxy and EllesmereUI.UnregisterMouseoverTarget then
-            EllesmereUI.UnregisterMouseoverTarget(visProxy)
-        end
-    end
-    if FriendsFrame then
-        hooksecurefunc(FriendsFrame, "Show", RegisterVis)
-        hooksecurefunc(FriendsFrame, "Hide", UnregisterVis)
-        if FriendsFrame:IsShown() then RegisterVis() end
-    else
-        -- Frame not created yet (load-on-demand): stay registered; closures early-out safely until it exists.
-        RegisterVis()
-    end
+local hooked = false
+local function HookList()
+	if hooked then return end
+	if not (FriendsFrame and FriendsFrame_UpdateFriends) then return end
+	hooked = true
+	-- Every list refresh Blizzard runs (FriendsList_Update and friends events).
+	hooksecurefunc("FriendsFrame_UpdateFriends", FR.DecorateAll)
+	-- Scrolling: the scroll frame calls its own saved copy of the update
+	-- function, so the scroll bar's value change is hooked too.
+	local bar = FriendsFrameFriendsScrollFrameScrollBar
+	if bar then
+		bar:HookScript("OnValueChanged", FR.DecorateAll)
+	end
+	FriendsFrame:HookScript("OnShow", function()
+		UpdateBorder()
+		UpdateButtonAccent()
+		FR.DecorateAll()
+	end)
 end
 
-function EBS:OnEnable()
-    ApplyAll()
+-- Settings window: every change runs ns.applyHooks.
+ns.applyHooks = ns.applyHooks or {}
+tinsert(ns.applyHooks, function()
+	if not hooked then return end
+	FR.Apply()
+end)
 
-    -- Re-apply the skin when the accent color changes.
-    if EllesmereUI._accentElements then
-        EllesmereUI._accentElements[#EllesmereUI._accentElements + 1] = {
-            type = "callback",
-            fn = function()
-                if FriendsFrame and EBS.db.profile.friends.enabled then
-                    ApplyFriends()
-                end
-            end,
-        }
-    end
+-- Accent color changes (Global Settings).
+ns.accentListeners = ns.accentListeners or {}
+tinsert(ns.accentListeners, function()
+	if hooked then
+		UpdateBorder()
+		UpdateButtonAccent()
+	end
+end)
 
-    local loginRefresh = CreateFrame("Frame")
-    loginRefresh:RegisterEvent("PLAYER_ENTERING_WORLD")
-    loginRefresh:SetScript("OnEvent", function(self)
-        self:UnregisterAllEvents()
-        C_Timer.After(0, ApplyAll)
-    end)
-
-    -- Load-on-demand hook for FriendsFrame; skipped once the Social UI owns the window (this only drives the legacy skin).
-    if EBS.db.profile.friends.enabled and not LegacyFriendsRetired() then
-        if not FriendsFrame then
-            local hookFrame = CreateFrame("Frame")
-            hookFrame:RegisterEvent("ADDON_LOADED")
-            hookFrame:SetScript("OnEvent", function(self, event, addon)
-                if addon == "Blizzard_SocialUI" then
-                    C_Timer.After(0.1, function()
-                        if FriendsFrame and EBS.db.profile.friends.enabled then
-                            ApplyFriends()
-                        end
-                    end)
-                    if FriendsFrame then
-                        hooksecurefunc(FriendsFrame, "Show", function()
-                            if not friendsSkinned and EBS.db.profile.friends.enabled then
-                                C_Timer.After(0, ApplyFriends)
-                            end
-                        end)
-                    end
-                end
-            end)
-        else
-            if EBS.db.profile.friends.enabled and not friendsSkinned then
-                SkinFriendsFrame()
-                PaintChrome()
-            end
-        end
-    end
+-- Back to defaults, then the Naowh values again (like Top Bar).
+function FR.Reset()
+	local root = Root()
+	wipe(root)
+	SeedNaowh(root)
+	F()
+	FR.Apply()
 end
 
 -------------------------------------------------------------------------------
---  12.1 Social UI tiles (EllesmereUI_FriendsKit.lua)
+--  Retail profile import (EllesmereUIFriends blob = { friends = { ... } })
 -------------------------------------------------------------------------------
--- Style page choice for this module: "eui" | "blizzard" | "classic", read from
--- the real profile once and latched for the session (a profile switch prompts
--- for a reload instead). Both stock styles mean the same to the tiles -- there
--- is no vanilla version of this list -- so they keep Blizzard's own list and
--- cards and add only the EllesmereUI decoration (class icon, class-coloured
--- name, region mark). The legacy-skin switch above reads it too.
-function ns.FR_Style()
-    local v = ns._frStyle
-    if v == nil then
-        local db = EBS.db
-        local p = db and db.profile and db.profile.friends
-        if not p then return "eui" end
-        v = (p.useClassicStyle and "classic") or (p.useBlizzardStyle and "blizzard") or "eui"
-        ns._frStyle = v
-    end
-    return v
+if ns.ProfileRetail and ns.ProfileRetail.CONVERT then
+	ns.ProfileRetail.CONVERT[addonName] = function(blob, notes)
+		local out = { _seeded = 1, friends = {} }
+		local src = type(blob.friends) == "table" and blob.friends or {}
+		for k, v in pairs(src) do
+			if type(v) ~= "table" and type(v) ~= "function" then
+				out.friends[k] = v
+			end
+		end
+		if out.friends.showRegionIcons ~= nil and notes then
+			notes[#notes + 1] = "Friends List: region icons are not available in Mists of Pandaria."
+		end
+		return out
+	end
 end
 
--- Options-driven repaints of the decorated cards and rows
-_G._EFR_RedecorateTiles = EllesmereUI.FriendsKit.RedecorateTiles
-
--- The kit hooks the card mixin at PLAYER_LOGIN, before any card exists.
-do
-    local boot = CreateFrame("Frame")
-    boot:RegisterEvent("PLAYER_LOGIN")
-    boot:SetScript("OnEvent", function(self)
-        self:UnregisterEvent("PLAYER_LOGIN")
-        EllesmereUI.FriendsKit.StartTiles({
-            Settings = FriendsSettings,
-            style    = ns.FR_Style(),
-            fontKey  = "friends",
-        })
-    end)
-end
+-------------------------------------------------------------------------------
+--  Boot
+-------------------------------------------------------------------------------
+local boot = CreateFrame("Frame")
+boot:RegisterEvent("ADDON_LOADED")
+boot:RegisterEvent("PLAYER_LOGIN")
+boot:SetScript("OnEvent", function(self, event, arg1)
+	if event == "ADDON_LOADED" then
+		if arg1 == addonName then
+			self:UnregisterEvent("ADDON_LOADED")
+			local root = Root()
+			if root._seeded ~= 1 then SeedNaowh(root) end
+			F()
+		end
+		return
+	end
+	self:UnregisterEvent("PLAYER_LOGIN")
+	HookList()
+	FR.Apply()
+end)

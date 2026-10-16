@@ -1,189 +1,203 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
---  EllesmereUIQoL_AutoLogging.lua
---  Toggles combat logging on zone transitions based on instance type/difficulty.
---  Also forces Advanced Combat Logging on whenever logging starts.
+--  EllesmereUIQoL_AutoLogging.lua (5.4.8 port of retail Auto Combat Logging)
+--
+--  Turns combat logging on when you enter a loggable instance and off when
+--  you leave it. Also turns on Advanced Combat Logging when logging starts.
+--  Same saved table as retail: EllesmereUIDB.autoLogging (account wide).
+--
+--  Mists difficulties (GetInstanceInfo 3rd return):
+--    3 = 10 Normal, 4 = 25 Normal, 14 = Flexible  -> Normal Raid
+--    5 = 10 Heroic, 6 = 25 Heroic                 -> Heroic Raid
+--    7 = Raid Finder                              -> LFR
+--    8 = Challenge Mode                           -> Mythic+ Dungeons trigger
+--    2 = Heroic dungeon                           -> Dungeons (WoW Forever key)
+--    11 / 12 = Heroic / Normal scenario           -> Scenarios
+--  There is no Mythic raid in Mists: the Mythic Raid trigger never matches.
 -------------------------------------------------------------------------------
+local addonName = ...
+local ns = EllesmereUI
 
--- Retail content thresholds -- maps below these are excluded unless in LEGACY_DUNGEON_IDS.
-local RETAIL_RAID_THRESHOLD    = 2657
-local RETAIL_DUNGEON_THRESHOLD = 959
+-- Mists content only (old raids and dungeons are skipped, like retail skips
+-- legacy content): Terrace of Endless Spring (996) is the lowest Mists raid,
+-- Shado-Pan Monastery (959) the lowest Mists dungeon.
+local MISTS_RAID_THRESHOLD    = 996
+local MISTS_DUNGEON_THRESHOLD = 959
 
--- Older dungeons still used as M+ maps.
-local LEGACY_DUNGEON_IDS = {
-    [1594] = true,  -- MOTHERLODE!!
-    [1208] = true,  -- Grimrail Depot
-    [1195] = true,  -- Iron Docks
-    [1651] = true,  -- Return to Karazhan
-    [657]  = true,  -- The Vortex Pinnacle
-    [643]  = true,  -- Throne of the Tides
-    [670]  = true,  -- Grim Batol
-    [658]  = true,  -- Pit of Saron
-}
+local LFR_DIFFICULTIES = { [7] = true }
 
--- Current-tier raids whose instance ID falls BELOW the retail threshold.
--- Instance map IDs are NOT chronological: some current raids reuse a low ID
--- (e.g. Sporefall is 1592, lower than legacy raids), so the threshold alone
--- would wrongly exclude them. Whitelist those explicitly.
-local CURRENT_RAID_IDS = {
-    [1592] = true,  -- Sporefall
-}
-
--- LFR difficulty IDs (regular + timewalking).
-local LFR_DIFFICULTIES = { [7] = true, [17] = true }
-
--- Raid difficulty -> trigger key. 233 = Mythic (Flexible Raiding), the newer
--- flexible Mythic difficulty used by current raids alongside the fixed-20 id 16.
 local RAID_DIFF_KEYS = {
-    [16]  = "logMythic",
-    [233] = "logMythic",
-    [15]  = "logHeroic",
-    [14]  = "logNormal",
+	[5]  = "logHeroic",
+	[6]  = "logHeroic",
+	[3]  = "logNormal",
+	[4]  = "logNormal",
+	[14] = "logNormal",  -- Flexible
 }
 
--- Defaults: everything on except Scenarios.
+-- Defaults: everything on except Scenarios (and Dungeons, the WoW Forever key).
 local TRIGGER_DEFAULTS = {
-    logMythic   = true,
-    logHeroic   = true,
-    logNormal   = true,
-    logLFR      = true,
-    log5pp      = true,
-    logArena    = true,
-    logScenario = false,
-    delaystop   = true,
+	logMythic   = true,
+	logHeroic   = true,
+	logNormal   = true,
+	logLFR      = true,
+	log5pp      = true,
+	logArena    = true,
+	logScenario = false,
+	logDungeon  = false,
+	delaystop   = true,
 }
+ns.AutoLoggingDefaults = TRIGGER_DEFAULTS
 
 local function GetTrigger(c, key)
-    local v = c[key]
-    if v == nil then return TRIGGER_DEFAULTS[key] end
-    return v
+	local v = c[key]
+	if v == nil then return TRIGGER_DEFAULTS[key] end
+	return v
 end
 
 local function Cfg()
-    if not EllesmereUIDB then return {} end
-    EllesmereUIDB.autoLogging = EllesmereUIDB.autoLogging or {}
-    return EllesmereUIDB.autoLogging
+	if type(EllesmereUIDB) ~= "table" then return {} end
+	if type(EllesmereUIDB.autoLogging) ~= "table" then
+		EllesmereUIDB.autoLogging = {}
+	end
+	return EllesmereUIDB.autoLogging
 end
+ns.GetAutoLoggingDB = Cfg
 
--- Silently sets advancedCombatLogging if it isn't already on.
 local function EnsureAdvancedLogging()
-    if GetCVar and GetCVar("advancedCombatLogging") ~= "1" then
-        EllesmereUI.SetCVar("advancedCombatLogging", 1, "EllesmereUIQoL")
-    end
+	if GetCVar("advancedCombatLogging") ~= "1" then
+		if ns.SetCVarSafe then
+			ns.SetCVarSafe("advancedCombatLogging", 1)
+		else
+			SetCVar("advancedCombatLogging", "1")
+		end
+	end
 end
 
 local function ZoneShouldBeLogged()
-    local c = Cfg()
-    if not c.enabled then return false end
+	local c = Cfg()
+	if not c.enabled then return false end
 
-    local _, zoneType, rawDiff, _, playerCap, _, _, rawMapID = GetInstanceInfo()
+	local _, zoneType, rawDiff, _, playerCap, _, _, rawMapID = GetInstanceInfo()
+	local diff = tonumber(rawDiff)
+	local mapID = tonumber(rawMapID) or 0
+	if not diff then return false end
 
-    -- WoW Forever: every raid instance logs on the Raids trigger (the Normal
-    -- Raid key and its default) and every dungeon on the Dungeons trigger (a
-    -- key only that client offers, off until the player turns it on). Retail
-    -- map thresholds, difficulties, Mythic+, arenas and scenarios do not
-    -- apply there.
-    if EllesmereUI.IS_FOREVER then
-        if zoneType == "raid" then return GetTrigger(c, "logNormal") end
-        if zoneType == "party" then return c.logDungeon == true end
-        return false
-    end
+	if zoneType == "raid" then
+		if LFR_DIFFICULTIES[diff] then
+			return GetTrigger(c, "logLFR")
+		end
+		if mapID < MISTS_RAID_THRESHOLD then return false end
+		local key = RAID_DIFF_KEYS[diff]
+		if key then return GetTrigger(c, key) end
+		return true  -- other raid difficulties
+	end
 
-    local diff  = tonumber(rawDiff)
-    local mapID = tonumber(rawMapID)
-    if not diff or not mapID then return false end
+	if zoneType == "party" and mapID >= MISTS_DUNGEON_THRESHOLD then
+		if diff == 8 then return GetTrigger(c, "log5pp") end
+		if diff == 2 then return GetTrigger(c, "logDungeon") end
+		return false
+	end
 
-    if LFR_DIFFICULTIES[diff] then
-        return GetTrigger(c, "logLFR")
-    end
+	if zoneType == "scenario" and GetTrigger(c, "logScenario")
+		and (tonumber(playerCap) or 0) > 1 then
+		return true
+	end
 
-    if zoneType == "raid" and (mapID >= RETAIL_RAID_THRESHOLD or CURRENT_RAID_IDS[mapID]) then
-        local key = RAID_DIFF_KEYS[diff]
-        if key then return GetTrigger(c, key) end
-        return true  -- timewalking and other unrecognised raid difficulties
-    end
+	if zoneType == "arena" and GetTrigger(c, "logArena") then
+		return true
+	end
 
-    if GetTrigger(c, "log5pp") then
-        local isMythicDungeon = (diff == 23 or diff == 8)  -- 23=Keystone, 8=Mythic
-        local isRetailDungeon = mapID >= RETAIL_DUNGEON_THRESHOLD or LEGACY_DUNGEON_IDS[mapID]
-        if isMythicDungeon and isRetailDungeon then return true end
-    end
-
-    if GetTrigger(c, "logScenario") and zoneType == "scenario"
-       and (tonumber(playerCap) or 0) > 1
-       and mapID >= RETAIL_DUNGEON_THRESHOLD then
-        return true
-    end
-
-    if GetTrigger(c, "logArena") and (zoneType == "arena" or zoneType == "ratedarena") then
-        return true
-    end
-
-    return false
+	return false
 end
 
+-------------------------------------------------------------------------------
+--  Timers (5.4.8 has no C_Timer)
+-------------------------------------------------------------------------------
 local STOP_DELAY_SECONDS = 30
 
-local wasLogging = false
-local _stopTimer  = nil
+local timerFrame = CreateFrame("Frame")
+local timers = {}
+timerFrame:Hide()
+timerFrame:SetScript("OnUpdate", function(self, elapsed)
+	local now = GetTime()
+	for key, t in pairs(timers) do
+		if now >= t.at then
+			timers[key] = nil
+			t.fn()
+		end
+	end
+	if not next(timers) then self:Hide() end
+end)
 
-local function CancelStopTimer()
-    if _stopTimer then _stopTimer:Cancel(); _stopTimer = nil end
+local function After(key, delay, fn)
+	timers[key] = { at = GetTime() + delay, fn = fn }
+	timerFrame:Show()
 end
 
+local function Cancel(key)
+	timers[key] = nil
+end
+
+local wasLogging = false
+
 local function ApplyLoggingState()
-    local shouldLog = ZoneShouldBeLogged()
-    if shouldLog then
-        CancelStopTimer()
-        EnsureAdvancedLogging()
-        LoggingCombat(true)
-    elseif wasLogging and LoggingCombat() then
-        local c = Cfg()
-        local delay = GetTrigger(c, "delaystop")
-        if delay and not _stopTimer then
-            _stopTimer = C_Timer.NewTimer(STOP_DELAY_SECONDS, function()
-                _stopTimer = nil
-                if LoggingCombat() then LoggingCombat(false) end
-            end)
-        elseif not delay then
-            LoggingCombat(false)
-        end
-    end
-    wasLogging = shouldLog
+	local shouldLog = ZoneShouldBeLogged()
+	if shouldLog then
+		Cancel("stop")
+		EnsureAdvancedLogging()
+		if not LoggingCombat() then LoggingCombat(true) end
+	elseif wasLogging and LoggingCombat() then
+		if GetTrigger(Cfg(), "delaystop") then
+			if not timers.stop then
+				After("stop", STOP_DELAY_SECONDS, function()
+					if LoggingCombat() and not ZoneShouldBeLogged() then LoggingCombat(false) end
+				end)
+			end
+		else
+			LoggingCombat(false)
+		end
+	end
+	wasLogging = shouldLog
 end
 
 local events = {
-    ZONE_CHANGED_NEW_AREA = function() C_Timer.After(2, ApplyLoggingState) end,
-    CHALLENGE_MODE_START   = function() C_Timer.After(1, ApplyLoggingState) end,
+	ZONE_CHANGED_NEW_AREA = 2,
+	PLAYER_ENTERING_WORLD = 2,
+	PLAYER_DIFFICULTY_CHANGED = 1,
+	WORLD_STATE_TIMER_START = 1,  -- Challenge Mode start (retail CHALLENGE_MODE_START)
 }
 
--- Zone events are registered only while the feature is enabled, so a disabled
--- feature costs nothing on zone changes. The options toggle calls
--- _EUI_AutoLogging_Check, which re-syncs registration AND applies the logging
--- state immediately (disabling mid-instance still stops an active log).
 local logFrame = CreateFrame("Frame")
-local _eventsRegistered = false
+local eventsRegistered = false
 local function SyncEventRegistration()
-    local want = Cfg().enabled and true or false
-    if want == _eventsRegistered then return end
-    _eventsRegistered = want
-    for ev in pairs(events) do
-        if want then logFrame:RegisterEvent(ev) else logFrame:UnregisterEvent(ev) end
-    end
+	local want = Cfg().enabled and true or false
+	if want == eventsRegistered then return end
+	eventsRegistered = want
+	for ev in pairs(events) do
+		if want then logFrame:RegisterEvent(ev) else logFrame:UnregisterEvent(ev) end
+	end
 end
 
-_G._EUI_AutoLogging_Check = function()
-    SyncEventRegistration()
-    ApplyLoggingState()
+-- Retail global hook name kept (the options page calls it).
+local function Check()
+	SyncEventRegistration()
+	ApplyLoggingState()
 end
+_G._EUI_AutoLogging_Check = Check
+ns.AutoLoggingCheck = Check
+
+ns.applyHooks = ns.applyHooks or {}
+tinsert(ns.applyHooks, function()
+	-- Turning the feature off inside an instance stops an active log (retail).
+	if Cfg().enabled or eventsRegistered then Check() end
+end)
 
 logFrame:RegisterEvent("PLAYER_LOGIN")
 logFrame:SetScript("OnEvent", function(self, event)
-    if event == "PLAYER_LOGIN" then
-        self:UnregisterEvent("PLAYER_LOGIN")
-        SyncEventRegistration()
-        C_Timer.After(2, ApplyLoggingState)
-    elseif events[event] then
-        events[event]()
-    end
+	if event == "PLAYER_LOGIN" then
+		self:UnregisterEvent("PLAYER_LOGIN")
+		SyncEventRegistration()
+		After("check", 2, ApplyLoggingState)
+	elseif events[event] then
+		After("check", events[event], ApplyLoggingState)
+	end
 end)

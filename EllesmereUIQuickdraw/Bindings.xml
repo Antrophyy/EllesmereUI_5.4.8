@@ -1,18 +1,34 @@
 <Bindings>
-	<Binding name="EUI_RADIAL1" header="EUI_RADIAL" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL2" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL3" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL4" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL5" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL6" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL7" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL8" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL9" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL10" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL11" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL12" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL13" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL14" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL15" category="EllesmereUI" />
-	<Binding name="EUI_RADIAL16" category="EllesmereUI" />
+	<Binding name="EUI_RADIAL1" header="EUI_RADIAL">
+	</Binding>
+	<Binding name="EUI_RADIAL2">
+	</Binding>
+	<Binding name="EUI_RADIAL3">
+	</Binding>
+	<Binding name="EUI_RADIAL4">
+	</Binding>
+	<Binding name="EUI_RADIAL5">
+	</Binding>
+	<Binding name="EUI_RADIAL6">
+	</Binding>
+	<Binding name="EUI_RADIAL7">
+	</Binding>
+	<Binding name="EUI_RADIAL8">
+	</Binding>
+	<Binding name="EUI_RADIAL9">
+	</Binding>
+	<Binding name="EUI_RADIAL10">
+	</Binding>
+	<Binding name="EUI_RADIAL11">
+	</Binding>
+	<Binding name="EUI_RADIAL12">
+	</Binding>
+	<Binding name="EUI_RADIAL13">
+	</Binding>
+	<Binding name="EUI_RADIAL14">
+	</Binding>
+	<Binding name="EUI_RADIAL15">
+	</Binding>
+	<Binding name="EUI_RADIAL16">
+	</Binding>
 </Bindings>

@@ -1,13 +1,11 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Quest Tracker
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
-## Notes: A clean, updated reskin of Blizzard's Quest Tracker.
-## Author: Ellesmere
-## Version: 9.5.5
+## Notes: A clean, updated reskin of Blizzard's Quest Tracker (the 5.4.8 WatchFrame), visibility rules, auto accept / turn in and a quest item hotkey.
+## Author: EllesmereUI port
+## Version: 3.18.0
 ## Dependencies: EllesmereUI
+## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ExRT, ElvUI, Details, DBM-Core, WeakAuras, VuhDo, EllesmereUIMythicTimer
 ## SavedVariables: EllesmereUIQuestTrackerDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
 # Loader
 EllesmereUIQuestTracker.lua
@@ -16,5 +14,3 @@ EllesmereUIQuestTracker.lua
 EllesmereUIQuestTracker_Skin.lua
 EllesmereUIQuestTracker_Visibility.lua
 EllesmereUIQuestTracker_QoL.lua
-
-# Options

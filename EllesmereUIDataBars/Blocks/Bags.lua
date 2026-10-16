@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIDataBars_Compat.lua
 -- Blocks\Bags.lua
 -- Bag space block factory.
 
@@ -27,8 +27,10 @@ local BlockColorOf         = K.BlockColorOf
 local IconColorOf          = K.IconColorOf
 
 -- Backpack + four bag slots; the reagent bag is opt-in per block.
+-- 5.4.8 port: there is no reagent bag (container 5 is a bank bag), so the
+-- reagent paths below never count anything.
 local LAST_BAG    = NUM_BAG_SLOTS or 4
-local REAGENT_BAG = Enum.BagIndex.ReagentBag
+local REAGENT_BAG = false
 
 -- Low space text color default (soft red, matches durability's low tint).
 local LOW_R, LOW_G, LOW_B = 1, 0.35, 0.35
@@ -58,6 +60,7 @@ ns.BlockFactories.bags = function(blockCfg, slot, content, barCtx)
     AttachTextOffset(inst, bagText)
 
     local function IncludeBag(bag)
+        if not bag then return false end
         return bag ~= REAGENT_BAG or D().reagent == true
     end
 

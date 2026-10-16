@@ -1,49 +1,15 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Cooldown Manager
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
-## Notes: A CDM replacement focused on performance, customizations and alerts.
-## Author: Ellesmere
-## Version: 9.5.5
+## Notes: A cooldown manager focused on performance, customizations and alerts (5.4.8 port: own icon bars, no Blizzard viewer).
+## Author: EllesmereUI port
+## Version: 3.18.0
 ## Dependencies: EllesmereUI
 ## SavedVariables: EllesmereUICooldownManagerDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
-# Main Lua
+EllesmereUICooldownManager_Seed.lua
 EllesmereUICooldownManager.lua
-EUI_CDM_Store.lua
-EUI_CDM_Spec.lua
-EUI_CDM_Glows.lua
-EUI_CDM_Blizzard.lua
-EUI_CDM_Bars.lua
-EUI_CDM_Icons.lua
-EUI_CDM_FocusKick.lua
-EUI_CDM_Rebuild.lua
-EUI_CDM_Reconcile.lua
-EUI_CDM_Lifecycle.lua
-EUI_CDM_Rotation.lua
-EUI_CDM_Events.lua
-EllesmereUICdmKeybindStyle.lua
-EllesmereUICdmRotationIcon.lua
-EllesmereUICdmHooks.lua
-EUI_CDM_HookResolve.lua
-EUI_CDM_HookIconStyle.lua
-EUI_CDM_HookIconWatch.lua
-EUI_CDM_HookDecorate.lua
-EUI_CDM_HookTrinkets.lua
-EUI_CDM_HookPresetFrames.lua
-EUI_CDM_HookPresetCooldowns.lua
-EUI_CDM_HookReanchor.lua
-EUI_CDM_HookCustomBuffs.lua
-EUI_CDM_HookViewers.lua
-EUI_CDM_HookPressMirror.lua
-EllesmereUICdmSpellPicker.lua
-EllesmereUICdmBarGlows.lua
-EllesmereUICdmBarGlowConditions.lua
-EllesmereUICdmBuffBars.lua
-EllesmereUICdmTbbDecimals.lua
-EllesmereUICdmFakeActive.lua
-EllesmereUICdmRPTSync.lua
-EllesmereUICdmTalentConditions.lua
-
-# Options
+EllesmereUICooldownManager_Spells.lua
+EllesmereUICooldownManager_Icons.lua
+EllesmereUICooldownManager_Bars.lua
+EllesmereUICooldownManager_TrackingBars.lua
+EllesmereUICooldownManager_BarGlows.lua

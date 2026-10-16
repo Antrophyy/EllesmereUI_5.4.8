@@ -1,3091 +1,2093 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
--------------------------------------------------------------------------------
---  EUI_UnitFrames_Options.lua
---  Registers the Unit Frames module with EllesmereUI
---  4 tabs: Main Frames, Boss Frames, Mini Frames, Player Aura Bars
--------------------------------------------------------------------------------
-local ADDON_NAME = "EllesmereUIUnitFrames"
-local ns = EllesmereUI._ModuleNS[ADDON_NAME]  -- module namespace (published by the module at its load)
-if not ns then return end  -- module disabled: no options page
+-- Settings pages of Unit Frames (EllesmereUI Core Addons > Unit Frames):
+-- Main Frames (player / target / focus), Boss Frames, Mini Frames
+-- (target of target / focus target / pet). Same sections, labels and keys as
+-- EllesmereUI; retail-only rows are left out.
+-- Part of EllesmereUIOptions (load on demand); skipped when
+-- EllesmereUIUnitFrames is not loaded.
 
-local PAGE_DISPLAY   = "Main Frames"
-local PAGE_BOSS      = "Boss Frames"
-local PAGE_MINI      = "Mini Frames"
-local PAGE_AURA_BARS = "Player Aura Bars"
-local PAGE_UNLOCK    = "Unlock Mode"
+local ns = EllesmereUI
+if not IsAddOnLoaded("EllesmereUIUnitFrames") then
+	return
+end
+local UF = ns.UF
 
--- Threat % Position dropdown (WoW Forever only, so nil on retail). On ns: the
--- Main Frames page builder is near its 60-upvalue cap, and the Forever
--- Essentials Threat page reads the same lists. Outside = beside the whole
--- frame, clear of an attached portrait.
-if EllesmereUI.IS_FOREVER then
-    ns._threatPctPositions = { RIGHT = "Inside Right", LEFT = "Inside Left", CENTER = "Inside Center",
-        OUTRIGHT = "Outside Right", OUTLEFT = "Outside Left" }
-    ns._threatPctPositionOrder = { "RIGHT", "LEFT", "CENTER", "OUTRIGHT", "OUTLEFT" }
+local floor = math.floor
+
+local sel = { main = "player", mini = "targettarget" }
+-- Unlock Mode cog "Element Options" picks the unit first (retail setters).
+ns._setUnitFrameUnit = function(unit) sel.main = unit end
+ns._setMiniUnit = function(unit) sel.mini = unit end
+
+---------------------------------------------------------------------------
+-- Helpers
+---------------------------------------------------------------------------
+local function DB()
+	return UF.db
 end
 
--- Settings-cog rows of a text slot that can show a name. WoW Forever puts its
--- Name Format row at the top (the name's first word, its last word, or all of
--- it -- unset); every other client gets rows back untouched. prefix is the
--- slot's key prefix ("leftText", "btbLeft"): content at <prefix>Content, format
--- at <prefix>NameFormat. get(key, default) / set(key, v) are the page's
--- accessors. On ns for the same upvalue cap.
-if EllesmereUI.IS_FOREVER then
-    local HAS_NAME = { name = true, levelname = true, namelevel = true, nametotarget = true, targetname = true }
-    local FORMATS, FORMAT_ORDER = EllesmereUI.NAME_FORMAT_VALUES, EllesmereUI.NAME_FORMAT_ORDER
-    function ns.UF_NameFormatRows(prefix, contentDefault, get, set, rows)
-        local contentKey, formatKey = prefix .. "Content", prefix .. "NameFormat"
-        table.insert(rows, 1, { type="dropdown", label="Name Format", values=FORMATS, order=FORMAT_ORDER,
-            get=function() return get(formatKey, "full") end,
-            -- First and Last is the unset default.
-            set=function(v) set(formatKey, (v ~= "full") and v or nil) end,
-            disabled=function() return not HAS_NAME[get(contentKey, contentDefault)] end,
-            disabledTooltip="This option only applies when the text shows a name." })
-        return rows
-    end
-    -- The same slots for the Forever Essentials NAME FORMAT section, which
-    -- reads and sets every name text at once: { unit settings key, content key,
-    -- format key, text bar slot }, keys prebuilt so its reads build no strings.
-    -- Boss frames have no text bar; the other mini frames no extra text either.
-    do
-        local MAIN = { "leftText", "rightText", "centerText", "extraText", "btbLeft", "btbRight", "btbCenter" }
-        local BOSS = { "leftText", "rightText", "centerText", "extraText" }
-        local MINI = { "leftText", "rightText", "centerText" }
-        local slots = {}
-        for _, set in ipairs({ { "player", MAIN }, { "target", MAIN }, { "focus", MAIN }, { "boss", BOSS },
-                { "targettarget", MINI }, { "focustarget", MINI }, { "pet", MINI } }) do
-            for _, pre in ipairs(set[2]) do
-                slots[#slots + 1] = { unit = set[1], content = pre .. "Content", format = pre .. "NameFormat",
-                    btb = pre:sub(1, 3) == "btb" }
-            end
-        end
-        ns.UF_NAME_FORMAT_SLOTS, ns.UF_HAS_NAME = slots, HAS_NAME
-    end
-else
-    function ns.UF_NameFormatRows(_, _, _, _, rows) return rows end
+local function S(unit)
+	return UF.db[unit]
 end
 
--- Classic WoW UI: a cast bar section's closing Border Size row (the odd last
--- slot), sizing the vanilla frame round the bar. getS() returns the unit's
--- settings table and `key` its frame-size key (ns.UF_CastClassicKey);
--- onChange repaints. `matchKey` names the cast bar's unlock element (nil on
--- the boss page, which has none): its size matches read the frame's reach
--- and are re-applied when it changes. `sync` (main frames page only) adds
--- the apply-to-all icon: { units, labels, current(), db(unit), reload }; a
--- unit's element is "<unit>Castbar". `right` (optional) fills the free right
--- slot. Returns the row height, 0 (nothing built) off the style, and the row.
--- On ns: the page builders sit at the local cap.
-function ns.UF_ClassicCastBorderRow(W, parent, y, getS, key, onChange, sync, matchKey, right)
-    local BS = EllesmereUI.BlizzStyle
-    if not (BS and BS.Active("unitframes") == "classic") then return 0 end
-    local row, h = W:DualRow(parent, y,
-        BS.ClassicBorderSizeCfg(
-            function() local s = getS(); return s and s[key] end,
-            function(v)
-                local s = getS(); if not s then return end
-                s[key] = v; onChange()
-                if matchKey and EllesmereUI.ReapplyMatchPads then EllesmereUI.ReapplyMatchPads(matchKey) end
-            end),
-        right or EllesmereUI.BlankRowCfg())
-    if sync and not EllesmereUI._prebuilding then
-        local rgn = row._leftRegion
-        local function apply(units)
-            local s = getS()
-            local v = s and s[key]
-            for i = 1, #units do
-                local t = sync.db(units[i])
-                if t then t[ns.UF_CastClassicKey(units[i])] = v end
-            end
-            sync.reload()
-            if EllesmereUI.ReapplyMatchPads then
-                for i = 1, #units do EllesmereUI.ReapplyMatchPads(units[i] .. "Castbar") end
-            end
-            EllesmereUI:RefreshPage()
-        end
-        EllesmereUI.BuildSyncIcon({
-            region  = rgn,
-            tooltip = "Apply Border Size to all Frames",
-            onClick = function() apply(sync.units) end,
-            isSynced = function()
-                local s = getS()
-                local v = s and s[key]
-                for i = 1, #sync.units do
-                    local t = sync.db(sync.units[i])
-                    if t and t[ns.UF_CastClassicKey(sync.units[i])] ~= v then return false end
-                end
-                return true
-            end,
-            flashTargets = function() return { rgn } end,
-            multiApply = {
-                elementKeys   = sync.units,
-                elementLabels = sync.labels,
-                getCurrentKey = sync.current,
-                onApply       = apply,
-            },
-        })
-    end
-    return h, row
+-- Value lists are arrays of { value, label }.
+local function Items(list)
+	local items = {}
+	for i = 1, #list do
+		items[i] = { value = list[i][1], name = list[i][2] }
+	end
+	return items
 end
 
--- The 3D portrait performance warning, shown until confirmed once (account-
--- wide). Returns true when it asked (onConfirm runs on Enable, Cancel refreshes
--- the page), false when it was already dismissed and the caller applies the
--- pick itself. On ns: the page builders sit at their upvalue caps.
-function ns.UF_Ask3DPortraits(onConfirm)
-    if EllesmereUIDB and EllesmereUIDB.dismissed3DWarning then return false end
-    EllesmereUI:ShowConfirmPopup({
-        title       = "3D Portraits",
-        message     = "3D portraits may cause a slight loss in performance efficiency. Do you want to enable them?",
-        confirmText = "Enable",
-        cancelText  = "Cancel",
-        onConfirm   = function()
-            if not EllesmereUIDB then EllesmereUIDB = {} end
-            EllesmereUIDB.dismissed3DWarning = true
-            onConfirm()
-        end,
-        onCancel    = function()
-            EllesmereUI:RefreshPage()
-        end,
-    })
-    return true
+local function LabelOf(list, value)
+	for i = 1, #list do
+		if list[i][1] == value then
+			return list[i][2]
+		end
+	end
+	return tostring(value or "")
 end
 
--- Separate acknowledgement: enabling 3D does not opt into 2D model lookups.
--- onCancel (optional) replaces the plain page refresh on Cancel.
-function ns.UF_Ask2DMirroredPortraits(onConfirm, onCancel)
-    if EllesmereUIDB and EllesmereUIDB.dismissed2DMirrorWarning then return false end
-    EllesmereUI:ShowConfirmPopup({
-        title       = "2D Mirrored Portraits",
-        message     = "2D mirrored portraits may cause a slight loss in performance efficiency. Do you want to enable them?",
-        confirmText = "Enable",
-        cancelText  = "Cancel",
-        onConfirm   = function()
-            if not EllesmereUIDB then EllesmereUIDB = {} end
-            EllesmereUIDB.dismissed2DMirrorWarning = true
-            onConfirm()
-        end,
-        onCancel    = onCancel or function()
-            EllesmereUI:RefreshPage()
-        end,
-    })
-    return true
+local function Get(unit, key, default)
+	return function()
+		local v = UF.db[unit][key]
+		if v == nil then
+			return default
+		end
+		return v
+	end
 end
 
--- Frames already set to Mirror Portrait in 2D mode get the same warning once,
--- the first time Unit Frames options open in a session: Enable keeps them,
--- Cancel turns Mirror Portrait off on those frames. Class mode is not asked:
--- there Mirror Portrait also flips the class art, which costs nothing.
-do
-    local asked
-    local UNITS = { "player", "target", "focus", "targettarget", "focustarget", "pet", "boss" }
-    function ns.UF_AskExisting2DMirror()
-        if asked or EllesmereUI._prebuilding then return end
-        asked = true
-        if (EllesmereUIDB and EllesmereUIDB.dismissed2DMirrorWarning) or ns.UF_Blizz() then return end
-        local prof = ns.db and ns.db.profile
-        if not prof then return end
-        local on
-        for _, k in ipairs(UNITS) do
-            local s = prof[k]
-            if type(s) == "table" and s.portraitMirror
-               and (s.portraitMode or prof.portraitMode or "2d") == "2d"
-               and (s.portraitStyle or prof.portraitStyle) ~= "none" then
-                on = on or {}
-                on[#on + 1] = k
-            end
-        end
-        if not on then return end
-        ns.UF_Ask2DMirroredPortraits(function() end, function()
-            for _, k in ipairs(on) do
-                prof[k].portraitMirror = false
-                ns.UF_RefreshPortraitMirror(k)
-            end
-            EllesmereUI:RefreshPage()
-        end)
-    end
+local function Set(unit, key, after)
+	return function(v)
+		UF.db[unit][key] = v
+		if after then
+			after(v)
+		end
+	end
 end
 
--- Dragon Strata dropdown (the PORTRAIT section's dragon cog): Match Frame
--- keeps the frame's own strata, then the base stratas.
-do
-    local values, order = { inherit = "Match Frame" }, { "inherit" }
-    for _, k in ipairs(EllesmereUI.FRAME_STRATA_ORDER_BASE) do
-        values[k] = EllesmereUI.FRAME_STRATA_LABELS[k]
-        order[#order + 1] = k
-    end
-    ns._ufDragonStrataValues, ns._ufDragonStrataOrder = values, order
+local function Toggle(p, label, desc, unit, key, default, isDisabled, after)
+	p:Toggle(label, desc, Get(unit, key, default), Set(unit, key, after), isDisabled)
 end
 
--- Custom Border Style rows of a cast bar section, built only while the Cast
--- Bar cog's "Custom Border Style" opt-in is on: Border Style (+ a DIRECTIONS
--- cog for textured styles: Shift X, Shift Y, Show Behind) | Border Size (+ a
--- colour swatch), then Width Offset | Height Offset while the style is
--- textured. Every slot is BlizzStyle.Gate'd, so a stock style drops the rows
--- and the Classic-only Border Size row stays the section's odd last slot.
--- getS() returns the unit's settings table; onChange repaints; matchKey names
--- the cast bar's unlock element (nil on the boss page, which has none): its
--- size matches read the border's reach and re-apply on a change. sync (main
--- frames page only) adds the two apply-to-all links: { units, labels,
--- current(), db(unit) }. Returns the height built. On ns: the page builders
--- sit at their upvalue caps.
-function ns.UF_CastBorderRows(W, parent, y, getS, onChange, matchKey, sync)
-    local BS = EllesmereUI.BlizzStyle
-    local y0 = y
-    local function Changed()
-        onChange()
-        if matchKey then EllesmereUI.ReapplyMatchPads(matchKey) end
-    end
-    local texValues, texOrder = EllesmereUI.GetBorderTextureDropdown()
-    local row, h = W:DualRow(parent, y,
-        BS.Gate("unitframes", { type="dropdown", text="Border Style",
-          tooltip="Border art drawn around the cast bar.",
-          values=texValues, order=texOrder,
-          getValue=function() return getS().castBorderStyle or "solid" end,
-          setValue=function(v)
-              local s = getS()
-              s.castBorderStyle = v
-              s.castBorderOffsetX, s.castBorderOffsetY = nil, nil
-              s.castBorderShiftX, s.castBorderShiftY = nil, nil
-              local col, behind = EllesmereUI.GetBorderStyleSelectDefaults(v)
-              s.castBorderColor, s.castBorderAlpha, s.castBorderBehind = col, 1, behind
-              local defSz = EllesmereUI.GetBorderDefaultSize("unitframes", v)
-              if defSz then s.castBorderSize = defSz end
-              -- A style pick returns the bar to its legacy step; clear a set
-              -- exact size (false travels through mirror sync, nil would not).
-              if s.castBorderSizePx then s.castBorderSizePx = false end
-              Changed()
-              -- The Width / Height Offset row exists only under a textured style.
-              EllesmereUI:RefreshPage(true)
-          end }),
-        BS.Gate("unitframes", EllesmereUI.BorderPxSliderCfg({ text="Border Size", trackWidth=120,
-          getStep=function() return getS().castBorderSize or 1 end,
-          setStep=function(step) getS().castBorderSize = step end,
-          getTex=function() return getS().castBorderStyle or "solid" end,
-          getPx=function() return getS().castBorderSizePx end,
-          setPx=function(v) getS().castBorderSizePx = v end,
-          -- The refresh dims the colour swatch at 0.
-          apply=function() Changed(); EllesmereUI:RefreshPage() end })))
-    y = y - h
-    -- Width Offset | Height Offset: a textured style's outward offsets.
-    do
-        local tex = getS().castBorderStyle or "solid"
-        if tex ~= "solid" and tex ~= "" then
-            local ocfgL, ocfgR = EllesmereUI.BorderOffsetRowCfgs({
-                addonKey = "unitframes",
-                getTex = function() return getS().castBorderStyle or "solid" end,
-                getStep = function() return getS().castBorderSize or 1 end,
-                getSizeKey = function() return getS().castBorderSize or 1 end,
-                getPx = function() return getS().castBorderSizePx end,
-                getX = function() return getS().castBorderOffsetX end,
-                setX = function(v) getS().castBorderOffsetX = v end,
-                getY = function() return getS().castBorderOffsetY end,
-                setY = function(v) getS().castBorderOffsetY = v end,
-                apply = Changed,
-            })
-            local _, oh = W:DualRow(parent, y, BS.Gate("unitframes", ocfgL), BS.Gate("unitframes", ocfgR))
-            y = y - oh
-        end
-    end
-    if EllesmereUI._prebuilding then return y0 - y end
-
-    -- Border Options cog (left): shifts and layering, textured styles only.
-    do
-        -- A stored shift, else the registry default for the style and size.
-        local function Shift(key, isY)
-            local s = getS()
-            if s[key] then return s[key] end
-            local _, _, dsx, dsy = EllesmereUI.GetBorderDefaults("unitframes", s.castBorderStyle or "solid", s.castBorderSize or 1)
-            if isY then return dsy end
-            return dsx
-        end
-        -- The shown default stores nil, any other value (0 included) is kept.
-        local function SetShift(key, isY, v)
-            local s = getS()
-            s[key] = nil
-            if v ~= Shift(key, isY) then s[key] = v end
-            Changed()
-        end
-        local cogBtn = EllesmereUI.BuildInlineCog(row._leftRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
-            title = "Border Options",
-            rows = {
-                { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
-                  get = function() return Shift("castBorderShiftX", false) end,
-                  set = function(v) SetShift("castBorderShiftX", false, v) end },
-                { type = "slider", label = "Shift Y", min = -10, max = 10, step = 1,
-                  get = function() return Shift("castBorderShiftY", true) end,
-                  set = function(v) SetShift("castBorderShiftY", true, v) end },
-                { type = "toggle", label = "Show Behind",
-                  tooltip = "Draws the border behind the cast bar instead of over it.",
-                  get = function() return getS().castBorderBehind == true end,
-                  set = function(v) getS().castBorderBehind = v; Changed() end },
-            },
-        })
-        local function UpdateCogVis()
-            local tex = getS().castBorderStyle or "solid"
-            if tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
-        end
-        EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-        UpdateCogVis()
-    end
-
-    -- Colour swatch (with alpha) on Border Size; greyed and blocked at 0.
-    do
-        local rgn = row._rightRegion
-        local sw, updateSw = EllesmereUI.BuildColorSwatch(rgn, row:GetFrameLevel() + 3,
-            function()
-                local s = getS()
-                local c = s.castBorderColor
-                return c and c.r or 0, c and c.g or 0, c and c.b or 0, s.castBorderAlpha or 1
-            end,
-            function(r, g, b, a)
-                local s = getS()
-                s.castBorderColor = { r = r, g = g, b = b }
-                s.castBorderAlpha = a
-                onChange()
-            end,
-            true, 20)
-        EllesmereUI.PanelPP.Point(sw, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        sw:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(sw, "Border") end)
-        sw:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        rgn._lastInline = sw
-        local block = CreateFrame("Frame", nil, sw)
-        block:SetAllPoints()
-        block:SetFrameLevel(sw:GetFrameLevel() + 10)
-        block:EnableMouse(true)
-        block:SetScript("OnEnter", function()
-            EllesmereUI.ShowWidgetTooltip(sw, EllesmereUI.DisabledTooltip("This option requires a Border Size above 0."))
-        end)
-        block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        local function UpdateSw()
-            updateSw()
-            if (getS().castBorderSize or 1) == 0 then
-                sw:SetAlpha(0.3); block:Show()
-            else
-                sw:SetAlpha(1); block:Hide()
-            end
-        end
-        EllesmereUI.RegisterWidgetRefresh(UpdateSw)
-        UpdateSw()
-    end
-
-    -- Apply-to-all links (main frames page): the style link carries the style,
-    -- its offsets, shifts, layering and colour; the size link the size, its
-    -- exact px, colour and style. Both carry the opt-in itself.
-    if sync then
-        local function CopyTo(units, withSize)
-            local src = getS()
-            for i = 1, #units do
-                local d = sync.db(units[i])
-                if d and d ~= src then
-                    d.castBorderCustom = src.castBorderCustom
-                    d.castBorderStyle = src.castBorderStyle
-                    d.castBorderOffsetX, d.castBorderOffsetY = src.castBorderOffsetX, src.castBorderOffsetY
-                    d.castBorderShiftX, d.castBorderShiftY = src.castBorderShiftX, src.castBorderShiftY
-                    local c = src.castBorderColor
-                    if c then d.castBorderColor = { r = c.r, g = c.g, b = c.b } end
-                    d.castBorderAlpha = src.castBorderAlpha
-                    if withSize then
-                        d.castBorderSize = src.castBorderSize
-                        -- Verbatim; a source with no exact size clears a set one
-                        -- with false (nil would not travel through mirror sync).
-                        local v = src.castBorderSizePx
-                        if v == nil and d.castBorderSizePx ~= nil then v = false end
-                        d.castBorderSizePx = v
-                    else
-                        d.castBorderBehind = src.castBorderBehind
-                    end
-                end
-            end
-            onChange()
-            for i = 1, #units do EllesmereUI.ReapplyMatchPads(units[i] .. "Castbar") end
-            EllesmereUI:RefreshPage()
-        end
-        local function StyleSynced()
-            local src = getS()
-            local bt = src.castBorderStyle or "solid"
-            for i = 1, #sync.units do
-                local d = sync.db(sync.units[i])
-                if d then
-                    if (d.castBorderCustom == true) ~= (src.castBorderCustom == true) then return false end
-                    if (d.castBorderStyle or "solid") ~= bt then return false end
-                    if d.castBorderOffsetX ~= src.castBorderOffsetX or d.castBorderOffsetY ~= src.castBorderOffsetY then return false end
-                    if d.castBorderShiftX ~= src.castBorderShiftX or d.castBorderShiftY ~= src.castBorderShiftY then return false end
-                    if (d.castBorderBehind == true) ~= (src.castBorderBehind == true) then return false end
-                end
-            end
-            return true
-        end
-        local function SizeSynced()
-            local src = getS()
-            local bs, bt = src.castBorderSize or 1, src.castBorderStyle or "solid"
-            -- Exact sizes compare as rendered (a cleared or stale value equals none).
-            local bpx = EllesmereUI.BorderPx(src.castBorderSizePx, bs, bt)
-            for i = 1, #sync.units do
-                local d = sync.db(sync.units[i])
-                if d then
-                    if (d.castBorderCustom == true) ~= (src.castBorderCustom == true) then return false end
-                    if (d.castBorderSize or 1) ~= bs then return false end
-                    if (d.castBorderStyle or "solid") ~= bt then return false end
-                    if EllesmereUI.BorderPx(d.castBorderSizePx, bs, bt) ~= bpx then return false end
-                end
-            end
-            return true
-        end
-        local lr, rr = row._leftRegion, row._rightRegion
-        EllesmereUI.BuildSyncIcon({
-            region  = lr,
-            tooltip = "Apply Cast Bar Border Style to all Frames",
-            onClick = function() CopyTo(sync.units, false) end,
-            isSynced = StyleSynced,
-            flashTargets = function() return { lr } end,
-            multiApply = {
-                elementKeys   = sync.units,
-                elementLabels = sync.labels,
-                getCurrentKey = sync.current,
-                onApply       = function(keys) CopyTo(keys, false) end,
-            },
-        })
-        EllesmereUI.BuildSyncIcon({
-            region  = rr,
-            tooltip = "Apply Cast Bar Border to all Frames",
-            onClick = function() CopyTo(sync.units, true) end,
-            isSynced = SizeSynced,
-            flashTargets = function() return { rr } end,
-            multiApply = {
-                elementKeys   = sync.units,
-                elementLabels = sync.labels,
-                getCurrentKey = sync.current,
-                onApply       = function(keys) CopyTo(keys, true) end,
-            },
-        })
-    end
-    return y0 - y
+local function Slider(p, label, desc, minV, maxV, step, unit, key, default, isDisabled)
+	p:Slider(label, desc, minV, maxV, step, Get(unit, key, default), Set(unit, key), isDisabled)
 end
 
--- Boss Frames DISPLAY "Border Style | Border Size": the boss frames' own frame
--- border. "Inherit (Main Frames)" (the first entry; boss borderCustom false)
--- keeps the mini frame donor's border, as before; any other pick stores the
--- boss table's own border, and the size, colour and Border Options cog then
--- edit it (while inheriting they show what is drawn, greyed). A textured style
--- adds Width Offset | Height Offset. Every slot is BlizzStyle.Gate'd, so the
--- stock styles drop the rows. B = the boss settings table (boss1-5 share it);
--- onChange repaints. Returns the height built. On ns: the page builders sit at
--- their upvalue caps.
-function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
-    local BS = EllesmereUI.BlizzStyle
-    local y0 = y
-    local function Inheriting() return B.borderCustom ~= true end
-    -- What the live frames draw: the donor's border while inheriting.
-    local function Src() return ns.UF_BossBorderSettings() end
-    local NEEDS_STYLE = "This option requires a Border Style other than Inherit (Main Frames)."
-    local texValues, texOrder = EllesmereUI.GetBorderTextureDropdown()
-    table.insert(texOrder, 1, "inherit")
-    texValues.inherit = "Inherit (Main Frames)"
-    local row, h = W:DualRow(parent, y,
-        BS.Gate("unitframes", { type="dropdown", text="Border Style",
-          tooltip="Border art drawn around the boss frames. Inherit (Main Frames) uses the main frames' border.",
-          values=texValues, order=texOrder,
-          getValue=function()
-              if Inheriting() then return "inherit" end
-              return B.borderTexture or "solid"
-          end,
-          setValue=function(v)
-              if v == "inherit" then
-                  B.borderCustom = false
-                  -- Show Behind and Power Bar Seam read the boss table in
-                  -- either mode, and their cog hides while inheriting.
-                  if B.borderBehind then B.borderBehind = false end
-                  if B.borderPowerSeam then B.borderPowerSeam = false end
-              else
-                  B.borderCustom = true
-                  B.borderTexture = v
-                  B.borderTextureOffset, B.borderTextureOffsetY = nil, nil
-                  B.borderTextureShiftX, B.borderTextureShiftY = nil, nil
-                  local col, behind = EllesmereUI.GetBorderStyleSelectDefaults(v)
-                  B.borderColor, B.borderAlpha, B.borderBehind = col, 1, behind
-                  local defSz = EllesmereUI.GetBorderDefaultSize("unitframes", v)
-                  if defSz then B.borderSize = defSz end
-                  -- A style pick returns the frames to their legacy step; clear a
-                  -- set exact size (false travels through mirror sync, nil would not).
-                  if B.borderSizePx then B.borderSizePx = false end
-              end
-              onChange()
-              -- The Width / Height Offset row exists only under a textured style.
-              EllesmereUI:RefreshPage(true)
-          end }),
-        BS.Gate("unitframes", EllesmereUI.BorderPxSliderCfg({ text="Border Size", trackWidth=120,
-          disabled=Inheriting, disabledTooltip=NEEDS_STYLE, rawTooltip=true,
-          getStep=function() return Src().borderSize or 1 end,
-          setStep=function(step) B.borderSize = step end,
-          getTex=function() return Src().borderTexture or "solid" end,
-          getPx=function() return Src().borderSizePx end,
-          setPx=function(v) B.borderSizePx = v end,
-          -- The refresh dims the colour swatch at 0.
-          apply=function() onChange(); EllesmereUI:RefreshPage() end })))
-    y = y - h
-    -- Width Offset | Height Offset: a textured style's outward offsets.
-    do
-        local tex = B.borderTexture or "solid"
-        if not Inheriting() and tex ~= "solid" and tex ~= "" then
-            local ocfgL, ocfgR = EllesmereUI.BorderOffsetRowCfgs({
-                addonKey = "unitframes",
-                getTex = function() return B.borderTexture or "solid" end,
-                getStep = function() return B.borderSize or 1 end,
-                getSizeKey = function() return B.borderSize or 1 end,
-                getPx = function() return B.borderSizePx end,
-                getX = function() return B.borderTextureOffset end,
-                setX = function(v) B.borderTextureOffset = v end,
-                getY = function() return B.borderTextureOffsetY end,
-                setY = function(v) B.borderTextureOffsetY = v end,
-                apply = onChange,
-            })
-            local _, oh = W:DualRow(parent, y, BS.Gate("unitframes", ocfgL), BS.Gate("unitframes", ocfgR))
-            y = y - oh
-        end
-    end
-    if EllesmereUI._prebuilding then return y0 - y end
-
-    -- Border Options cog (left): shifts and layering, own textured styles only.
-    do
-        -- A stored shift, else the registry default for the style and size.
-        local function Shift(key, isY)
-            if B[key] then return B[key] end
-            local _, _, dsx, dsy = EllesmereUI.GetBorderDefaults("unitframes", B.borderTexture or "solid", B.borderSize or 1)
-            if isY then return dsy end
-            return dsx
-        end
-        -- The shown default stores nil, any other value (0 included) is kept.
-        local function SetShift(key, isY, v)
-            B[key] = nil
-            if v ~= Shift(key, isY) then B[key] = v end
-            onChange()
-        end
-        local cogBtn = EllesmereUI.BuildInlineCog(row._leftRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
-            title = "Border Options",
-            rows = {
-                { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
-                  get = function() return Shift("borderTextureShiftX", false) end,
-                  set = function(v) SetShift("borderTextureShiftX", false, v) end },
-                { type = "slider", label = "Shift Y", min = -10, max = 10, step = 1,
-                  get = function() return Shift("borderTextureShiftY", true) end,
-                  set = function(v) SetShift("borderTextureShiftY", true, v) end },
-                { type = "toggle", label = "Show Behind",
-                  get = function() return B.borderBehind == true end,
-                  set = function(v) B.borderBehind = v; onChange() end },
-                { type = "toggle", label = "Power Bar Seam",
-                  tooltip = "Draws the border style's seam art between the health bar and an attached power bar.",
-                  disabled = function()
-                      local pos = B.powerPosition or "below"
-                      local border = Src()
-                      return not (EllesmereUI.GetBorderCompanion(border.borderTexture or "solid", "sepH")
-                          and (B.borderSizeOverride or border.borderSize or 1) > 0 and (pos == "above" or pos == "below")
-                          and (B.powerHeight or 6) > 0)
-                  end,
-                  disabledTooltip = "This option requires an attached Power Bar, a Border Size above 0 and a border style with seam art.",
-                  rawTooltip = true,
-                  get = function() return B.borderPowerSeam == true end,
-                  set = function(v) B.borderPowerSeam = v; onChange() end },
-            },
-        })
-        local function UpdateCogVis()
-            local tex = B.borderTexture or "solid"
-            if Inheriting() or tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
-        end
-        EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-        UpdateCogVis()
-    end
-
-    -- Colour swatch (with alpha) on Border Size: shows what is drawn; greyed
-    -- and blocked while inheriting or at 0.
-    do
-        local rgn = row._rightRegion
-        local sw, updateSw = EllesmereUI.BuildColorSwatch(rgn, row:GetFrameLevel() + 3,
-            function()
-                local s = Src()
-                local c = s.borderColor
-                return c and c.r or 0, c and c.g or 0, c and c.b or 0, s.borderAlpha or 1
-            end,
-            function(r, g, b, a)
-                B.borderColor = { r = r, g = g, b = b }
-                B.borderAlpha = a
-                onChange()
-            end,
-            true, 20)
-        EllesmereUI.PanelPP.Point(sw, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        sw:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(sw, "Border") end)
-        sw:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        rgn._lastInline = sw
-        local block = CreateFrame("Frame", nil, sw)
-        block:SetAllPoints()
-        block:SetFrameLevel(sw:GetFrameLevel() + 10)
-        block:EnableMouse(true)
-        block:SetScript("OnEnter", function()
-            local req = Inheriting() and NEEDS_STYLE or "This option requires a Border Size above 0."
-            EllesmereUI.ShowWidgetTooltip(sw, EllesmereUI.DisabledTooltip(req))
-        end)
-        block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        local function UpdateSw()
-            updateSw()
-            if Inheriting() or (B.borderSize or 1) == 0 then
-                sw:SetAlpha(0.3); block:Show()
-            else
-                sw:SetAlpha(1); block:Hide()
-            end
-        end
-        EllesmereUI.RegisterWidgetRefresh(UpdateSw)
-        UpdateSw()
-        -- Corner Radius (EllesmereUI_RoundedCorners.lua): the boss table's own,
-        -- left of the swatch; while inheriting the main frames' radius applies.
-        EllesmereUI.BuildInlineCog(rgn, {
-            title = "Corner Radius", tip = "Corner Radius",
-            disabled = function() return Inheriting() or not EllesmereUI.RoundedStyleOK(B.borderTexture) end,
-            disabledTooltip = function()
-                if Inheriting() then return NEEDS_STYLE end
-                return "This option requires the Solid, Glow or Shadow border style."
-            end,
-            rows = EllesmereUI.RoundedJoinRow(EllesmereUI.RoundedCornerRows({
-                { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
-                  get = function() return Src().cornerRadius or 0 end,
-                  set = function(v) B.cornerRadius = v; onChange() end },
-            }, function() return Src().cornerMask end, function(v) B.cornerMask = v; onChange() end),
-                "Join Power Bar", "Rounds a detached power bar right above or below the frame as one shape with it.",
-                function() return B.cornerJoinPower end, function(v) B.cornerJoinPower = v; onChange() end,
-                function() local pos = B.powerPosition or "below"; return pos == "detached_top" or pos == "detached_bottom" end,
-                "Detached Power Bar"),
-        })
-    end
-    return y0 - y
+local function Dropdown(p, label, desc, list, unit, key, default, isDisabled, after, options)
+	local get = Get(unit, key, default)
+	p:Dropdown(label, desc, function() return Items(list) end, get,
+		function() return LabelOf(list, get()) end, Set(unit, key, after), options, isDisabled)
 end
 
--- Tracked Auras popup for target/focus/boss debuff filters ("Edit Tracked
--- Auras" pinned action; shared chrome in EllesmereUI_Widgets.lua). Tri-state
--- lists on the unit's settings table (s.debuffInclude/s.debuffExclude); boss1-5
--- share one "boss" table. Copy row clones both lists from another unit. Engine
--- wiring: include link + shared excludes in EUI_UnitFrames_AuraContainers.lua.
-local TRACKED_UNITS = {
-    { key = "target", label = "Target" },
-    { key = "focus",  label = "Focus" },
-    { key = "boss",   label = "Boss" },
+-- Cog rows ---------------------------------------------------------------
+local function CT(label, unit, key, default, disabled, tip, after)
+	return { type = "toggle", label = label, tip = tip, get = Get(unit, key, default), set = Set(unit, key, after), disabled = disabled }
+end
+
+local function CS(label, minV, maxV, step, unit, key, default, disabled, tip)
+	return { type = "slider", label = label, tip = tip, min = minV, max = maxV, step = step,
+		get = Get(unit, key, default), set = Set(unit, key), disabled = disabled }
+end
+
+local function CD(label, list, unit, key, default, disabled, tip, after)
+	return { type = "dropdown", label = label, tip = tip, items = function() return Items(list) end,
+		get = Get(unit, key, default), set = Set(unit, key, after), disabled = disabled }
+end
+
+-- Colors stored as { r, g, b [, a] } tables ---------------------------------
+local function ColorGet(unit, key, dr, dg, db, da)
+	return function()
+		local c = UF.db[unit][key]
+		if type(c) ~= "table" then
+			return dr, dg, db, da or 1
+		end
+		return c.r or dr, c.g or dg, c.b or db, c.a or da or 1
+	end
+end
+
+local function ColorSet(unit, key, alpha)
+	return function(r, g, b, a)
+		local c = UF.db[unit][key]
+		if type(c) ~= "table" then
+			c = {}
+			UF.db[unit][key] = c
+		end
+		c.r, c.g, c.b = r, g, b
+		if alpha and a then
+			c.a = a
+		end
+	end
+end
+
+-- Inline color swatch on the last cell for a { r, g, b } key.
+local function Swatch(p, tip, unit, key, defaults, opts)
+	defaults = defaults or { 1, 1, 1 }
+	opts = opts or {}
+	p:Swatch(tip, ColorGet(unit, key, defaults[1], defaults[2], defaults[3], defaults[4]), ColorSet(unit, key, opts.alpha), opts)
+end
+
+-- Swatch for three number keys (prefix .. "R" / "G" / "B").
+local function SwatchRGB(p, tip, unit, prefix, opts)
+	p:Swatch(tip,
+		function()
+			local s = UF.db[unit]
+			return s[prefix .. "R"] or 1, s[prefix .. "G"] or 1, s[prefix .. "B"] or 1
+		end,
+		function(r, g, b)
+			local s = UF.db[unit]
+			s[prefix .. "R"], s[prefix .. "G"], s[prefix .. "B"] = r, g, b
+		end, opts)
+end
+
+-- Read-only swatch showing a fixed color function; clicking selects a mode.
+local function ModeSwatch(p, tip, colorFn, isActive, select, disabled)
+	p:Swatch(tip, colorFn, function() end, {
+		readonly = true, active = isActive, disabled = disabled,
+		onClick = function() select() return true end,
+	})
+end
+
+-- Apply to All ------------------------------------------------------------
+local function Equal(a, b)
+	if type(a) ~= type(b) then
+		return false
+	end
+	if type(a) ~= "table" then
+		return a == b
+	end
+	for k, v in pairs(a) do
+		if not Equal(v, b[k]) then
+			return false
+		end
+	end
+	for k in pairs(b) do
+		if a[k] == nil then
+			return false
+		end
+	end
+	return true
+end
+
+local function Sync(p, tip, unit, keys, group)
+	group = group or UF.MAIN_UNITS
+	p:Sync(tip,
+		function()
+			local src = UF.db[unit]
+			for _, other in ipairs(group) do
+				if other ~= unit then
+					local dst = UF.db[other]
+					for _, key in ipairs(keys) do
+						dst[key] = UF.DeepCopy(src[key])
+					end
+				end
+			end
+		end,
+		function()
+			local src = UF.db[unit]
+			for _, other in ipairs(group) do
+				for _, key in ipairs(keys) do
+					if not Equal(src[key], UF.db[other][key]) then
+						return false
+					end
+				end
+			end
+			return true
+		end)
+end
+
+local function Reload()
+	StaticPopup_Show("EUI_UF_RELOAD")
+end
+
+StaticPopupDialogs["EUI_UF_RELOAD"] = {
+	text = "This change needs a UI reload to take effect.",
+	button1 = "Reload Now",
+	button2 = "Later",
+	OnAccept = function() ReloadUI() end,
+	timeout = 0,
+	whileDead = 1,
+	hideOnEscape = 1,
 }
-local TRACKED_TITLES = {
-    target = "Target Tracked Auras",
-    focus  = "Focus Tracked Auras",
-    boss   = "Boss Tracked Auras",
+
+StaticPopupDialogs["EUI_UF_APPLY_ALL"] = {
+	text = "Copy all shared settings from %s to %s?\n\nThis overwrites this frame's current settings. Frame position, visibility, and enable state are not changed.",
+	button1 = "Apply",
+	button2 = "Cancel",
+	OnAccept = function(self, data)
+		local src, dst = UF.db[data.from], UF.db[data.to]
+		local skip = { barVisibility = true, visibilityMatch = true, visibilityModes = true }
+		for key, value in pairs(src) do
+			if not skip[key] and dst[key] ~= nil then
+				dst[key] = UF.DeepCopy(value)
+			end
+		end
+		UF.ReloadFrames()
+		if ns.RefreshSettings then
+			ns.RefreshSettings()
+		end
+	end,
+	timeout = 0,
+	whileDead = 1,
+	hideOnEscape = 1,
 }
-local function TrackedList(unitKey, field)
-    local db = ns.db
-    local s = db and db.profile and db.profile[unitKey]
-    if not s then return nil end
-    if not s[field] then s[field] = {} end
-    return s[field]
-end
-function ns.UFOpt_ShowTrackedAuras(unitKey)
-    local choices = {}
-    for i = 1, #TRACKED_UNITS do
-        local u = TRACKED_UNITS[i]
-        if u.key ~= unitKey then choices[#choices + 1] = u end
-    end
-    local function Changed()
-        if ns.ReloadFrames then ns.ReloadFrames() end
-        if ns.UpdatePreview then ns.UpdatePreview() end
-        -- Non-force: the Debuff Filter dropdown's empty warning (Only Tracked
-        -- Auras with its list emptied) re-reads live, without rebuilding the
-        -- page under the popup.
-        EllesmereUI:RefreshPage()
-    end
-    EllesmereUI.ShowTrackedAurasPopup({
-        eyebrow = "UNIT FRAME AURA FILTERS",
-        title = TRACKED_TITLES[unitKey] or "Tracked Auras",
-        subtitle = "Included debuffs show in addition to your Debuff Filter selection (unless it is set to Only Tracked Auras).",
-        includeGet = function() return TrackedList(unitKey, "debuffInclude") end,
-        excludeGet = function() return TrackedList(unitKey, "debuffExclude") end,
-        -- Caster scope per entry (the MINE tag on each row). Boss includes default
-        -- to Only My Casts (nameplate parity) with an any-caster OPT-OUT map;
-        -- target/focus includes default to any caster with a MINE OPT-IN map.
-        -- Engine: AppendIncludeLinks in EUI_UnitFrames_AuraContainers.lua.
-        includeMine = (unitKey == "boss") and {
-            anyGet = function() return TrackedList(unitKey, "debuffIncludeAnyCaster") end,
-        } or {
-            mineGet = function() return TrackedList(unitKey, "debuffIncludeMine") end,
-        },
-        includePrompt = "Enter the spell ID to always show on this frame.",
-        excludePrompt = "Enter the spell ID to exclude from this frame.",
-        onChanged = Changed,
-        copyFrom = {
-            label = "Copy Included/Excluded Spells From:",
-            choices = choices,
-            apply = function(srcKey)
-                local db = ns.db
-                local src = db and db.profile and db.profile[srcKey]
-                local dst = db and db.profile and db.profile[unitKey]
-                if not (src and dst) then return end
-                local function Clone(t)
-                    if not t then return nil end
-                    local c = {}
-                    for k, v in pairs(t) do c[k] = v end
-                    return c
-                end
-                dst.debuffInclude = Clone(src.debuffInclude)
-                dst.debuffExclude = Clone(src.debuffExclude)
-                -- The caster-scope maps have opposite polarity per unit kind (boss:
-                -- any-caster opt-out; target/focus: MINE opt-in). Same kind copies
-                -- them as-is; across kinds the set is inverted so every copied
-                -- entry keeps the scope it showed with.
-                local srcBoss, dstBoss = srcKey == "boss", unitKey == "boss"
-                if srcBoss == dstBoss then
-                    dst.debuffIncludeAnyCaster = Clone(src.debuffIncludeAnyCaster)
-                    dst.debuffIncludeMine = Clone(src.debuffIncludeMine)
-                else
-                    local srcMap = srcBoss and src.debuffIncludeAnyCaster or src.debuffIncludeMine
-                    local inv = {}
-                    for id in pairs(src.debuffInclude or {}) do
-                        if not (srcMap and srcMap[id]) then inv[id] = true end
-                    end
-                    if dstBoss then
-                        dst.debuffIncludeAnyCaster = inv
-                        dst.debuffIncludeMine = nil
-                    else
-                        dst.debuffIncludeMine = inv
-                        dst.debuffIncludeAnyCaster = nil
-                    end
-                end
-                Changed()
-            end,
-        },
-    })
+
+local function PlayerClassColor()
+	return UF.PlayerClassColor()
 end
 
--- Options preview: the first fake buff stands in for a purgeable one while
--- Purgeable Buff Glow is set on target/focus and this character can purge or
--- spellsteal (the live frame's own gate). The host is our own frame.
-function ns.UFOpt_PreviewPurgeGlow(bf, unitKey, s, w, h)
-    local Glows = EllesmereUI.Glows
-    if not ns.UF_PurgeGlowSpec then return end
-    local g = (unitKey == "target" or unitKey == "focus") and s and s.buffPurgeGlow
-    local on = type(g) == "number" and g > 0
-    if on then
-        local AK = EllesmereUI.AuraKit
-        local magic, enrage = false, false
-        if AK and AK.OffensiveDispelTypes then magic, enrage = AK.OffensiveDispelTypes() end
-        on = magic or enrage
-    end
-    local host = bf._purgeGlow
-    if not on then
-        if host then
-            if host._euiGlowActive then Glows.StopGlow(host) end
-            host:Hide()
-        end
-        return
-    end
-    if not host then
-        host = CreateFrame("Frame", nil, bf)
-        host:SetAllPoints(bf)
-        host:SetFrameLevel(bf:GetFrameLevel() + 2)
-        bf._purgeGlow = host
-    end
-    host:Show()
-    -- The live renderer's own spec, so the preview is the live look.
-    Glows.StartSpecGlow(host, ns.UF_PurgeGlowSpec(s), w, h, "engine", Glows.PANEL_EXTRA)
+local function PlayerPowerColor()
+	return UF.PlayerPowerColor()
 end
 
--- Target/focus/boss Debuff Filter: ONE single-select mode, an engine VIEW over
--- the legacy keys (ns.UF_DebuffFilterMode in EUI_UnitFrames_AuraContainers.lua;
--- nothing is rewritten on update, the first pick writes s.debuffFilterMode --
--- the only key this dropdown ever writes). "Edit Tracked Auras" is an action
--- row above a divider; Tracked Auras are additional tracking in every mode,
--- and Only Tracked Auras is the one mode that can render nothing (its tooltip
--- points at the action row, AttachDebuffModeWarn carries the empty warning).
-local DEBUFF_MODE_ORDER = {
-    "__editTracked", "---",
-    "all", "tracked", "own", "important", "importantOwn", "importantOrOwn",
+---------------------------------------------------------------------------
+-- Value lists (EllesmereUI labels)
+---------------------------------------------------------------------------
+local HEALTH_TEXT = {
+	{ "none", "None" }, { "name", "Name" }, { "nametotarget", "Name > Target" }, { "targetname", "Target" },
+	{ "levelname", "Level | Name" }, { "namelevel", "Name | Level" }, { "level", "Level" },
+	{ "perhp", "Health %" }, { "perhpnosign", "Health % (No Sign)" }, { "curhpshort", "Health #" },
+	{ "perhpnum", "Health % | #" }, { "both", "Health # | %" }, { "bothdash", "Health # - %" },
+	{ "perhpnumdash", "Health % - #" }, { "absorb", "Absorb Amount" }, { "absorbshort", "Absorb Short (230k)" },
+	{ "healabsorb", "Heal Absorb Amount" }, { "healabsorbshort", "Heal Absorb Short (80k)" },
 }
-local DEBUFF_MODE_TIPS = {
-    all            = "Shows every debuff on this frame.",
-    tracked        = "Shows only this frame's Tracked Auras; add them with Edit Tracked Auras at the top of this menu.",
-    own            = "Shows only the debuffs you apply.",
-    important      = "Shows only debuffs Blizzard flags as important.",
-    importantOwn   = "Shows only the debuffs you apply that Blizzard also flags as important.",
-    importantOrOwn = "Shows the debuffs you apply plus important debuffs from anyone.",
+local HEALTH_TEXT_PLAYER = {}
+for i = 1, #HEALTH_TEXT do
+	HEALTH_TEXT_PLAYER[i] = HEALTH_TEXT[i]
+end
+HEALTH_TEXT_PLAYER[#HEALTH_TEXT_PLAYER + 1] = { "group", "Group Number" }
+local HEALTH_TEXT_MINI = {
+	{ "none", "None" }, { "name", "Name" }, { "levelname", "Level | Name" }, { "namelevel", "Name | Level" },
+	{ "level", "Level" }, { "perhp", "Health %" }, { "perhpnosign", "Health % (No Sign)" },
+	{ "curhpshort", "Health #" }, { "perhpnum", "Health % | #" }, { "both", "Health # | %" },
 }
-local function DebuffModeDropdownCfg(text, unitKey, getS, onChanged, extra)
-    local values = {
-        __editTracked  = { text = "Edit Tracked Auras", action = function() ns.UFOpt_ShowTrackedAuras(unitKey) end },
-        all            = "Show All",
-        tracked        = "Only Tracked Auras",
-        own            = "Own Only",
-        important      = "Important Only",
-        importantOwn   = "Important and Own",
-        importantOrOwn = "Important or Own",
-        _menuOpts = {
-            onItemHover = function(key, item)
-                local tip = DEBUFF_MODE_TIPS[key]
-                if tip and item then EllesmereUI.ShowWidgetTooltip(item, tip) end
-            end,
-            onItemLeave = function() EllesmereUI.HideWidgetTooltip() end,
-        },
-    }
-    local cfg = {
-        type = "dropdown", text = text, values = values, order = DEBUFF_MODE_ORDER,
-        getValue = function() return ns.UF_DebuffFilterMode(getS()) end,
-        setValue = function(v)
-            getS().debuffFilterMode = v
-            onChanged()
-        end,
-    }
-    if extra then
-        for k, val in pairs(extra) do cfg[k] = val end
-    end
-    return cfg
+local BTB_TEXT = {
+	{ "none", "None" }, { "name", "Name" }, { "perhp", "Health %" }, { "perhpnosign", "Health % (No Sign)" },
+	{ "curhpshort", "Health #" }, { "perhpnum", "Health % | #" }, { "both", "Health # | %" },
+	{ "perpp", "Power %" }, { "curpp", "Power Value" }, { "curhp_curpp", "Health | Power Value" },
+	{ "perhp_perpp", "Health | Power %" },
+}
+local ALIGN = { { "left", "Left" }, { "right", "Right" }, { "center", "Center" } }
+local STRATA = { { "BACKGROUND", "Background" }, { "LOW", "Low" }, { "MEDIUM", "Medium" }, { "HIGH", "High" }, { "DIALOG", "Dialog" } }
+local PORTRAIT_MODE = { { "none", "None" }, { "attached", "Attached" }, { "detached", "Detached" } }
+local PORTRAIT_SIDE = { { "left", "Left" }, { "right", "Right" }, { "top", "Top" } }
+local PORTRAIT_NONPLAYER = { { "2d", "2D Portrait" }, { "none", "Nothing" }, { "3d", "3D Portrait" } }
+local PORTRAIT_SHAPE = { { "portrait", "Portrait" }, { "square", "Square" }, { "circle", "Circle" } }
+local POWER_POS = {
+	{ "below", "Below Health Bar" }, { "above", "Above Health Bar" }, { "detached_bottom", "Detached Bottom" },
+	{ "detached_top", "Detached Top" }, { "none", "None" },
+}
+local POWER_FMT = { { "none", "None" }, { "smart", "Smart Text" }, { "curpp", "Power Value" }, { "perpp", "Power %" }, { "both", "Value | %" } }
+local POWER_TEXT_POS = { { "none", "None" }, { "left", "Left" }, { "right", "Right" }, { "center", "Center" } }
+local GRADIENT_DIR = { { "HORIZONTAL", "Horizontal" }, { "VERTICAL", "Vertical" } }
+local DYNAMIC_COLOR = { { "none", "Off" }, { "classic", "Classic" }, { "customDynamic", "Custom Colors" }, { "classReactive", "Class Reactive" } }
+local TEXT_SIDE = { { "none", "None" }, { "left", "Left" }, { "right", "Right" }, { "center", "Center" } }
+local DURATION_SIDE = { { "none", "None" }, { "right", "Right" }, { "left", "Left" } }
+local BTB_POS = { { "top", "Top" }, { "bottom", "Bottom" }, { "detached_top", "Detached Top" }, { "detached_bottom", "Detached Bottom" } }
+local CLASS_ICON = { { "none", "None" } }
+for _, key in ipairs(UF.CLASS_STYLE_ORDER) do
+	CLASS_ICON[#CLASS_ICON + 1] = { key, UF.CLASS_STYLE_NAMES[key] }
 end
--- Hide Exhaustion: the Debuff Filter cog row of target, focus and boss (their
--- filter is a single-pick mode list; the player's checkbox Debuff Filter has
--- the same toggle as a row). s.debuffHideExhaustion, nil = on: the Bloodlust
--- lockouts stay hidden until it is turned off (stored as false).
-local function HideExhaustionRow(getS, onChanged)
-    return { type = "toggle", label = "Hide Exhaustion",
-        tooltip = "Hides Sated, Exhaustion, Temporal Displacement and the other Bloodlust lockout debuffs.",
-        get = function() return getS().debuffHideExhaustion ~= false end,
-        set = function(v)
-            getS().debuffHideExhaustion = (not v) and false or nil
-            onChanged()
-        end }
+local CP_STYLE = { { "none", "None" }, { "modern", "Modern" }, { "blizzard", "Blizzard" } }
+local CP_POS = { { "top", "Top" }, { "bottom", "Bottom" }, { "above", "Above Health Bar" } }
+local AURA_ANCHOR = {
+	{ "none", "None" }, { "topleft", "Top Left" }, { "topright", "Top Right" }, { "bottomleft", "Bottom Left" },
+	{ "bottomright", "Bottom Right" }, { "left", "Left" }, { "right", "Right" },
+}
+local AURA_GROWTH = { { "auto", "Auto" }, { "up", "Up" }, { "down", "Down" }, { "left", "Left" }, { "right", "Right" } }
+local STACK_POS = { { "bottomright", "Bottom Right" }, { "bottomleft", "Bottom Left" }, { "topright", "Top Right" }, { "topleft", "Top Left" }, { "center", "Center" } }
+local DEBUFF_MODE = {
+	{ "all", "Show All" }, { "own", "Own Only" }, { "important", "Boss Debuffs Only" },
+	{ "importantOwn", "Boss and Own" }, { "importantOrOwn", "Boss or Own" },
+}
+local DISPEL_OVERLAY = { { "none", "None" }, { "fill", "Fill Overlay" }, { "full", "Full Overlay" }, { "gradient", "Gradient Overlay" }, { "gradient_sharp", "Gradient Sharp" } }
+local ABSORB_PLACEMENT = { { "overlay", "Overlay" }, { "right", "From Right Edge" }, { "left", "From Left Edge" } }
+local OVERSHIELD = { { "never", "Never" }, { "always", "Always" }, { "fromleft", "From Left" } }
+local ABSORB_BAR = {
+	{ "none", "None" }, { "aboveRight", "Above Frame Right" }, { "aboveLeft", "Above Frame Left" }, { "topRight", "Top Right" },
+	{ "topLeft", "Top Left" }, { "bottomRight", "Bottom Right" }, { "bottomLeft", "Bottom Left" },
+}
+local HEAL_ABSORB_BAR = {
+	{ "none", "None" }, { "aboveAbsorb", "Above Absorb Bar" }, { "belowAbsorb", "Below Absorb Bar" },
+	{ "aboveRight", "Above Frame Right" }, { "aboveLeft", "Above Frame Left" }, { "topRight", "Top Right" },
+	{ "topLeft", "Top Left" }, { "bottomRight", "Bottom Right" }, { "bottomLeft", "Bottom Left" },
+}
+local COMBAT_STYLE = {
+	{ "none", "None" }, { "standard", "Standard" }, { "class", "Class Theme" }, { "combat0", "Arcade" },
+	{ "combat1", "Dungeoneer" }, { "combat2", "Classic" }, { "combat3", "Cross" }, { "combat4", "Circle" }, { "combat5", "Square" },
+}
+local INDICATOR_POS = { { "topleft", "Top Left" }, { "topright", "Top Right" }, { "bottomleft", "Bottom Left" }, { "bottomright", "Bottom Right" }, { "portrait", "Portrait" } }
+local COMBAT_POS = {
+	{ "topleft", "Top Left" }, { "topright", "Top Right" }, { "healthbar", "Center" }, { "bottomleft", "Bottom Left" },
+	{ "bottomright", "Bottom Right" }, { "textbar", "Text Bar" }, { "portrait", "Portrait" },
+}
+local LEADER_STYLE = { { "blizzard", "Blizzard" }, { "pixels", "Pixels" } }
+local FACTION_STYLE = { { "classic", "Classic Banner" }, { "banner", "Banner Icon" }, { "honoricon", "Honor Icon" }, { "friends", "Friends Crest" } }
+local FACTION_PVP = { { "dim", "Dim Unflagged" }, { "only", "Flagged Only" }, { "ignore", "Ignore" } }
+local THREAT_POS = { { "RIGHT", "Inside Right" }, { "LEFT", "Inside Left" }, { "CENTER", "Inside Center" }, { "OUTRIGHT", "Outside Right" }, { "OUTLEFT", "Outside Left" } }
+local SIMPLE_DISPLAY = { { "none", "None" }, { "left", "Left" }, { "right", "Right" } }
+
+---------------------------------------------------------------------------
+-- Shared rows
+---------------------------------------------------------------------------
+local function NotNone(unit, key)
+	return function()
+		local v = UF.db[unit][key]
+		return v == nil or v == "none"
+	end
 end
--- The standard red empty-selection warning on the mode dropdown built by a
--- DualRow slot (rgn._control): shown while Only Tracked Auras has no active
--- entry and the column is not already dimmed by its Display = None.
-local function AttachDebuffModeWarn(rgn, getS, offFn)
-    local dd = rgn and rgn._control
-    if not dd then return end
-    EllesmereUI.AttachEmptyFilterWarn(rgn, dd,
-        EllesmereUI.L("You are displaying NO debuffs at all."),
-        function()
-            if offFn() then return true end
-            local s = getS()
-            return ns.UF_DebuffFilterMode(s) ~= "tracked" or ns.UF_DebuffHasIncludes(s)
-        end)
+
+local function Dark()
+	return UF.db.darkTheme
 end
 
-local initFrame = CreateFrame("Frame")
-initFrame:RegisterEvent("PLAYER_LOGIN")
-initFrame:SetScript("OnEvent", function(self)
-    self:UnregisterEvent("PLAYER_LOGIN")
-
-    -- Init fn on the namespace; the main addon calls it from SetupOptionsPanel()
-    -- once ns.db/ns.frames are ready, or immediately if that already ran.
-    ns._InitEUIModule = function()
-    if not EllesmereUI or not EllesmereUI.RegisterModule then return end
-    if not ns.db then return end
-
-    local PP = EllesmereUI.PanelPP
-    local db = ns.db
-    local frames = ns.frames
-    local ReloadFrames = ns.ReloadFrames
-    local ResolveFontPath = ns.ResolveFontPath
-
-    local floor = math.floor
-    local abs = math.abs
-
-    local GetUFOptOutline = EllesmereUI.GetFontOutlineFlag
-    local SetPVFont = EllesmereUI.ApplyModuleFont
-
-    ---------------------------------------------------------------------------
-    --  Shared helpers
-    ---------------------------------------------------------------------------
-    local activePreview
-    local allPreviews = {}
-
-    -- Mutable state the page builders share. A table instead of locals so the
-    -- builders under UnitFrames_Options\ read and write the live values.
-    local optState = {}
-    optState.showCombatIndicatorPreview = false
-    optState.showHealAbsorbPreview      = false  -- eyeball toggle for the Heal Absorb Style preview
-    optState.showDispelOverlayPreview   = false  -- eyeball toggle for the player dispel overlay preview
-    -- Preview hover-highlight hint text (shared across Single/Multi tabs)
-    optState._ufPreviewHintFS_display = nil  -- hint FontString for the Main Frames page
-    local _displayHeaderBaseH = 0      -- display header height WITHOUT hint
-
-    local function IsPreviewHintDismissed()
-        return EllesmereUIDB and EllesmereUIDB.previewHintDismissed
-    end
-
-    -- Preview click -> scroll to and glow the mapped row (Main, Mini and Boss
-    -- pages). A target may be a resolver function (e.g. boss buff/debuff icons,
-    -- which point to Simple Display or Location depending on the mode). On ns
-    -- to stay clear of the 200-local cap; dismissHint is Main-page only.
-    ns._UFNavigateToSetting = function(targets, key, playGlow, dismissHint)
-        if not targets then return end
-        local m = targets[key]
-        if type(m) == "function" then m = m() end
-        if not m or not m.section or not m.target then return end
-        if dismissHint then EllesmereUI.DismissPreviewHint(optState._ufPreviewHintFS_display, _displayHeaderBaseH, 29, 17) end
-        local sf = EllesmereUI._scrollFrame
-        if not sf then return end
-        local _, _, _, _, headerY = m.section:GetPoint(1)
-        if not headerY then return end
-        local scrollPos = math.max(0, math.abs(headerY) - 40)
-        EllesmereUI.SmoothScrollTo(scrollPos)
-        local glowTarget = m.target
-        if m.slotSide and m.target then
-            local region = (m.slotSide == "left") and m.target._leftRegion or m.target._rightRegion
-            if region then glowTarget = region end
-        end
-        C_Timer.After(0.15, function() playGlow(glowTarget) end)
-    end
-
-    local function UpdatePreview()
-        for _, pv in pairs(allPreviews) do
-            if pv and pv.Update then pv:Update() end
-        end
-        -- Sync in-game boss preview fake debuffs with live edits (location, simple display, size).
-        if ns.RefreshBossPreviewDebuffs then ns.RefreshBossPreviewDebuffs() end
-    end
-
-    local function ReloadAndUpdate()
-        -- Resolve at call time: ns.ReloadFrames is wrapped after this file's setup
-        -- (aura containers, dispel overlay); a load-time capture bypasses those hooks.
-        local rf = ns.ReloadFrames or ReloadFrames
-        if rf then rf() end
-        UpdatePreview()
-    end
-
-    EllesmereUI:RegisterOnShow(UpdatePreview)
-    ns.UpdatePreview = UpdatePreview
-
-    -- Re-run preview Update() when panel scale changes so border pixel sizes refresh
-    if not EllesmereUI._onScaleChanged then EllesmereUI._onScaleChanged = {} end
-    EllesmereUI._onScaleChanged[#EllesmereUI._onScaleChanged + 1] = UpdatePreview
-
-    -- Hide UIParent-parented disabled overlays when the options window closes
-    EllesmereUI:RegisterOnHide(function()
-        for _, pv in pairs(allPreviews) do
-            if pv and pv._disabledOverlay then pv._disabledOverlay:Hide() end
-        end
-        -- Auto-disable in-game boss preview so live boss frames don't linger on close.
-        if ns._bossPreviewActive and ns.SetBossPreview then
-            ns.SetBossPreview(false)
-        end
-        -- Player Aura Bars root lives on the shared live scrollFrame, not a page's
-        -- own `parent`; only fires on full window close (cf. _bmRoot/_dmRoot/_ccRoot
-        -- cleanup in EUI_RaidFrames_Options.lua). Module switching is handled below via SelectModule.
-        if ns._pabRoot then
-            ns._pabRoot:Hide()
-            ns._pabRoot:SetParent(nil)
-            ns._pabRoot = nil
-        end
-    end)
-
-    -- Rebuild Player Aura Bars on re-open while already on that page: RegisterOnHide
-    -- tore _pabRoot down, and unlike a tab switch (buildPage/onPageCacheRestore) a
-    -- plain re-open rebuilds nothing. Mirrors RF's RegisterOnShow in EUI_RaidFrames_Options.lua.
-    EllesmereUI:RegisterOnShow(function()
-        if EllesmereUI:GetActiveModule() == "EllesmereUIUnitFrames"
-           and EllesmereUI:GetActivePage() == PAGE_AURA_BARS
-           and not ns._pabRoot then
-            C_Timer.After(0, function()
-                if EllesmereUI:GetActiveModule() == "EllesmereUIUnitFrames" and ns.PABMP_BuildPage then
-                    ns.PABMP_BuildPage(PAGE_AURA_BARS, nil, -6)
-                end
-            end)
-        end
-    end)
-
-    -- Tear down _pabRoot on switch to a DIFFERENT top-level module: window stays
-    -- open (RegisterOnHide never fires) and the root would overlap the new module's
-    -- content. Mirrors RF's SelectModule cleanup in EUI_RaidFrames_Options.lua.
-    if EllesmereUI.SelectModule then
-        hooksecurefunc(EllesmereUI, "SelectModule", function(_, folderName)
-            if folderName ~= "EllesmereUIUnitFrames" and ns._pabRoot then
-                ns._pabRoot:Hide()
-                ns._pabRoot:SetParent(nil)
-                ns._pabRoot = nil
-            end
-        end)
-    end
-
-    ---------------------------------------------------------------------------
-    --  Individual Display unit selector
-    ---------------------------------------------------------------------------
-    optState.selectedUnit = "player"
-
-    -- External unit pre-select: direct setter + pending override consumed at page build.
-    EllesmereUI._setUnitFrameUnit = function(unit) optState.selectedUnit = unit end
-    EllesmereUI._consumePendingUnitSelect = function()
-        local pending = EllesmereUI._pendingUnitSelect
-        if pending then
-            optState.selectedUnit = pending
-            EllesmereUI._pendingUnitSelect = nil
-        end
-    end
-
-    local unitLabels = {
-        ["player"]       = "Player",
-        ["target"]       = "Target",
-        ["focus"]        = "Focus",
-        ["targettarget"] = "Target of Target",
-        ["focustarget"]  = "Focus Target",
-        ["pet"]          = "Pet",
-        ["boss"]         = "Boss",
-    }
-    local unitOrder = { "player", "target", "focus" }
-
-    -- Side mapping: which side the portrait sits on for each unit
-    local unitSide = {
-        ["player"]       = "left",
-        ["target"]       = "right",
-        ["focus"]        = "right",
-        ["targettarget"] = "left",
-        ["focustarget"]  = "left",
-        ["pet"]          = "left",
-        ["boss"]         = "right",
-    }
-
-    ---------------------------------------------------------------------------
-    --  Group editing state  (sync icon targets)
-    ---------------------------------------------------------------------------
-    local UNIT_DB_MAP = {
-        player       = function() return db.profile.player end,
-        target       = function() return db.profile.target end,
-        focus        = function() return db.profile.focus end,
-        targettarget = function() return db.profile.targettarget end,
-        focustarget  = function() return db.profile.focustarget end,
-        pet          = function() return db.profile.pet end,
-        boss         = function() return db.profile.boss end,
-    }
-
-    ---------------------------------------------------------------------------
-    --  Glow site: the target/focus Purgeable Buff Glow as a shared glow
-    --  descriptor over one unit's settings (getS), used by the Buffs cog and the
-    --  Global Settings Glows page. Engine aura buttons: C-side styles only; an
-    --  unset color is the suite default (gold).
-    ---------------------------------------------------------------------------
-    local function UF_PurgeGlowDesc(getS)
-        -- Blizzard Border: Blizzard's static stealable art, outside the style list.
-        local border = EllesmereUI.Glows.STEALABLE_BORDER
-        return {
-            host = "engine",
-            extras = { { value = border, label = "Blizzard Border", style = border } },
-            caps = { mode = true, params = true, bg = true },
-            defaultColor = EllesmereUI.Glows.DEFAULT_COLOR,
-            onChange = ReloadAndUpdate,
-            get = function(f)
-                local s = getS()
-                if f == "style" then return s.buffPurgeGlow or 0
-                elseif f == "mode" then
-                    return s.buffPurgeGlowColorMode or (s.buffPurgeGlowColor and "custom" or "default")
-                end
-                return EllesmereUI.GlowOptions.FlatGet(s, "buffPurgeGlow", f)
-            end,
-            set = function(f, a, b, c)
-                local s = getS()
-                if f == "style" then s.buffPurgeGlow = (a ~= 0) and a or nil
-                elseif f == "mode" then s.buffPurgeGlowColorMode = a
-                else EllesmereUI.GlowOptions.FlatSet(s, "buffPurgeGlow", f, a, b, c)
-                end
-            end,
-        }
-    end
-    -- Target/focus Important Cast Glow: a bar host storing shared style
-    -- indices (every style but Shape); an unset mode is the stored custom color.
-    local function UF_ImpCastGlowDesc(getS, onChange)
-        return {
-            host = "bar",
-            caps = { mode = true, params = true, bg = true },
-            defaultColor = { r = 1, g = 0.2, b = 0.2 },
-            onChange = onChange or ReloadAndUpdate,
-            isOff = function() return getS().castbarImportantGlow ~= true end,
-            get = function(f)
-                local s = getS()
-                if f == "style" then return s.castbarImportantGlowStyle or 1
-                elseif f == "mode" then return s.castbarImportantGlowColorMode or "custom"
-                end
-                return EllesmereUI.GlowOptions.FlatGet(s, "castbarImportantGlow", f)
-            end,
-            set = function(f, a, b, c)
-                local s = getS()
-                if f == "style" then
-                    if a == 0 then s.castbarImportantGlow = false
-                    else s.castbarImportantGlow = true; s.castbarImportantGlowStyle = a end
-                elseif f == "mode" then s.castbarImportantGlowColorMode = a
-                else EllesmereUI.GlowOptions.FlatSet(s, "castbarImportantGlow", f, a, b, c)
-                end
-            end,
-        }
-    end
-    do
-        local GO = EllesmereUI.GlowOptions
-        -- Open Settings selects the unit first (the page shows one unit at a time).
-        local function SelectUnit(unit)
-            return function() EllesmereUI._setUnitFrameUnit(unit); EllesmereUI._pendingUnitSelect = unit end
-        end
-        GO.RegisterSite({ id = "uf_purge_target", label = "Target Purgeable Buff Glow", group = "module",
-            module = "EllesmereUIUnitFrames", page = PAGE_DISPLAY, section = "BUFFS AND DEBUFFS",
-            preSelect = SelectUnit("target"),
-            -- The Purgeable Buffs cog sits on the unit's Buff Filter row.
-            highlight = "Buff Filter",
-            desc = UF_PurgeGlowDesc(UNIT_DB_MAP.target) })
-        GO.RegisterSite({ id = "uf_purge_focus", label = "Focus Purgeable Buff Glow", group = "module",
-            module = "EllesmereUIUnitFrames", page = PAGE_DISPLAY, section = "BUFFS AND DEBUFFS",
-            preSelect = SelectUnit("focus"),
-            highlight = "Buff Filter",
-            desc = UF_PurgeGlowDesc(UNIT_DB_MAP.focus) })
-        GO.RegisterSite({ id = "uf_importantcast_target", label = "Target Important Cast Glow", group = "module",
-            module = "EllesmereUIUnitFrames", page = PAGE_DISPLAY, section = "CAST BAR",
-            preSelect = SelectUnit("target"), highlight = "Important Cast Glow",
-            desc = UF_ImpCastGlowDesc(UNIT_DB_MAP.target) })
-        GO.RegisterSite({ id = "uf_importantcast_focus", label = "Focus Important Cast Glow", group = "module",
-            module = "EllesmereUIUnitFrames", page = PAGE_DISPLAY, section = "CAST BAR",
-            preSelect = SelectUnit("focus"), highlight = "Important Cast Glow",
-            desc = UF_ImpCastGlowDesc(UNIT_DB_MAP.focus) })
-    end
-
-    local GROUP_UNIT_ORDER = { "player", "target", "focus" }
-    local SHORT_LABELS = {
-        player       = "Player",
-        target       = "Target",
-        focus        = "Focus",
-        targettarget = "Target of Target",
-        focustarget  = "Focus Target",
-        pet          = "Pet",
-        boss         = "Boss",
-    }
-
-
-    ---------------------------------------------------------------------------
-    --  Health display dropdown values
-    ---------------------------------------------------------------------------
-    local healthDisplayValues = {
-        ["both"]       = "Current HP | Percent",
-        ["curhpshort"] = "Current HP Only",
-        ["perhp"]      = "Percent Only",
-    }
-    local healthDisplayOrder = { "both", "curhpshort", "perhp" }
-
-    ---------------------------------------------------------------------------
-    --  Health bar texture dropdown -- built LIVE each render (mirrors
-    --  GetBorderTextureDropdown) so SharedMedia textures registered after login
-    --  always appear; an LSM callback also keeps the shared ns tables current.
-    ---------------------------------------------------------------------------
-    local function BuildBarTexDropdown()
-        -- Refresh shared snapshot from LSM; first call also registers the
-        -- late-registration callback (idempotent after).
-        EllesmereUI.AppendSharedMediaTextures(
-            ns.healthBarTextureNames or {},
-            ns.healthBarTextureOrder or {},
-            nil,
-            ns.healthBarTextures
-        )
-
-        local hbtValues, hbtOrder = {}, {}
-        local texNames = ns.healthBarTextureNames or {}
-        local texOrder2 = ns.healthBarTextureOrder or {}
-        for _, key in ipairs(texOrder2) do
-            if key ~= "---" then
-                hbtValues[key] = texNames[key] or key
-                hbtOrder[#hbtOrder + 1] = key
-            end
-        end
-        -- _menuOpts: texture preview backgrounds on each item
-        local texLookup = ns.healthBarTextures or {}
-        hbtValues._menuOpts = {
-            itemHeight = 28,
-            background = function(key)
-                return texLookup[key]
-            end,
-            onItemHover = function(key)
-                local texPath = texLookup[key]
-                for _, pv in pairs(allPreviews) do
-                    if pv then
-                        local hFill = pv._healthFill
-                        if hFill then
-                            if texPath then
-                                hFill:SetTexture(texPath)
-                                hFill:SetVertexColor(pv._hR or 0.8, pv._hG or 0.2, pv._hB or 0.2, 1)
-                            else
-                                hFill:SetVertexColor(1, 1, 1, 1)
-                                hFill:SetColorTexture(pv._hR or 0.8, pv._hG or 0.2, pv._hB or 0.2, 1)
-                            end
-                        end
-                        local pFill = pv._powerFill
-                        if pFill then
-                            local pvR, pvG, pvB = pv._pR or 0, pv._pG or 0, pv._pB or 1
-                            if texPath then
-                                pFill:SetTexture(texPath)
-                                pFill:SetVertexColor(pvR, pvG, pvB, 1)
-                            else
-                                pFill:SetVertexColor(1, 1, 1, 1)
-                                pFill:SetColorTexture(pvR, pvG, pvB, 1)
-                            end
-                        end
-                    end
-                end
-            end,
-            onItemLeave = function(key)
-                -- Revert to the saved texture
-                for _, pv in pairs(allPreviews) do
-                    if pv and pv.Update then pv:Update() end
-                end
-            end,
-        }
-        return hbtValues, hbtOrder
-    end
-
-    ---------------------------------------------------------------------------
-    --  Buff anchor / growth direction dropdown values
-    ---------------------------------------------------------------------------
-    local buffAnchorValues = {
-        ["none"]        = "None",
-        ["topleft"]     = "Top Left",
-        ["topright"]    = "Top Right",
-        ["bottomleft"]  = "Bottom Left",
-        ["bottomright"] = "Bottom Right",
-        ["left"]        = "Left",
-        ["right"]       = "Right",
-    }
-    local buffAnchorOrder = { "none", "topleft", "topright", "bottomleft", "bottomright", "left", "right" }
-
-    local buffGrowthValues = {
-        ["auto"]  = "Auto",
-        ["up"]    = "Up",
-        ["down"]  = "Down",
-        ["left"]  = "Left",
-        ["right"] = "Right",
-    }
-    local buffGrowthOrder = { "auto", "up", "down", "left", "right" }
-
-    local classPowerStyleValues = {
-        ["none"]     = "None",
-        ["modern"]   = "Modern",
-        ["blizzard"] = "Blizzard",
-    }
-    local classPowerStyleOrder = { "none", "modern", "blizzard" }
-
-    local classPowerPosValues = {
-        ["top"]    = "Top",
-        ["bottom"] = "Bottom",
-        ["above"]  = "Above Health Bar",
-    }
-    local classPowerPosOrder = { "top", "bottom", "above" }
-
-    ---------------------------------------------------------------------------
-    --  Text content dropdown values (left / right text)
-    ---------------------------------------------------------------------------
-    -- Health bar text dropdown values (no power options)
-    local healthTextValues = {
-        ["name"]         = "Name",
-        ["nametotarget"] = "Name > Target",
-        ["targetname"]   = "Target",
-        ["levelname"]    = "Level | Name",
-        ["namelevel"]    = "Name | Level",
-        ["level"]        = "Level",
-        ["perhp"]        = "Health %",
-        ["perhpnosign"]  = "Health % (No Sign)",
-        ["curhpshort"]   = "Health #",
-        ["healthshort"]  = "Health # Short (230.5K)",
-        ["curmaxhp"]     = "Health # / Max #",
-        ["perhpnum"]     = "Health % | #",
-        ["both"]         = "Health # | %",
-        ["bothdash"]     = "Health # - %",
-        ["perhpnumdash"] = "Health % - #",
-        ["absorb"]       = "Absorb Amount",
-        ["absorbshort"]  = "Absorb Short (230k)",
-        ["healabsorb"]      = "Heal Absorb Amount",
-        ["healabsorbshort"] = "Heal Absorb Short (80k)",
-        ["group"]        = "Group Number",
-        ["none"]         = "None",
-    }
-    local healthTextOrder = { "none", "---", "name", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both" }
-    -- Boss frames also get "Name > Target" (the boss's target); ToT/FoT/Pet do not.
-    local healthTextOrderBoss = { "none", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort" }
-    local healthTextOrderPlayer = { "none", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort", "group" }
-    -- Target/Focus: player's absorb options minus "group" (raid group number is meaningless off the player).
-    local healthTextOrderTargetFocus = { "none", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort" }
-
-    -- Text bar (BTB) text dropdown values (includes power options)
-    local btbTextValues = {
-        ["name"]         = "Name",
-        ["perhp"]        = "Health %",
-        ["perhpnosign"]  = "Health % (No Sign)",
-        ["curhpshort"]   = "Health #",
-        ["healthshort"]  = "Health # Short (230.5K)",
-        ["curmaxhp"]     = "Health # / Max #",
-        ["perhpnum"]     = "Health % | #",
-        ["both"]         = "Health # | %",
-        ["perpp"]        = "Power %",
-        ["curpp"]        = "Power Value",
-        ["curmaxpp"]     = "Power Value / Max",
-        ["curhp_curpp"]  = "Health | Power Value",
-        ["perhp_perpp"]  = "Health | Power %",
-        ["none"]         = "None",
-    }
-    local btbTextOrder = { "none", "---", "name", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "perpp", "curpp", "curmaxpp", "curhp_curpp", "perhp_perpp" }
-
-    -- Class theme portrait icons: full-size versions of the sidebar class art.
-    local ICONS_PATH = "Interface\\AddOns\\EllesmereUI\\media\\icons\\"
-    local CLASS_FULL_SPRITE_BASE = ICONS_PATH .. "class-full\\"
-
-    local CLASS_FULL_COORDS = EllesmereUI.CLASS_ICON_SPRITE_COORDS
-
-    local classIconValues = {
-        ["none"]="None", ["modern"]="Modern",
-        ["arcade"]="Arcade", ["glyph"]="Glyph", ["legend"]="Legend",
-        ["midnight"]="Midnight", ["pixel"]="Pixel", ["pixelsComic"]="Pixels Comic", ["runic"]="Runic",
-        _menuOpts = { itemHeight = 32, icon = function(key)
-            if key == "none" then return nil end
-            local _, ct = UnitClass("player")
-            if not ct then return nil end
-            local coords = CLASS_FULL_COORDS[ct]
-            if not coords then return nil end
-            return CLASS_FULL_SPRITE_BASE .. key .. ".tga", coords[1], coords[2], coords[3], coords[4]
-        end },
-    }
-    local classIconOrder = { "none", "---", "arcade", "glyph", "legend", "midnight", "modern", "pixel", "pixelsComic", "runic" }
-    local classIconLocValues = { ["left"]="Left", ["center"]="Center", ["right"]="Right" }
-    local classIconLocOrder = { "left", "center", "right" }
-
-    -- Buff and debuff stacks never share a spot. Moves one stack (changedKey
-    -- "buffAnchor" or "debuffAnchor") to newVal; the other stack, when its
-    -- stored spot is newVal, takes this stack's previous spot, or the first
-    -- free corner when that spot is None or newVal itself. A hidden buff
-    -- stack's stored corner counts both ways, so buffs turned back on by any
-    -- path (a Spec Override, an import) never land on the debuffs. Buffs turn
-    -- off through showBuffs (their corner is kept, never "none"); None never
-    -- collides.
-    local AURA_FREE_CORNERS = { "topleft", "bottomleft", "topright", "bottomright" }
-    local function SwapAuraSlot(t, changedKey, newVal)
-        local isBuff = (changedKey == "buffAnchor")
-        local prev
-        if isBuff then
-            prev = t.buffAnchor or "topleft"
-            if newVal == "none" then t.showBuffs = false; return end
-            t.showBuffs = true
-        else
-            prev = t.debuffAnchor or "bottomleft"
-        end
-        t[changedKey] = newVal
-        if newVal == "none" then return end
-        local other
-        if isBuff then other = t.debuffAnchor or "bottomleft" else other = t.buffAnchor or "topleft" end
-        if other ~= newVal then return end
-        local dest = prev
-        if dest == "none" or dest == newVal then
-            for i = 1, #AURA_FREE_CORNERS do
-                if AURA_FREE_CORNERS[i] ~= newVal then dest = AURA_FREE_CORNERS[i]; break end
-            end
-        end
-        if isBuff then t.debuffAnchor = dest else t.buffAnchor = dest end
-    end
-
-    ---------------------------------------------------------------------------
-    --  Preview builder: cosmetic health/power bar + portrait + castbar preview
-    ---------------------------------------------------------------------------
-    local PREVIEW_FONT = (EllesmereUI.GetFontPath("unitFrames"))
-        or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF"
-    local SOLID_BACKDROP = { bgFile = "Interface\\Buttons\\WHITE8X8" }
-    local BORDER_BACKDROP = { edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 }
-
-    -- Generic portrait image for NPC previews (player uses SetPortraitTexture)
-    local ENEMY_PORTRAIT_PATH = "Interface\\AddOns\\EllesmereUI\\media\\enemy-portrait.png"
-
-    -- Portrait mask/border media paths (for detached portrait shape preview)
-    local PORTRAIT_MASKS_P = EllesmereUI.SHAPE_MASKS
-    local PORTRAIT_BORDERS_P = EllesmereUI.SHAPE_BORDERS
-
-    -- Top pixel inset for each mask shape (px from edge to visible portrait area)
-    local MASK_INSETS = EllesmereUI.SHAPE_INSETS
-
-    -- mirror = true swaps the cell's left/right coords (Mirror Portrait).
-    local function ApplyClassIconTexture_Preview(tex, classToken, style, mirror)
-        local coords = CLASS_FULL_COORDS[classToken]
-        if not coords then return false end
-        tex:SetTexture(CLASS_FULL_SPRITE_BASE .. style .. ".tga")
-        if mirror then
-            tex:SetTexCoord(coords[2], coords[1], coords[3], coords[4])
-        else
-            tex:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
-        end
-        return true
-    end
-
-    -- Apply detached portrait shape to preview portraitFrame pFrame; s = per-unit settings.
-    local function ApplyPreviewPortraitShape(pFrame, s)
-        if not pFrame then return end
-        local isDetached = (s.portraitStyle or db.profile.portraitStyle or "attached") == "detached"
-        local shape = s.detachedPortraitShape or "portrait"
-        local showBorder = true
-        local borderOpacity = (s.detachedPortraitBorderOpacity or 100) / 100
-        local borderColor = s.detachedPortraitBorderColor or { r = 0, g = 0, b = 0 }
-        local useClassColor = s.detachedPortraitClassColor or false
-        local rawBorderSize = s.detachedPortraitBorderSize or 7
-        local bExp = 7 - rawBorderSize  -- scale border UP; mask clips inner portion
-        -- Use the resolved art mode so NPC fallbacks keep their own zoom.
-        local classInset
-        if pFrame._previewMode == "class" then
-            local bh = pFrame:GetHeight()
-            if bh < 1 then bh = 46 end
-            classInset = math.floor(bh * 0.08)
-        end
-
-        local bR, bG, bB = borderColor.r, borderColor.g, borderColor.b
-        if useClassColor then
-            local _, ct = UnitClass("player")
-            if ct then
-                local c = RAID_CLASS_COLORS[ct]
-                if c then bR, bG, bB = c.r, c.g, c.b end
-            end
-        end
-
-        local texList = {}
-        if pFrame._previewTex then table.insert(texList, pFrame._previewTex) end
-        if pFrame._previewBg then table.insert(texList, pFrame._previewBg) end
-
-        -- Remove mask when not detached
-        if not isDetached then
-            if pFrame._shapeMask then
-                for _, tex in ipairs(texList) do tex:RemoveMaskTexture(pFrame._shapeMask) end
-                pFrame._shapeMask:Hide()
-            end
-            if pFrame._shapeBorderTex then pFrame._shapeBorderTex:Hide() end
-            if pFrame._sqBorderTexs then
-                for _, t in ipairs(pFrame._sqBorderTexs) do t:Hide() end
-            end
-            -- Reset texture positions to default (detached mode expands them for mask fill)
-            if pFrame._previewTex then
-                if classInset then
-                    ns.UF_SetClassPortraitPoints(pFrame._previewTex, pFrame,
-                        s.portraitClassZoom, classInset, classInset)
-                else
-                    pFrame._previewTex:ClearAllPoints()
-                    pFrame._previewTex:SetPoint("TOPLEFT", pFrame, "TOPLEFT", 0, 0)
-                    pFrame._previewTex:SetPoint("BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", 0, 0)
-                end
-            end
-            if pFrame._previewModel then
-                pFrame._previewModel:ClearAllPoints()
-                pFrame._previewModel:SetPoint("TOPLEFT", pFrame, "TOPLEFT", 0, 0)
-                pFrame._previewModel:SetPoint("BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", 0, 0)
-            end
-            ns.UF_PortraitExtras(pFrame, nil)
-            return
-        end
-
-        -- === MASK ===
-        if shape == "none" then
-            -- "None": remove mask, border, and background
-            if pFrame._previewBg then pFrame._previewBg:Hide() end
-            if pFrame._shapeMask then
-                for _, tex in ipairs(texList) do pcall(tex.RemoveMaskTexture, tex, pFrame._shapeMask) end
-                pFrame._shapeMask:Hide()
-            end
-            if pFrame._shapeBorderTex then pFrame._shapeBorderTex:Hide() end
-            if pFrame._sqBorderTexs then
-                for _, t in ipairs(pFrame._sqBorderTexs) do t:Hide() end
-            end
-            if pFrame._previewTex then
-                if classInset then
-                    ns.UF_SetClassPortraitPoints(pFrame._previewTex, pFrame,
-                        s.portraitClassZoom, classInset, classInset)
-                else
-                    pFrame._previewTex:ClearAllPoints()
-                    pFrame._previewTex:SetPoint("TOPLEFT", pFrame, "TOPLEFT", 0, 0)
-                    pFrame._previewTex:SetPoint("BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", 0, 0)
-                end
-            end
-            if pFrame._previewModel then
-                pFrame._previewModel:ClearAllPoints()
-                pFrame._previewModel:SetPoint("TOPLEFT", pFrame, "TOPLEFT", 0, 0)
-                pFrame._previewModel:SetPoint("BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", 0, 0)
-            end
-            ns.UF_PortraitExtras(pFrame, nil)
-            return
-        end
-        if pFrame._previewBg then pFrame._previewBg:Show() end
-        local maskPath = PORTRAIT_MASKS_P[shape]
-        if maskPath then
-            if not pFrame._shapeMask then
-                pFrame._shapeMask = pFrame:CreateMaskTexture()
-                pFrame._shapeMask:SetAllPoints(pFrame)
-            end
-            pFrame._shapeMask:SetTexture(maskPath, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-            pFrame._shapeMask:Show()
-            for _, tex in ipairs(texList) do tex:AddMaskTexture(pFrame._shapeMask) end
-        end
-
-        -- Hide old square border textures if they exist on this frame
-        if pFrame._sqBorderTexs then
-            for _, t in ipairs(pFrame._sqBorderTexs) do t:Hide() end
-        end
-
-        -- === TGA BORDER OVERLAY ===
-        if not pFrame._shapeBorderTex then
-            pFrame._shapeBorderTex = pFrame:CreateTexture(nil, "OVERLAY")
-            if pFrame._shapeBorderTex.SetSnapToPixelGrid then pFrame._shapeBorderTex:SetSnapToPixelGrid(false); pFrame._shapeBorderTex:SetTexelSnappingBias(0) end
-        end
-        -- Pixels Circle (ns.UF_UNMASKED_RING) keeps its ring outside the mask,
-        -- inset from the frame edge, exactly as on the live portrait.
-        local ringInset = ns.UF_UNMASKED_RING[shape]
-        local off = bExp - (ringInset or 0)
-        pFrame._shapeBorderTex:ClearAllPoints()
-        PP.Point(pFrame._shapeBorderTex, "TOPLEFT", pFrame, "TOPLEFT", -off, off)
-        PP.Point(pFrame._shapeBorderTex, "BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", off, -off)
-        -- Add border to mask so the mask clips its inner edge
-        if pFrame._shapeMask then
-            pcall(pFrame._shapeBorderTex.RemoveMaskTexture, pFrame._shapeBorderTex, pFrame._shapeMask)
-            if not ringInset then pFrame._shapeBorderTex:AddMaskTexture(pFrame._shapeMask) end
-        end
-        if showBorder then
-            local bp = PORTRAIT_BORDERS_P[shape]
-            if bp then
-                pFrame._shapeBorderTex:SetTexture(bp)
-                pFrame._shapeBorderTex:SetVertexColor(bR, bG, bB, borderOpacity)
-                pFrame._shapeBorderTex:Show()
-            else
-                pFrame._shapeBorderTex:Hide()
-            end
-        else
-            pFrame._shapeBorderTex:Hide()
-        end
-
-        -- Scale portrait content so its visible area fills the mask opening;
-        -- border size does not affect content.
-        local insetPx = MASK_INSETS[shape] or 17
-        local bw = pFrame:GetWidth()
-        local bh2 = pFrame:GetHeight()
-        if bw < 1 then bw = 46 end
-        if bh2 < 1 then bh2 = 46 end
-        local visRatio = (128 - 2 * insetPx) / 128
-        local cScale = 1 / visRatio
-        -- Apply user art scale (100 = default, stored as percentage)
-        local artScale = (s.portraitArtScale or 100) / 100
-        cScale = cScale * artScale
-        local expand = (cScale - 1) * 0.5
-        local oL = -(expand * bw)
-        local oR =  (expand * bw)
-        local oT =  (expand * bh2)
-        local oB = -(expand * bh2)
-        if pFrame._previewTex then
-            if classInset then
-                ns.UF_SetClassPortraitPoints(pFrame._previewTex, pFrame,
-                    s.portraitClassZoom, classInset + oL, classInset - oT)
-            else
-                pFrame._previewTex:ClearAllPoints()
-                PP.Point(pFrame._previewTex, "TOPLEFT", pFrame, "TOPLEFT", oL, oT)
-                PP.Point(pFrame._previewTex, "BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", oR, oB)
-            end
-        end
-        if pFrame._previewModel then
-            -- 3D models ignore SetClipsChildren, so pin them to the frame bounds.
-            pFrame._previewModel:ClearAllPoints()
-            PP.Point(pFrame._previewModel, "TOPLEFT", pFrame, "TOPLEFT", 0, 0)
-            PP.Point(pFrame._previewModel, "BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", 0, 0)
-        end
-
-        -- Outer Ring / Inner Shadow: the live portrait's own helper. A shown
-        -- Outer Ring and an unmasked ring below Size 7 reach past the frame,
-        -- so the detached preview stops clipping (every layout branch of
-        -- Update sets its clip again first; the Portrait Dragon lifts it on
-        -- its own after this).
-        ns.UF_PortraitExtras(pFrame, s, shape)
-        if ringInset or (pFrame._outerRing and pFrame._outerRing:IsShown()) then
-            pFrame:SetClipsChildren(false)
-        end
-    end
-
-    -- Portrait art style dropdown values
-    local classThemeSubValues = {
-        ["modern"]="Modern", ["arcade"]="Arcade", ["glyph"]="Glyph",
-        ["legend"]="Legend", ["midnight"]="Midnight", ["pixel"]="Pixel", ["pixelsComic"]="Pixels Comic",
-        ["runic"]="Runic",
-    }
-    local classThemeSubOrder = { "modern", "arcade", "glyph", "legend", "midnight", "pixel", "pixelsComic", "runic" }
-    local portraitArtValues = {
-        ["3d"]    = "3D Portrait",
-        ["2d"]    = "2D Portrait",
-        ["class"] = {
-            text = "Class",
-            subnav = {
-                order = classThemeSubOrder,
-                values = classThemeSubValues,
-                onSelect = nil,  -- wired per-unit below
-                icon = nil,      -- wired per-unit below
-                itemHeight = 32,
-            },
-        },
-    }
-    local portraitArtOrder = { "3d", "2d", "class" }
-
-    -- What a non-player shows on a Class art frame (class art is player-only).
-    local portraitNonPlayerValues = {
-        ["2d"]   = "2D Portrait",
-        ["none"] = "Nothing",
-        ["3d"]   = "3D Portrait",
-    }
-    local portraitNonPlayerOrder = { "2d", "none", "3d" }
-
-    -- Portrait mode dropdown values; "none" hides the portrait entirely.
-    local portraitModeValues2 = {
-        ["none"]     = "None",
-        ["attached"] = "Attached",
-        ["detached"] = "Detached",
-    }
-    local portraitModeOrder2 = { "none", "attached", "detached" }
-
-    -- Detached portrait shape dropdown values
-    local detPortraitShapeValues = {
-        ["none"]     = "None",
-        ["portrait"] = "Portrait",
-        ["circle"]   = "Circle",
-        ["pixelsCircle"] = "Pixels Circle",
-        ["square"]   = "Square",
-        ["csquare"]  = "Rounded Square",
-        ["diamond"]  = "Diamond",
-        ["hexagon"]  = "Hexagon",
-        ["shield"]   = "Shield",
-    }
-    local detPortraitShapeOrder = { "none", "portrait", "circle", "pixelsCircle", "square", "csquare", "diamond", "hexagon", "shield" }
-
-    -- Text Bar position dropdown values
-    local btbPositionValues = {
-        ["top"]             = "Top",
-        ["bottom"]          = "Bottom",
-        ["detached_top"]    = "Detached Top",
-        ["detached_bottom"] = "Detached Bottom",
-    }
-    local btbPositionOrder = { "top", "bottom", "detached_top", "detached_bottom" }
-
-    -- Enemy NPC names for preview (randomized on tab switch)
-    local PREVIEW_ENEMY_NAMES = {
-        "Doomguard", "Dreadlord", "Infernal", "Sea Giant", "Ogre Mage",
-        "Satyr", "Stone Golem", "Water Elemental", "Silithid", "Naga Siren",
-    }
-    local PREVIEW_BOSS_NAMES = {
-        "The Lich King", "Varimathras", "Cenarius", "Ragnaros", "Kel'Thuzad",
-        "Archimonde", "Kil'jaeden", "Deathwing", "Yogg-Saron", "C'Thun",
-    }
-    -- Persistent random creature names per unit -- regenerated only on tab switch
-    local _previewCreatureNames = {}
-
-    -- Class cast spells for player preview (cast-time spells only; icons resolved
-    -- at runtime via C_Spell.GetSpellInfo).
-    local CLASS_CAST_SPELLS = {
-        WARRIOR     = { {name="Slam", castTime=1.5}, {name="Whirlwind", castTime=1.5} },
-        PALADIN     = { {name="Flash of Light", castTime=1.5}, {name="Holy Light", castTime=2.5}, {name="Hammer of Wrath", castTime=1.0} },
-        HUNTER      = { {name="Aimed Shot", castTime=2.5}, {name="Steady Shot", castTime=1.8}, {name="Cobra Shot", castTime=2.0} },
-        ROGUE       = { {name="Kidney Shot", castTime=1.5} },
-        PRIEST      = { {name="Flash Heal", castTime=1.5}, {name="Smite", castTime=1.5}, {name="Mind Blast", castTime=1.5}, {name="Greater Heal", castTime=2.5} },
-        DEATHKNIGHT = { {name="Death Coil", castTime=1.5}, {name="Howling Blast", castTime=1.5} },
-        SHAMAN      = { {name="Lightning Bolt", castTime=2.0}, {name="Chain Lightning", castTime=2.0}, {name="Lava Burst", castTime=2.0}, {name="Healing Wave", castTime=2.5} },
-        MAGE        = { {name="Fireball", castTime=2.25}, {name="Frostbolt", castTime=2.0}, {name="Arcane Blast", castTime=2.25}, {name="Pyroblast", castTime=4.0} },
-        WARLOCK     = { {name="Shadow Bolt", castTime=2.0}, {name="Chaos Bolt", castTime=3.0}, {name="Incinerate", castTime=2.0} },
-        MONK        = { {name="Vivify", castTime=1.5}, {name="Spinning Crane Kick", castTime=1.5} },
-        DRUID       = { {name="Wrath", castTime=1.5}, {name="Starfire", castTime=2.25}, {name="Regrowth", castTime=1.5}, {name="Healing Touch", castTime=2.5} },
-        DEMONHUNTER = { {name="Eye Beam", castTime=2.0} },
-        EVOKER      = { {name="Fire Breath", castTime=2.5}, {name="Disintegrate", castTime=3.0}, {name="Living Flame", castTime=1.5}, {name="Eternity Surge", castTime=2.5} },
-    }
-    -- Fallback spells if class pool yields nothing with a cast time
-    local FALLBACK_CAST_SPELLS = {
-        {name="Cosmic Hearthstone", spellID=1242509, castTime=5.0},
-        {name="Teleport Home", spellID=1233637, castTime=10.0},
-    }
-    -- Universal hearthstone spells added to every class pool
-    local UNIVERSAL_CAST_SPELLS = {
-        {name="Cosmic Hearthstone", spellID=1242509, castTime=5.0},
-        {name="Teleport Home", spellID=1233637, castTime=10.0},
-    }
-    -- Returns icon fileID + castTime (seconds) from the API, so instant-cast
-    -- spells never reach the preview.
-    local function ResolveSpellInfo(spellNameOrID)
-        local info = C_Spell.GetSpellInfo(spellNameOrID)
-        if info then
-            local icon = info.iconID or 136197
-            local ct = (info.castTime or 0) / 1000  -- API returns ms
-            return icon, ct
-        end
-        return 136197, 0
-    end
-    optState._previewCastSpell = nil  -- {icon, name, castTime} -- randomized on tab switch
-    optState._previewCastFill = nil   -- 0.4 0.9 fill for the cast bar
-
-    -- Class-specific common proc/buff icons for player preview (icon IDs)
-    local CLASS_BUFF_ICONS = {
-        WARRIOR     = { 132404, 132352, 132333, 136012, 458972 },
-        PALADIN     = { 135964, 236254, 135993, 135920, 461860 },
-        HUNTER      = { 132242, 132176, 132312, 132329, 461846 },
-        ROGUE       = { 132290, 132350, 136206, 132301, 236279 },
-        PRIEST      = { 135936, 135987, 237548, 135940, 136207 },
-        DEATHKNIGHT = { 237517, 135834, 135833, 237511, 135840 },
-        SHAMAN      = { 136048, 136052, 136042, 136044, 136053 },
-        MAGE        = { 135812, 135846, 135735, 135808, 236219 },
-        WARLOCK     = { 136197, 136145, 136188, 136169, 136162 },
-        MONK        = { 606551, 627606, 775461, 606543, 620827 },
-        DRUID       = { 136096, 136048, 136041, 136085, 136060 },
-        DEMONHUNTER = { 1344649, 1247262, 1344650, 1344652, 1344651 },
-        EVOKER      = { 4622462, 4622460, 4622468, 4622464, 4622466 },
-    }
-    local FALLBACK_BUFF_ICONS = { 135932, 135981, 136075, 136205, 135987 }
-    local _previewBuffIcons = {}  -- 2 randomized buff icons for player preview
-
-    optState._previewHealthPct = 0.70  -- randomized health percentage for preview
-    optState._previewPowerPct = 0.85  -- randomized power percentage for preview
-
-    local function RandomizePreviewCreatures()
-        _previewCreatureNames.target       = PREVIEW_ENEMY_NAMES[math.random(#PREVIEW_ENEMY_NAMES)]
-        _previewCreatureNames.focus        = PREVIEW_ENEMY_NAMES[math.random(#PREVIEW_ENEMY_NAMES)]
-        _previewCreatureNames.pet          = PREVIEW_ENEMY_NAMES[math.random(#PREVIEW_ENEMY_NAMES)]
-        _previewCreatureNames.targettarget = PREVIEW_ENEMY_NAMES[math.random(#PREVIEW_ENEMY_NAMES)]
-        _previewCreatureNames.focustarget  = PREVIEW_ENEMY_NAMES[math.random(#PREVIEW_ENEMY_NAMES)]
-        _previewCreatureNames.boss         = PREVIEW_BOSS_NAMES[math.random(#PREVIEW_BOSS_NAMES)]
-        -- Cast spell: class pool + universal hearthstones, cast time validated via API.
-        local _, classToken = UnitClass("player")
-        local classPool = CLASS_CAST_SPELLS[classToken] or {}
-        local pool = {}
-        for _, s in ipairs(classPool) do pool[#pool + 1] = s end
-        for _, s in ipairs(UNIVERSAL_CAST_SPELLS) do pool[#pool + 1] = s end
-        -- Shuffle pool (Fisher-Yates) then pick first spell with a real cast time
-        for i = #pool, 2, -1 do
-            local j = math.random(i)
-            pool[i], pool[j] = pool[j], pool[i]
-        end
-        local chosen = nil
-        for _, s in ipairs(pool) do
-            local icon, ct = ResolveSpellInfo(s.spellID or s.name)
-            if ct and ct > 0 then
-                chosen = { icon = icon, name = s.name, castTime = ct }
-                break
-            end
-        end
-        -- No cast-time spell found: fall back to the first table entry.
-        if not chosen then
-            local fb = FALLBACK_CAST_SPELLS[1]
-            chosen = { icon = 136197, name = fb.name, castTime = fb.castTime }
-        end
-        optState._previewCastSpell = chosen
-        optState._previewCastFill = 0.40 + math.random() * 0.50
-        optState._previewHealthPct = 0.60 + math.random() * 0.30
-        optState._previewPowerPct = 0.50 + math.random() * 0.45
-        -- Two distinct buff icons for the player preview.
-        local buffPool = CLASS_BUFF_ICONS[classToken] or FALLBACK_BUFF_ICONS
-        local i1 = math.random(#buffPool)
-        local i2 = i1
-        while i2 == i1 and #buffPool > 1 do i2 = math.random(#buffPool) end
-        _previewBuffIcons[1] = buffPool[i1]
-        _previewBuffIcons[2] = buffPool[i2]
-    end
-
-
-    -- Blizzard Style preview: the stock geometry the live layout pass uses
-    -- (module table), resolved for this unit + Portrait Side exactly as
-    -- ns.UF_BlizzResolve does it for the live frame. nil while the style is
-    -- not active this session, and the preview then mocks the EUI look.
-    local function ResolveBlizzPreview(unitKey, s)
-        local BS = EllesmereUI.BlizzStyle
-        if not (BS and BS.Get and BS.Get("unitframes")) then return nil end
-        local UFB = ns.UF_BLIZZ
-        if not (UFB and ns.UF_BlizzSide and ns.UF_PaintBlizzArt) then return nil end
-        local kind
-        if unitKey == "player" then kind = "player"
-        elseif unitKey == "target" or unitKey == "focus" or unitKey == "boss" then kind = "target"
-        elseif unitKey == "pet" and UFB.pet then kind = "pet"
-        else kind = "mini" end
-        local native = UFB[kind]
-        local side = ns.UF_BlizzSide(s, native)
-        local G, mirror = native, nil
-        if native.small then
-            if side ~= native.side then mirror = true end
-        elseif side == "right" then
-            G = UFB.target
-        else
-            G = UFB.player
-        end
-        return G, mirror, (G.rep and kind == "target") or nil
-    end
-    -- Frame Scale (the style's stand-in for Bar Width / Health Bar Height).
-    local function BlizzPreviewScale(s)
-        local sc = s and s.blizzScale or 1
-        if sc < 0.5 then sc = 0.5 elseif sc > 2 then sc = 2 end
-        return sc
-    end
-
-    ---------------------------------------------------------------------------
-    --  Page Builders
-    ---------------------------------------------------------------------------
-
-    -- Per-unit settings live in DISPLAY sections; positioning in Unlock Mode.
-
-    ---------------------------------------------------------------------------
-    --  MULTI FRAME EDIT TAB  (checkbox selector + shared per-unit settings)
-    ---------------------------------------------------------------------------
-    local function RegisterWidgetRefresh(fn)
-        if not EllesmereUI._widgetRefreshList then
-            EllesmereUI._widgetRefreshList = {}
-        end
-        table.insert(EllesmereUI._widgetRefreshList, fn)
-    end
-
-    -- Dark Mode flattens the health bar to a fixed dark color, so fill/background
-    -- color settings do nothing: grey out and block the whole DualRow region (every
-    -- swatch/slider/cog/sync in it). A widget-refresh callback tracks the toggle live
-    -- (RefreshPage's fast path re-runs these without a full rebuild).
-    local function AddDarkModeBlock(rgn)
-        if not rgn then return end
-        local block = CreateFrame("Frame", nil, rgn)
-        block:SetAllPoints()
-        block:SetFrameLevel(rgn:GetFrameLevel() + 50)
-        block:EnableMouse(true)
-        block:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(block, "Not available in Dark Mode. Dark Mode colors can be adjusted in Global Settings -> Colors.") end)
-        block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        local function Update()
-            if db and db.profile and db.profile.darkTheme then
-                rgn:SetAlpha(0.3); block:Show()
-            else
-                rgn:SetAlpha(1); block:Hide()
-            end
-        end
-        Update()
-        RegisterWidgetRefresh(Update)
-    end
-
-    ---------------------------------------------------------------------------
-    --  Unified settings builder  (shared settings for the Main Frames page)
-    ---------------------------------------------------------------------------
-    local UNIT_SUPPORTS = {
-        powerHeight          = { player=true, target=true, focus=true },
-        showPlayerAbsorb     = { player=true, target=true, focus=true },
-        absorbCleanAlpha     = { player=true, target=true, focus=true },
-        absorbOpacity        = { player=true, target=true, focus=true },
-        absorbColor          = { player=true, target=true, focus=true },
-        absorbEdgeMode       = { player=true, target=true, focus=true },
-        showOvershield       = { player=true, target=true, focus=true },
-        overshieldMode       = { player=true, target=true, focus=true },
-        absorbGlowLine       = { player=true, target=true, focus=true },
-        absorbGlowLineTexture = { player=true, target=true, focus=true },
-        healAbsorbStyle      = { player=true, target=true, focus=true },
-        healAbsorbOpacity    = { player=true, target=true, focus=true },
-        healAbsorbColor      = { player=true, target=true, focus=true },
-        healAbsorbEdgeMode   = { player=true, target=true, focus=true },
-        healAbsorbBgOpacity  = { player=true, target=true, focus=true },
-        healPrediction       = { player=true, target=true, focus=true },
-        healPredOpacity      = { player=true, target=true, focus=true },
-        healPredOverheal     = { player=true, target=true, focus=true },
-        healPredTexture      = { player=true, target=true, focus=true },
-        absorbBarPosition     = { player=true, target=true, focus=true },
-        absorbBarHeight       = { player=true, target=true, focus=true },
-        absorbBarColor        = { player=true, target=true, focus=true },
-        healAbsorbBarPosition = { player=true, target=true, focus=true },
-        healAbsorbBarHeight   = { player=true, target=true, focus=true },
-        healAbsorbBarColor    = { player=true, target=true, focus=true },
-        showBuffs            = { player=true, target=true, focus=true },
-        combatIndicatorStyle   = { player=true, target=true },
-        combatIndicatorColor   = { player=true, target=true },
-        combatIndicatorCustomColor = { player=true, target=true },
-        combatIndicatorPosition = { player=true, target=true },
-        combatIndicatorSize    = { player=true, target=true },
-        combatIndicatorX       = { player=true, target=true },
-        combatIndicatorY       = { player=true, target=true },
-        leaderIndicatorEnabled = { player=true, target=true },
-        leaderIndicatorSize    = { player=true, target=true },
-        leaderIndicatorPosition= { player=true, target=true },
-        leaderIndicatorX       = { player=true, target=true },
-        leaderIndicatorY       = { player=true, target=true },
-        leaderIndicatorStyle   = { player=true, target=true },
-        eliteIndicatorEnabled  = { target=true },
-        eliteIndicatorSize     = { target=true },
-        eliteIndicatorPosition = { target=true },
-        eliteIndicatorX        = { target=true },
-        eliteIndicatorY        = { target=true },
-        eliteIndicatorShowInInstances = { target=true },
-        eliteIndicatorStyle    = { target=true },
-        factionIndicatorMode        = { player=true, target=true },
-        factionIndicatorStyle       = { player=true, target=true },
-        factionIndicatorPlayersOnly = { target=true },
-        factionIndicatorPvP         = { player=true, target=true },
-        factionIndicatorSize        = { player=true, target=true },
-        factionIndicatorPosition    = { player=true, target=true },
-        factionIndicatorX           = { player=true, target=true },
-        factionIndicatorY           = { player=true, target=true },
-        buffAnchor           = { player=true, target=true, focus=true },
-        buffGrowth           = { player=true, target=true, focus=true },
-        maxBuffs             = { player=true, target=true, focus=true },
-        showPlayerCastbar    = { player=true },
-        showPlayerCastIcon   = { player=true },
-        playerCastbarIconInWidth = { player=true },
-        playerCastbarHeight  = { player=true },
-        showCastbar          = { target=true, focus=true },
-        showCastIcon         = { target=true, focus=true },
-        castbarIconInWidth   = { target=true, focus=true },
-        castbarHeight        = { target=true, focus=true },
-        castbarHideWhenInactive = { player=true, target=true, focus=true },
-        castSpellNameSize    = { player=true, target=true, focus=true },
-        castSpellNameColor   = { player=true, target=true, focus=true },
-        castDurationSize     = { player=true, target=true, focus=true },
-        castDurationColor    = { player=true, target=true, focus=true },
-        castSpellTargetSize  = { player=true, target=true, focus=true },
-        castSpellTargetColor = { player=true, target=true, focus=true },
-        showCastDuration     = { player=true, target=true, focus=true },
-        showCastTarget       = { player=true, target=true, focus=true },
-        castSpellNameSide    = { player=true, target=true, focus=true },
-        castSpellTargetSide  = { player=true, target=true, focus=true },
-        castDurationSide     = { player=true, target=true, focus=true },
-        castbarFillColor     = { player=true, target=true, focus=true },
-        castbarInterruptReadyColor = { target=true, focus=true },
-        castbarKickTickEnabled     = { target=true, focus=true },
-        castbarImportantGlow       = { target=true, focus=true },
-        castCombineNameTarget      = { target=true, focus=true },
-        showClassPowerBar    = { player=true },
-        lockClassPowerToFrame= { player=true },
-        classPowerStyle      = { player=true },
-        classPowerPosition   = { player=true },
-        classPowerBarX       = { player=true },
-        classPowerBarY       = { player=true },
-        classPowerSize       = { player=true },
-        classPowerSpacing    = { player=true },
-        classPowerClassColor = { player=true },
-        classPowerCustomColor= { player=true },
-        classPowerBgColor    = { player=true },
-        classPowerEmptyColor = { player=true },
-        foreverComboLocation = { player=true },
-        showInRaid           = { player=true, target=true, focus=true },
-        showInParty          = { player=true, target=true, focus=true },
-        showSolo             = { player=true, target=true, focus=true },
-    }
-    local UNIT_LABELS_SUP = { player="Player", target="Target", focus="Focus" }
-
-    -- Shown in place of a unit's settings when it isn't on the EllesmereUI frame
-    -- (Blizzard default / hidden); the inapplicable controls are never built.
-    -- Returns the new y.
-    local function BuildInactiveNotice(parent, y, src)
-        local CPAD = EllesmereUI.CONTENT_PAD or 10
-        local note = EllesmereUI.MakeFont(parent, 13, nil, 1, 1, 1)
-        note:SetTextColor(1, 1, 1, 0.55)
-        note:SetPoint("TOPLEFT", parent, "TOPLEFT", CPAD + 4, y - 18)
-        note:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -(CPAD + 4), y - 18)
-        note:SetJustifyH("LEFT")
-        note:SetText(src == "blizzard"
-            and EllesmereUI.L("This unit uses the Blizzard default frame -- there are no EllesmereUI settings to configure here.")
-            or  EllesmereUI.L("This unit's frame is hidden -- there are no EllesmereUI settings to configure here."))
-        return y - 54
-    end
-
-    -- A unit whose source was Blizzard/Hidden at login has no spawned EUI frame this
-    -- session (and Blizzard's frame can't be torn down live), so a visibility/enable
-    -- change can't apply live -- prompt for a /reload. unitKeys: "boss" checks boss1.
-    local function PromptReloadIfUnspawned(unitKeys)
-        local f = ns.frames
-        if not f then return end
-        local missing = false
-        for _, u in ipairs(unitKeys) do
-            local spawned = (u == "boss") and f.boss1 or f[u]
-            if not spawned then missing = true; break end
-        end
-        if not missing then return end
-        EllesmereUI:ShowConfirmPopup({
-            title = "Reload Required",
-            message = "This frame's source changes require a UI reload to take effect.",
-            confirmText = "Reload Now",
-            cancelText = "Later",
-            reload    = true,
-        })
-    end
-
-    -- Inline "Frame Source" cog next to a unit's Visibility dropdown / Enable
-    -- toggle: one dropdown, EllesmereUI (our skinned frame) or Blizzard Default
-    -- (leave Blizzard's frame alone). Hiding stays on the host widget ("Never
-    -- Show" / Enable), so "Hidden" is not duplicated; the stored style survives
-    -- hiding and resumes on re-enable. opts: tooltip, disabled/disabledTooltip
-    -- (ToT/FoT parent gating), onBeforeSet(v) (boss stops its live preview).
-    local function AttachFrameSourceCog(rgn, unitKey, opts)
-        opts = opts or {}
-        local function StoredStyle()
-            local fs = db.profile.frameSource and db.profile.frameSource[unitKey]
-            return fs == "blizzard" and "blizzard" or "eui"
-        end
-        local fsShow  -- forward decl: set() below closes the popup through it
-        local _
-        local rows = {
-            { type = "dropdown", label = "Frame Source",
-              values = { eui = "EllesmereUI", blizzard = "Blizzard Default" },
-              order = { "eui", "blizzard" },
-              tooltip = opts.tooltip,
-              disabled = opts.disabled,
-              disabledTooltip = opts.disabledTooltip,
-              get = StoredStyle,
-              set = function(v)
-                  if v == StoredStyle() then return end
-                  if opts.onBeforeSet then opts.onBeforeSet(v) end
-                  -- Also re-enables a hidden frame (see ns.SetUnitFrameSource).
-                  ns.SetUnitFrameSource(unitKey, v)
-                  if ns.UpdateFrameVisibility then ns.UpdateFrameVisibility() end
-                  ReloadAndUpdate()
-                  EllesmereUI:RefreshPage(true)
-                  -- Close the cog popup before the reload prompt: the page under
-                  -- it was just rebuilt, so it would float stale rows behind the dialog.
-                  if fsShow and fsShow._popupFrame and fsShow._popupFrame:IsShown() then
-                      fsShow._popupFrame:Hide()
-                  end
-                  EllesmereUI:ShowConfirmPopup({
-                      title = "Reload Required",
-                      message = "Changing the frame source requires a UI reload to take effect.",
-                      confirmText = "Reload Now",
-                      cancelText = "Later",
-                      reload    = true,
-                  })
-              end },
-        }
-        -- Callers can fold extra rows into the same popup (the Visibility row hosts
-        -- the Out of Combat fade, so it carries ONE cog instead of two).
-        if opts.extraRows then
-            for _, r in ipairs(opts.extraRows) do rows[#rows + 1] = r end
-        end
-        _, fsShow = EllesmereUI.BuildInlineCog(rgn, {
-            title = opts.title or "Frame Source", bgAlpha = 1,
-            frameStrata = "FULLSCREEN_DIALOG", frameLevel = 500,
-            rows = rows,
-            tip = EllesmereUI.L(opts.cogTooltip or "Frame Source"),
-        })
-    end
-
-    ---------------------------------------------------------------------------
-    --  "Apply All Settings From" -- bulk copy between frames of the same group
-    ---------------------------------------------------------------------------
-    -- Copies every group-shared setting (UNION of source+dest keys, so dest-only
-    -- overrides get cleared) from the CHOSEN unit onto the frame whose page the
-    -- row sits on. A key is shared unless
-    -- UNIT_SUPPORTS restricts it or it's absent from some group units' defaults.
-    -- Positions/enable state (db.profile.positions/enabledFrames) are never touched.
-    -- Exception: target<->focus copies check sharedness against just that pair, so
-    -- their shared cast bar section (which player lacks) transfers; player copies use
-    -- the full-group rule, so cast bar settings never cross to/from player.
-    local MINI_GROUP_ORDER = { "targettarget", "focustarget", "pet" }
-    local TARGET_FOCUS_PAIR = { "target", "focus" }
-    local function IsGroupSharedKey(key, groupUnits)
-        -- Visibility mode stays with the frame: it pairs with enabledFrames (never
-        -- copied) and copying one alone desyncs them. Underscore keys are runtime
-        -- memos (e.g. _preHiddenBarVisibility), not settings.
-        if type(key) ~= "string" then return false end
-        -- visibilityMatch only modifies barVisibility's selection, so it has to stay
-        -- with the frame for the same reason: copying the modifier to a frame that kept
-        -- its own mode changes how that mode reads.
-        if key == "barVisibility" or key == "visibilityMatch" or key:sub(1, 1) == "_" then return false end
-        -- WoW Forever: the pet's power bar position has no counterpart on the
-        -- other small frames (theirs never shows), so it stays with the pet.
-        if key == "powerPosition" and ns.UF_PetHasPower and groupUnits == MINI_GROUP_ORDER then return false end
-        -- The pet's buffs and debuffs stay with the pet: the other small frames
-        -- have none, so a copy either way would only clear or plant aura keys.
-        if groupUnits == MINI_GROUP_ORDER and (key:find("^buff") or key:find("^debuff")
-            or key == "showBuffs" or key == "maxBuffs" or key == "maxDebuffs" or key == "auraSource") then
-            return false
-        end
-        local sup = UNIT_SUPPORTS[key]
-        if sup then
-            for _, u in ipairs(groupUnits) do
-                if not sup[u] then return false end
-            end
-        end
-        local defs = db._profileDefaults or {}
-        local inAny, inAll = false, true
-        for _, u in ipairs(groupUnits) do
-            local d = defs[u]
-            if d and d[key] ~= nil then inAny = true else inAll = false end
-        end
-        if inAny and not inAll then return false end
-        return true
-    end
-    local function CopyAllGroupSettings(srcUnit, dstUnit, groupUnits)
-        if (srcUnit == "target" or srcUnit == "focus")
-            and (dstUnit == "target" or dstUnit == "focus") then
-            groupUnits = TARGET_FOCUS_PAIR
-        end
-        local src = UNIT_DB_MAP[srcUnit]()
-        local dst = UNIT_DB_MAP[dstUnit]()
-        -- A target on the old "wingless" Elite/Rare style shows its dragon
-        -- through a view (ns.UF_DragonLegacy) over target-only keys this copy
-        -- never moves: pin both tables onto the dragon's own keys first.
-        ns.UF_PinLegacyDragon(src)
-        ns.UF_PinLegacyDragon(dst)
-        local keys = {}
-        for k in pairs(src) do keys[k] = true end
-        for k in pairs(dst) do keys[k] = true end
-        for k in pairs(keys) do
-            if IsGroupSharedKey(k, groupUnits) then
-                local v = src[k]
-                if type(v) == "table" then
-                    dst[k] = EllesmereUI.Lite.DeepCopy(v)
-                else
-                    dst[k] = v
-                end
-            end
-        end
-        ReloadAndUpdate()
-        EllesmereUI:RefreshPage(true)
-    end
-    -- "Copy Look From" (a mini frame's, beside its Apply All Settings From): the
-    -- main frame it copies its border, bar texture and hover highlight from.
-    -- The dropdown shows the frame in use, from the runtime's own pick (the
-    -- chosen frame while it can lend its look, else focus, then target, then
-    -- player). No choice (lookSource nil) keeps following that order:
-    -- re-picking the frame shown stores nothing, and Focus, which behaves
-    -- exactly as no choice, is stored as none.
-    local function BuildLookSourcePair(row, unitKey, ddW)
-        local function Shown() return ns.UF_MiniDonorKey(unitKey) end
-        local ddBtn = EllesmereUI.BuildDropdownControl(
-            row, ddW, row:GetFrameLevel() + 2,
-            { target = "Target", focus = "Focus", player = "Player" },
-            { "target", "focus", "player" },
-            Shown,
-            function(v)
-                if v == Shown() then return end
-                db.profile[unitKey].lookSource = (v ~= "focus") and v or nil
-                ReloadAndUpdate()
-                EllesmereUI:RefreshPage(true)
-            end)
-        ddBtn._ttText = "The main frame this frame copies its border, bar texture and hover highlight from."
-        EllesmereUI.RegisterWidgetRefresh(function() ddBtn._refreshLabel() end)
-
-        local label = EllesmereUI.MakeFont(row, 14, nil, 1, 1, 1)
-        label:SetText(EllesmereUI.L("Copy Look From"))
-        label:SetTextColor(1, 1, 1, 0.6)
-        return label, ddBtn
-    end
-
-    -- Centered label + action dropdown atop a unit's settings: lists the group's
-    -- other frames and copies FROM the chosen one onto this frame after a
-    -- confirm popup. getValue always returns the placeholder so the dropdown
-    -- stores nothing; the registered widget refresh snaps the label back after
-    -- each pick.
-    --
-    -- The FIRST use asks the user to type Confirm: this control used to copy
-    -- the OTHER way (onto the chosen frame), and the flipped direction has to
-    -- be acknowledged once before it overwrites anything. The acknowledgment
-    -- is account-wide (EllesmereUIDB root, not per-profile) and covers every
-    -- frame's row -- it educates the user, not a profile.
-    --
-    -- withLook (the mini frames) puts the frame's Copy Look From pair beside it,
-    -- the two pairs centred as one line.
-    local function BuildApplyAllRow(parent, y, groupUnits, curUnit, withLook)
-        local ddValues = { [""] = "Choose Frame..." }
-        local ddOrder = {}
-        for _, key in ipairs(groupUnits) do
-            if key ~= curUnit then
-                ddValues[key] = SHORT_LABELS[key] or key
-                ddOrder[#ddOrder + 1] = key
-            end
-        end
-
-        local ROW_H = 50
-        local contentPad = EllesmereUI.CONTENT_PAD or 45
-        local row = CreateFrame("Frame", nil, parent)
-        PP.Size(row, parent:GetWidth() - contentPad * 2, ROW_H)
-        PP.Point(row, "TOPLEFT", parent, "TOPLEFT", contentPad, y)
-
-        local label = EllesmereUI.MakeFont(row, 14, nil, 1, 1, 1)
-        label:SetText(EllesmereUI.L("Apply All Settings From"))
-        label:SetTextColor(1, 1, 1, 0.6)
-
-        local DD_W, GAP, PAIR_GAP = 180, 12, 40
-        local ddBtn = EllesmereUI.BuildDropdownControl(
-            row, DD_W, row:GetFrameLevel() + 2,
-            ddValues, ddOrder,
-            function() return "" end,
-            function(srcUnit)
-                if srcUnit == "" then return end
-                local srcLabel = SHORT_LABELS[srcUnit] or srcUnit
-                local curLabel = SHORT_LABELS[curUnit] or curUnit
-                local acked = EllesmereUIDB and EllesmereUIDB.ufApplyFromAck
-                EllesmereUI:ShowConfirmPopup({
-                    title   = "Apply All Settings",
-                    message = acked
-                        and EllesmereUI.Lf("Copy all shared settings from %1$s to %2$s?",
-                            srcLabel, curLabel)
-                        or EllesmereUI.Lf("This control recently changed direction: it now copies FROM the frame you choose. Confirming will copy all shared settings FROM %1$s TO %2$s.",
-                            srcLabel, curLabel),
-                    disclaimer = "This overwrites this frame's current settings. Frame position, visibility, and enable state are not changed.",
-                    confirmText = "Apply",
-                    cancelText  = "Cancel",
-                    typeToConfirm = (not acked) and "Confirm" or nil,
-                    onConfirm = function()
-                        if EllesmereUIDB then EllesmereUIDB.ufApplyFromAck = true end
-                        CopyAllGroupSettings(srcUnit, curUnit, groupUnits)
-                    end,
-                })
-            end)
-        ddBtn._ttText = "Copy every shared setting from another frame in this group to this frame."
-        EllesmereUI.RegisterWidgetRefresh(function() ddBtn._refreshLabel() end)
-
-        -- Center the label + dropdown pair (both pairs with withLook) as one line
-        local totalW = label:GetStringWidth() + GAP + DD_W
-        local lookLabel, lookDD
-        if withLook then
-            lookLabel, lookDD = BuildLookSourcePair(row, curUnit, DD_W)
-            totalW = totalW + PAIR_GAP + lookLabel:GetStringWidth() + GAP + DD_W
-        end
-        label:SetPoint("LEFT", row, "CENTER", -totalW / 2, 0)
-        ddBtn:SetPoint("LEFT", label, "RIGHT", GAP, 0)
-        if lookLabel then
-            lookLabel:SetPoint("LEFT", ddBtn, "RIGHT", PAIR_GAP, 0)
-            lookDD:SetPoint("LEFT", lookLabel, "RIGHT", GAP, 0)
-        end
-
-        return row, ROW_H
-    end
-
-    local function BuildSharedSettings(parent, y)
-        local W = EllesmereUI.Widgets
-        local _, h
-        local row
-
-        ---------------------------------------------------------------
-        --  Unified Get / Set / DB abstraction
-        ---------------------------------------------------------------
-        local function SGet(key)
-            return UNIT_DB_MAP[optState.selectedUnit]()[key]
-        end
-        local function SSet(key, val)
-            UNIT_DB_MAP[optState.selectedUnit]()[key] = val
-            ReloadAndUpdate()
-        end
-        local function SDB()
-            return UNIT_DB_MAP[optState.selectedUnit]()
-        end
-        local function SVal(key, default)
-            local v = UNIT_DB_MAP[optState.selectedUnit]()[key]
-            if v ~= nil then return v end
-            return default
-        end
-        -- Set that also writes to the current unit (for UNIT_SUPPORTS keys)
-        local function SSetSupported(key, val)
-            UNIT_DB_MAP[optState.selectedUnit]()[key] = val
-            ReloadAndUpdate(); UpdatePreview()
-        end
-        local function SGetSupported(key)
-            return UNIT_DB_MAP[optState.selectedUnit]()[key]
-        end
-        local function SValSupported(key, default)
-            local v = UNIT_DB_MAP[optState.selectedUnit]()[key]
-            if v == nil then return default end
-            return v
-        end
-        -- Check if current unit supports a setting
-        local function SVisible(key)
-            local sup = UNIT_SUPPORTS[key]
-            if not sup then return true end
-            return sup[optState.selectedUnit] == true
-        end
-        -- Dim a row region and add a tooltip when the current unit doesn't support
-        -- the key; unsupportedTip (optional) shows over the dimmed row.
-        local function SApplySupport(region, key, unsupportedTip)
-            local visible = SVisible(key)
-            if not visible then
-                region:SetAlpha(0.35)
-                if region._control and region._control.Disable then region._control:Disable() end
-            end
-            local tip = not visible and unsupportedTip or nil
-            if tip then
-                local function MakeSupportHit(anchor)
-                    if not anchor then return end
-                    local hitFrame = CreateFrame("Frame", nil, region)
-                    hitFrame:SetPoint("TOPLEFT", anchor, "TOPLEFT", -5, 5)
-                    hitFrame:SetPoint("BOTTOMRIGHT", anchor, "BOTTOMRIGHT", 5, -5)
-                    hitFrame:SetFrameLevel(region:GetFrameLevel() + 10)
-                    hitFrame:EnableMouse(true)
-                    hitFrame:SetScript("OnEnter", function()
-                        EllesmereUI.ShowWidgetTooltip(anchor, tip)
-                    end)
-                    hitFrame:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                    securecallfunction(hitFrame.SetPassThroughButtons, hitFrame, "LeftButton", "RightButton")
-                end
-                MakeSupportHit(region._label)
-                MakeSupportHit(region._control)
-            end
-        end
-
-        parent._showRowDivider = true
-
-        row, h = BuildApplyAllRow(parent, y, GROUP_UNIT_ORDER, optState.selectedUnit); y = y - h
-
-        -- The sections live in UnitFrames_Options\Shared*_Options.lua and read
-        -- this page's accessors through ctx. Each returns the new y plus the rows
-        -- the click mapping below points at; Display returns true second when
-        -- the unit has no EUI frame (only the inactive notice is built).
-        local ctx = {
-            W = W, SGet = SGet, SSet = SSet, SDB = SDB, SVal = SVal,
-            SSetSupported = SSetSupported, SGetSupported = SGetSupported, SValSupported = SValSupported,
-            SVisible = SVisible, SApplySupport = SApplySupport,
-        }
-        local inactive
-        y, inactive = ns.UFO_BuildDisplaySection(parent, y, ctx)
-        if inactive then return y end
-        local sharedPortraitHeader, sharedPortraitModeRow
-        y, sharedPortraitHeader, sharedPortraitModeRow = ns.UFO_BuildPortraitSection(parent, y, ctx)
-        local sharedBarsHeader, sharedScaleRow, sharedSizeRow, sharedTextRow, sharedCenterTextRow
-        y, sharedBarsHeader, sharedScaleRow, sharedSizeRow, sharedTextRow, sharedCenterTextRow = ns.UFO_BuildHealthBarSection(parent, y, ctx)
-        local sharedPowerHeader, sharedPowerRow1, sharedPowerRow2
-        y, sharedPowerHeader, sharedPowerRow1, sharedPowerRow2 = ns.UFO_BuildPowerBarSection(parent, y, ctx)
-        local sharedCastHeader, sharedCastRow1, castRow2, castTextRow, castTargetRow
-        y, sharedCastHeader, sharedCastRow1, castRow2, castTextRow, castTargetRow = ns.UFO_BuildCastBarSection(parent, y, ctx)
-        local sharedBtbHeader, sharedBtbToggleRow, sharedBtbTextRow, sharedBtbCenterRow
-        y, sharedBtbHeader, sharedBtbToggleRow, sharedBtbTextRow, sharedBtbCenterRow = ns.UFO_BuildTextBarSection(parent, y, ctx)
-        local sharedClassResHeader, sharedClassResRow
-        y, sharedClassResHeader, sharedClassResRow = ns.UFO_BuildClassResourceSection(parent, y, ctx)
-        local sharedBuffDebuffHeader, sharedAddRow2, sharedAddRow3
-        y, sharedBuffDebuffHeader, sharedAddRow2, sharedAddRow3 = ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
-        local sharedAbsorbsHeader, absorbRow, healAbsorbRow
-        y, sharedAbsorbsHeader, absorbRow, healAbsorbRow = ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
-        local sharedAddHeader, sharedAddRow1, sharedAddRow4, sharedAddRow5
-        y, sharedAddHeader, sharedAddRow1, sharedAddRow4, sharedAddRow5 = ns.UFO_BuildExtrasSection(parent, y, ctx)
-
-        -------------------------------------------------------------------
-        --  Return click mapping targets + total height
-        -------------------------------------------------------------------
-        parent._sharedClickTargets = {
-            healthBar    = { section = sharedBarsHeader,     target = sharedScaleRow or sharedSizeRow },
-            absorbs      = { section = sharedAbsorbsHeader,  target = absorbRow, slotSide = "left" },
-            healAbsorb   = { section = sharedAbsorbsHeader,  target = healAbsorbRow, slotSide = "left" },
-            powerBar     = { section = sharedPowerHeader,    target = sharedPowerRow1, slotSide = "left" },
-            powerBarText = { section = sharedPowerHeader,    target = sharedPowerRow2, slotSide = "left" },
-            portrait     = { section = sharedPortraitHeader, target = sharedPortraitModeRow, slotSide = "left" },
-            nameText = ns.UFO_TextClickTarget(parent, "leftText", sharedBarsHeader, sharedTextRow),
-            healthText = ns.UFO_TextClickTarget(parent, "rightText", sharedBarsHeader, sharedTextRow),
-            centerText = ns.UFO_TextClickTarget(parent, "centerText", sharedBarsHeader, sharedTextRow),
-            extraText = ns.UFO_TextClickTarget(parent, "extraText", sharedBarsHeader, sharedTextRow),
-            classResource= { section = sharedClassResHeader, target = sharedClassResRow, slotSide = "left" },
-            btbBar       = { section = sharedBtbHeader,      target = sharedBtbToggleRow, slotSide = "left" },
-            btbLeftText  = { section = sharedBtbHeader,      target = sharedBtbTextRow, slotSide = "left" },
-            btbRightText = { section = sharedBtbHeader,      target = sharedBtbTextRow, slotSide = "right" },
-            btbCenterText= { section = sharedBtbHeader,      target = sharedBtbCenterRow, slotSide = "left" },
-            btbClassIcon = { section = sharedBtbHeader,      target = sharedBtbCenterRow, slotSide = "right" },
-            combatIndicator = { section = sharedAddHeader, target = sharedAddRow1, slotSide = "left" },
-            buffIcon     = { section = sharedBuffDebuffHeader, target = sharedAddRow2, slotSide = "left" },
-            debuffIcon   = { section = sharedBuffDebuffHeader, target = sharedAddRow3, slotSide = "left" },
-            raidMarker   = { section = sharedAddHeader,      target = sharedAddRow4, slotSide = "left" },
-            leaderIndicator = { section = sharedAddHeader,   target = sharedAddRow5, slotSide = "left" },
-            castBar      = { section = sharedCastHeader,     target = sharedCastRow1 },
-            castIcon     = { section = sharedCastHeader,     target = castRow2,      slotSide = "left" },
-            castName     = { section = sharedCastHeader,     target = castTextRow,   slotSide = "left" },
-            castTime     = { section = sharedCastHeader,     target = castTextRow,   slotSide = "right" },
-            castTarget   = { section = sharedCastHeader,     target = castTargetRow, slotSide = "left" },
-            -- Blizzard Style level number -> Show Level (+ its cog).
-            levelText    = { section = sharedBarsHeader,     target = parent._ufLevelRow, slotSide = "left" },
-        }
-        -- Rows that exist only for some frames (Elite/Rare: target; Faction: player + target).
-        if optState.selectedUnit == "target" and parent._ufEliteRow then
-            parent._sharedClickTargets.eliteIndicator = { section = sharedAddHeader, target = parent._ufEliteRow, slotSide = "left" }
-        end
-        if (optState.selectedUnit == "player" or optState.selectedUnit == "target") and parent._ufFactionRow then
-            parent._sharedClickTargets.factionIndicator = { section = sharedAddHeader, target = parent._ufFactionRow, slotSide = "left" }
-        end
-
-        return y
-    end  -- BuildSharedSettings
-
-    ---------------------------------------------------------------------------
-    --  Main Frames page  (dropdown selector + shared/mini settings)
-    ---------------------------------------------------------------------------
-    local _displayHeaderBuilder
-    local displayHeaderFixedH = 0
-
-    local function BuildFrameDisplayPage(pageName, parent, yOffset)
-        -- Consume any pending unit selection from Element Options navigation
-        if EllesmereUI._consumePendingUnitSelect then EllesmereUI._consumePendingUnitSelect() end
-
-        -- Tag every option built on this page with the selected unit, so a global-
-        -- search jump to a unit-specific setting can restore this unit first via
-        -- EllesmereUI._setUnitFrameUnit (see the matching EllesmereUI._buildingSelector
-        -- comment in EUI_CooldownManager_Options.lua for the full reasoning).
-        EllesmereUI._buildingSelector = { setter = EllesmereUI._setUnitFrameUnit, key = optState.selectedUnit }
-
-        local W = EllesmereUI.Widgets
-        local y = yOffset
-        local _, h
-
-        activePreview = nil
-
-        -------------------------------------------------------------------
-        --  CONTENT HEADER  (dropdown + preview)
-        -------------------------------------------------------------------
-        _displayHeaderBuilder = function(hdr, hdrW)
-            local DD_H = 34
-            local fy = -20
-
-            -- Centered dropdown (matches Action Bars Single Bar Edit)
-            local ddW = 350
-            local ddBtn, ddLbl = EllesmereUI.BuildDropdownControl(
-                hdr, ddW, hdr:GetFrameLevel() + 5,
-                unitLabels, unitOrder,
-                function() return optState.selectedUnit end,
-                function(v)
-                    -- Preserve scroll position across the unit swap; capture BEFORE the
-                    -- rebuild since SetContentHeader's relayout can clobber the live value.
-                    -- Settings sit below the fixed header, so the same offset lands on the same section for any unit.
-                    local savedScroll = EllesmereUI.GetContentScroll and EllesmereUI.GetContentScroll() or 0
-                    optState.selectedUnit = v
-                    EllesmereUI:InvalidateContentHeaderCache()
-                    EllesmereUI:SetContentHeader(_displayHeaderBuilder)
-                    EllesmereUI:RefreshPage(true)
-                    EllesmereUI.SmoothScrollTo(savedScroll)
-                    -- Preview:Update() runs DURING the rebuild above, before the header
-                    -- layout settles, so its sizing pass lands on stale geometry (spacing
-                    -- wrong, debuff row missing until a slider nudge). Initial page load
-                    -- gets a settled pass via RegisterOnShow; a unit switch does not, so re-run the preview next frame once layout has settled.
-                    C_Timer.After(0, UpdatePreview)
-                end
-            )
-            PP.Point(ddBtn, "TOP", hdr, "TOP", 0, fy)
-            ddBtn:SetHeight(DD_H)
-            fy = fy - DD_H - 20
-
-            local side = unitSide[optState.selectedUnit] or "left"
-            local preview = ns.UFO_BuildUnitPreview(hdr, optState.selectedUnit, side)
-            activePreview = preview
-            local previewScale = preview._previewScale or 1
-            local initBuffTopPad = preview._buffTopPad or 0
-            preview._headerDropdownOY = math.abs(fy)
-            preview:ClearAllPoints()
-            PP.Point(preview, "TOP", hdr, "TOP", 0, (fy - initBuffTopPad) / previewScale)
-            preview._lastOY = (fy - initBuffTopPad) / previewScale
-            preview:Update()
-            local previewH = preview:GetHeight() * preview:GetScale()
-            local buffExtra = preview._buffExtra or 0
-            local detTopExtra = preview._detTopExtra or 0
-            fy = fy - previewH - buffExtra - detTopExtra - 20
-
-            displayHeaderFixedH = 20 + DD_H + 20 + 20
-            if preview then preview._headerFixedH = displayHeaderFixedH end
-
-            -- Hint text
-            if optState._ufPreviewHintFS_display and not optState._ufPreviewHintFS_display:GetParent() then
-                optState._ufPreviewHintFS_display = nil
-            end
-            local hintH = 0
-            if not IsPreviewHintDismissed() then
-                if not optState._ufPreviewHintFS_display then
-                    optState._ufPreviewHintFS_display = EllesmereUI.MakeFont(preview or hdr, 11, nil, 1, 1, 1)
-                    optState._ufPreviewHintFS_display:SetAlpha(0.45)
-                    optState._ufPreviewHintFS_display:SetText(EllesmereUI.L("Click elements to scroll to and highlight their options"))
-                end
-                optState._ufPreviewHintFS_display:SetParent(preview or hdr)
-                optState._ufPreviewHintFS_display:ClearAllPoints()
-                optState._ufPreviewHintFS_display:SetPoint("BOTTOM", hdr, "BOTTOM", 0, 17)
-                optState._ufPreviewHintFS_display:SetAlpha(0.45)
-                optState._ufPreviewHintFS_display:Show()
-                hintH = 29
-            elseif optState._ufPreviewHintFS_display then
-                optState._ufPreviewHintFS_display:Hide()
-            end
-
-            _displayHeaderBaseH = math.abs(fy)
-            return _displayHeaderBaseH + hintH
-        end
-        EllesmereUI:SetContentHeader(_displayHeaderBuilder)
-
-        parent._showRowDivider = true
-
-        -------------------------------------------------------------------
-        --  Route to shared settings or mini builders
-        -------------------------------------------------------------------
-        if optState.selectedUnit == "player" or optState.selectedUnit == "target" or optState.selectedUnit == "focus" then
-            y = BuildSharedSettings(parent, y)
-        elseif optState.selectedUnit == "targettarget" then
-            y = -ns.UFO_BuildFoTToTOptions(W, parent, y, db.profile.targettarget, "targettarget")
-        elseif optState.selectedUnit == "focustarget" then
-            y = -ns.UFO_BuildFoTToTOptions(W, parent, y, db.profile.focustarget, "focustarget")
-        elseif optState.selectedUnit == "pet" then
-            y = -ns.UFO_BuildPetOptions(W, parent, y)
-        elseif optState.selectedUnit == "boss" then
-            y = -ns.UFO_BuildBossOptions(W, parent, y)
-        end
-
-        -------------------------------------------------------------------
-        --  CLICK NAVIGATION
-        -------------------------------------------------------------------
-        local PlaySettingGlow = EllesmereUI.MakeSettingGlow({ color = EllesmereUI.ELLESMERE_GREEN })
-        local function NavigateToSetting(key)
-            ns._UFNavigateToSetting(parent._sharedClickTargets or parent._ufClickTargets, key, PlaySettingGlow, true)
-        end
-        local function CreateHitOverlay(element, mappingKey, isText, frameLevelOverride, opts)
-            return (EllesmereUI.CreatePreviewHitOverlay(element, NavigateToSetting, mappingKey, isText, frameLevelOverride, opts))
-        end
-
-        -- Create hit overlays on preview elements
-        local textOverlays = {}
-        if activePreview then
-            local pv = activePreview
-            local baseLevel = (pv._health and pv._health:GetFrameLevel() or 20) + 15
-            local textLevel = baseLevel + 10
-            if pv._health then CreateHitOverlay(pv._health, "healthBar", false, baseLevel) end
-            -- Absorb segments: hit area follows each absorb bar's FILL texture (the
-            -- bar frame spans the whole health width), above the health overlay so it
-            -- routes to Absorbs. No :IsShown() guard needed: as a fill-anchored child it
-            -- auto-hides/shows with the bar; both bars get an overlay so whichever the heal-absorb eyeball shows stays click-navigable.
-            if pv._absorbBar then
-                local absFill = pv._absorbBar:GetStatusBarTexture()
-                if absFill then
-                    CreateHitOverlay(absFill, "absorbs", false, baseLevel + 5,
-                        { parent = pv._health, showWith = pv._absorbBar })
-                end
-            end
-            if pv._healAbsorbBar then
-                local haFill = pv._healAbsorbBar:GetStatusBarTexture()
-                if haFill then
-                    CreateHitOverlay(haFill, "healAbsorb", false, baseLevel + 5,
-                        { parent = pv._health, showWith = pv._healAbsorbBar })
-                end
-            end
-            if pv._power then CreateHitOverlay(pv._power, "powerBar", false, baseLevel) end
-            if pv._portraitFrame and pv._portraitFrame:IsShown() then CreateHitOverlay(pv._portraitFrame, "portrait", false, baseLevel) end
-            if pv._castbar then
-                local castLevel = pv._castbar:GetFrameLevel() + 20
-                CreateHitOverlay(pv._castbar, "castBar", false, castLevel)
-                if pv._castIconFrame then CreateHitOverlay(pv._castIconFrame, "castIcon", false, castLevel) end
-                if pv._castNameFS then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._castNameFS, "castName", true, castLevel + 5) end
-                if pv._castTimeFS and pv._castTimeFS:IsShown() then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._castTimeFS, "castTime", true, castLevel + 5) end
-                if pv._castTargetFS and pv._castTargetFS:IsShown() then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._castTargetFS, "castTarget", true, castLevel + 5) end
-            end
-            if pv._nameFS and pv._nameFS:IsShown() then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._nameFS, "nameText", true, textLevel) end
-            if pv._hpFS and pv._hpFS:IsShown() then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._hpFS, "healthText", true, textLevel) end
-            if pv._centerFS and pv._centerFS:IsShown() then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._centerFS, "centerText", true, textLevel) end
-            if pv._extraFS and pv._extraFS:IsShown() then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._extraFS, "extraText", true, textLevel) end
-            -- Blizzard Style level number: built whenever the art has a level
-            -- circle and shown with the text (the preview toggles it).
-            if pv._levelFS then
-                local lvOv = CreateHitOverlay(pv._levelFS, "levelText", true, textLevel)
-                pv._levelOv = lvOv
-                if not pv._levelFS:IsShown() then lvOv:Hide() end
-                textOverlays[#textOverlays+1] = lvOv
-            end
-            if pv._ppFS and pv._ppFS:IsShown() then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._ppFS, "powerBarText", true, textLevel) end
-            -- Overlay EVERY buff/debuff frame, not just currently-shown ones: each
-            -- overlay is a SetAllPoints child of its icon, so it hides/shows and
-            -- re-anchors with it. A prior ":IsShown()" guard tied clickability to
-            -- build-time visibility, so icons shown later (header is cached, not rebuilt) had no overlay.
-            if pv._buffIcons then
-                for i = 1, #pv._buffIcons do
-                    if pv._buffIcons[i] then CreateHitOverlay(pv._buffIcons[i], "buffIcon", false, baseLevel) end
-                end
-            end
-            if pv._debuffIcons then
-                for i = 1, #pv._debuffIcons do
-                    if pv._debuffIcons[i] then CreateHitOverlay(pv._debuffIcons[i], "debuffIcon", false, baseLevel) end
-                end
-            end
-            if pv._btbFrame then
-                local btbLevel = pv._btbFrame:GetFrameLevel() + 20
-                CreateHitOverlay(pv._btbFrame, "btbBar", false, btbLevel)
-                local btbTextLevel = btbLevel + 5
-                if pv._btbLeftFS then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._btbLeftFS, "btbLeftText", true, btbTextLevel) end
-                if pv._btbRightFS then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._btbRightFS, "btbRightText", true, btbTextLevel) end
-                if pv._btbCenterFS then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._btbCenterFS, "btbCenterText", true, btbTextLevel) end
-                if pv._btbClassIcon then
-                    local ciOv = CreateHitOverlay(pv._btbClassIcon, "btbClassIcon", false, btbTextLevel + 2)
-                    pv._btbClassIconOv = ciOv
-                    if not pv._btbClassIcon:IsShown() then ciOv:Hide() end
-                end
-            end
-            if pv._cpPipContainer and pv._cpPipContainer:IsShown() then
-                pv._cpPipOv = CreateHitOverlay(pv._cpPipContainer, "classResource", false, baseLevel + 10)
-            end
-            if pv._combatIndicator and pv._combatIndicator:IsShown() then CreateHitOverlay(pv._combatIndicator, "combatIndicator", false, baseLevel + 20) end
-            -- Indicator badges (eye toggles): overlays made up front, shown and hidden
-            -- with their badge by the preview update, so a badge switched on later is
-            -- clickable straight away.
-            local targets = parent._sharedClickTargets or {}
-            pv._badgeOv = {}
-            for _, b in ipairs({
-                { pv._pvRaid, "raidMarker" }, { pv._pvLeader, "leaderIndicator" },
-                { pv._pvElite, "eliteIndicator" }, { pv._factionIndicator, "factionIndicator" },
-            }) do
-                if b[1] and targets[b[2]] then
-                    local ov = CreateHitOverlay(b[1], b[2], false, baseLevel + 20)
-                    ov:SetShown(b[1]:IsShown())
-                    pv._badgeOv[b[1]] = ov
-                end
-            end
-            pv._textOverlays = textOverlays
-        end
-
-        return abs(y)
-    end
-
-    ---------------------------------------------------------------------------
-    --  Mini Frames page  (dropdown selector + mini builders)
-    ---------------------------------------------------------------------------
-    local selectedMiniUnit = "targettarget"
-    local miniUnitLabels = {
-        ["targettarget"] = "Target of Target",
-        ["focustarget"]  = "Focus Target",
-        ["pet"]          = "Pet",
-    }
-    local miniUnitOrder = { "targettarget", "focustarget", "pet" }
-
-    -- Allow Unlock Mode's "Element Options" to pre-select a mini unit before the
-    -- Mini Frames page builds (mirrors the Main Frames _setUnitFrameUnit /
-    -- _pendingUnitSelect mechanism). Field assignments -- no new locals.
-    EllesmereUI._setMiniUnit = function(unit) selectedMiniUnit = unit end
-    EllesmereUI._consumePendingMiniSelect = function()
-        local pending = EllesmereUI._pendingMiniSelect
-        if pending then
-            selectedMiniUnit = pending
-            EllesmereUI._pendingMiniSelect = nil
-        end
-    end
-
-    local _miniHeaderBuilder
-    local miniHeaderFixedH = 0
-
-    local function BuildMiniPage(pageName, parent, yOffset)
-        -- Consume any pending mini selection from Element Options navigation
-        if EllesmereUI._consumePendingMiniSelect then EllesmereUI._consumePendingMiniSelect() end
-
-        -- Tag every option built on this page with the selected mini unit, so a
-        -- global-search jump to a unit-specific setting can restore this selection
-        -- first via EllesmereUI._setMiniUnit (see the matching EllesmereUI._buildingSelector
-        -- comment in EUI_CooldownManager_Options.lua for the full reasoning).
-        EllesmereUI._buildingSelector = { setter = EllesmereUI._setMiniUnit, key = selectedMiniUnit }
-
-        local W = EllesmereUI.Widgets
-        local y = yOffset
-        local _, h
-
-        activePreview = nil
-
-        -------------------------------------------------------------------
-        --  CONTENT HEADER  (dropdown + preview)
-        -------------------------------------------------------------------
-        _miniHeaderBuilder = function(hdr, hdrW)
-            local DD_H = 34
-            local fy = -20
-
-            -- Centered dropdown (matches Action Bars Single Bar Edit)
-            local ddW = 350
-            local ddBtn, ddLbl = EllesmereUI.BuildDropdownControl(
-                hdr, ddW, hdr:GetFrameLevel() + 5,
-                miniUnitLabels, miniUnitOrder,
-                function() return selectedMiniUnit end,
-                function(v)
-                    selectedMiniUnit = v
-                    EllesmereUI:InvalidateContentHeaderCache()
-                    EllesmereUI:SetContentHeader(_miniHeaderBuilder)
-                    EllesmereUI:RefreshPage(true)
-                    EllesmereUI.SmoothScrollTo(0)
-                    -- Re-run the preview next frame once the rebuilt layout has
-                    -- settled (same fix as the Main Frames unit selector).
-                    C_Timer.After(0, UpdatePreview)
-                end
-            )
-            PP.Point(ddBtn, "TOP", hdr, "TOP", 0, fy)
-            ddBtn:SetHeight(DD_H)
-            fy = fy - DD_H - 20
-
-            local side = unitSide[selectedMiniUnit] or "left"
-            local preview = ns.UFO_BuildUnitPreview(hdr, selectedMiniUnit, side)
-            activePreview = preview
-            local previewScale = preview._previewScale or 1
-            local initBuffTopPad = preview._buffTopPad or 0
-            preview._headerDropdownOY = math.abs(fy)
-            preview:ClearAllPoints()
-            PP.Point(preview, "TOP", hdr, "TOP", 0, (fy - initBuffTopPad) / previewScale)
-            preview._lastOY = (fy - initBuffTopPad) / previewScale
-            preview:Update()
-            local previewH = preview:GetHeight() * preview:GetScale()
-            local buffExtra = preview._buffExtra or 0
-            local detTopExtra = preview._detTopExtra or 0
-            fy = fy - previewH - buffExtra - detTopExtra - 20
-            miniHeaderFixedH = 20 + DD_H + 20 + 20
-            if preview then preview._headerFixedH = miniHeaderFixedH end
-
-            local _miniHeaderBaseH = math.abs(fy)
-            return _miniHeaderBaseH
-        end
-        EllesmereUI:SetContentHeader(_miniHeaderBuilder)
-
-        parent._showRowDivider = true
-
-        -------------------------------------------------------------------
-        --  Route to mini builders
-        -------------------------------------------------------------------
-        if selectedMiniUnit == "targettarget" then
-            y = -ns.UFO_BuildFoTToTOptions(W, parent, y, db.profile.targettarget, "targettarget")
-        elseif selectedMiniUnit == "focustarget" then
-            y = -ns.UFO_BuildFoTToTOptions(W, parent, y, db.profile.focustarget, "focustarget")
-        elseif selectedMiniUnit == "pet" then
-            y = -ns.UFO_BuildPetOptions(W, parent, y)
-        end
-
-        -------------------------------------------------------------------
-        --  CLICK NAVIGATION
-        -------------------------------------------------------------------
-        local PlaySettingGlow = EllesmereUI.MakeSettingGlow({ color = EllesmereUI.ELLESMERE_GREEN })
-        local function NavigateToSetting(key)
-            ns._UFNavigateToSetting(parent._ufClickTargets, key, PlaySettingGlow)
-        end
-        local hitStyle = { container = true }
-        local function CreateHitOverlay(element, mappingKey, isText, frameLevelOverride, opts)
-            return (EllesmereUI.CreatePreviewHitOverlay(element, NavigateToSetting, mappingKey, isText, frameLevelOverride, opts, hitStyle))
-        end
-
-        -- Create hit overlays on preview elements
-        if activePreview then
-            local pv = activePreview
-            local baseLevel = (pv._health and pv._health:GetFrameLevel() or 20) + 15
-            local textLevel = baseLevel + 10
-            if pv._health then CreateHitOverlay(pv._health, "healthBar", false, baseLevel, { hlAnchor = pv._border or pv._health }) end
-            -- WoW Forever's pet: power bar, power text and happiness icon (the
-            -- other mini previews build none of them).
-            if pv._power then CreateHitOverlay(pv._power, "powerBar", false, baseLevel) end
-            if pv._ppFS and pv._ppFS:IsShown() then CreateHitOverlay(pv._ppFS, "powerBarText", true, textLevel) end
-            if pv._happyInd then CreateHitOverlay(pv._happyInd, "petHappiness", false, baseLevel + 20) end
-            if pv._portraitFrame and pv._portraitFrame:IsShown() then CreateHitOverlay(pv._portraitFrame, "portrait", false, baseLevel) end
-            if pv._castbar then
-                local castLevel = pv._castbar:GetFrameLevel() + 20
-                CreateHitOverlay(pv._castbar, "castBar", false, castLevel)
-            end
-            if pv._nameFS and pv._nameFS:IsShown() then CreateHitOverlay(pv._nameFS, "nameText", true, textLevel) end
-            if pv._hpFS and pv._hpFS:IsShown() then CreateHitOverlay(pv._hpFS, "healthText", true, textLevel) end
-            if pv._extraFS and pv._extraFS:IsShown() then CreateHitOverlay(pv._extraFS, "extraText", true, textLevel) end
-            if pv._centerFS and pv._centerFS:IsShown() then CreateHitOverlay(pv._centerFS, "centerText", true, textLevel) end
-            -- The pet's buff/debuff icons -> Buffs / Debuffs Location. Every icon,
-            -- so one shown later stays clickable without a header rebuild (the
-            -- other mini frames show none).
-            if selectedMiniUnit == "pet" then
-                if pv._buffIcons then
-                    for i = 1, #pv._buffIcons do
-                        if pv._buffIcons[i] then CreateHitOverlay(pv._buffIcons[i], "buffIcon", false, baseLevel) end
-                    end
-                end
-                if pv._debuffIcons then
-                    for i = 1, #pv._debuffIcons do
-                        if pv._debuffIcons[i] then CreateHitOverlay(pv._debuffIcons[i], "debuffIcon", false, baseLevel) end
-                    end
-                end
-            end
-        end
-
-        return abs(y)
-    end
-
-    ---------------------------------------------------------------------------
-    --  Boss Frames page  (single-unit page; no unit dropdown -- boss only)
-    ---------------------------------------------------------------------------
-    -- Stored on ns (not init-function locals) to stay clear of the Lua 5.1 200-local
-    -- cap. Header builder mirrors the Mini page's minus the unit dropdown (boss is the
-    -- only unit here); click-navigation block reuses the Mini page's machinery.
-    ns._bossHeaderBuilder = nil
-    ns._BuildBossPage = function(pageName, parent, yOffset)
-        local W = EllesmereUI.Widgets
-        local y = yOffset
-
-        activePreview = nil
-
-        -------------------------------------------------------------------
-        --  CONTENT HEADER  (preview only, no dropdown)
-        -------------------------------------------------------------------
-        ns._bossHeaderBuilder = function(hdr, hdrW)
-            local fy = -20
-            local side = unitSide.boss or "right"
-            local preview = ns.UFO_BuildUnitPreview(hdr, "boss", side)
-            activePreview = preview
-            local previewScale = preview._previewScale or 1
-            local initBuffTopPad = preview._buffTopPad or 0
-            preview._headerDropdownOY = math.abs(fy)
-            preview:ClearAllPoints()
-            PP.Point(preview, "TOP", hdr, "TOP", 0, (fy - initBuffTopPad) / previewScale)
-            preview._lastOY = (fy - initBuffTopPad) / previewScale
-            preview:Update()
-            local previewH = preview:GetHeight() * preview:GetScale()
-            local buffExtra = preview._buffExtra or 0
-            local detTopExtra = preview._detTopExtra or 0
-            fy = fy - previewH - buffExtra - detTopExtra - 20
-            preview._headerFixedH = 20 + 20
-            return math.abs(fy)
-        end
-        EllesmereUI:SetContentHeader(ns._bossHeaderBuilder)
-
-        parent._showRowDivider = true
-
-        -------------------------------------------------------------------
-        --  Boss section
-        -------------------------------------------------------------------
-        y = -ns.UFO_BuildBossOptions(W, parent, y)
-
-        -------------------------------------------------------------------
-        --  CLICK NAVIGATION  (mirrors the Mini Frames page)
-        -------------------------------------------------------------------
-        local PlaySettingGlow = EllesmereUI.MakeSettingGlow({ color = EllesmereUI.ELLESMERE_GREEN })
-        local function NavigateToSetting(key)
-            ns._UFNavigateToSetting(parent._ufClickTargets, key, PlaySettingGlow)
-        end
-        local hitStyle = { container = true }
-        local function CreateHitOverlay(element, mappingKey, isText, frameLevelOverride, opts)
-            return (EllesmereUI.CreatePreviewHitOverlay(element, NavigateToSetting, mappingKey, isText, frameLevelOverride, opts, hitStyle))
-        end
-
-        -- Create hit overlays on preview elements
-        if activePreview then
-            local pv = activePreview
-            local baseLevel = (pv._health and pv._health:GetFrameLevel() or 20) + 15
-            local textLevel = baseLevel + 10
-            -- Health bar and power bar are separately clickable, each covering just
-            -- its own bar (replacing the old ambiguous whole-frame overlay).
-            if pv._health then CreateHitOverlay(pv._health, "healthBar", false, baseLevel) end
-            if pv._power then CreateHitOverlay(pv._power, "powerBar", false, baseLevel) end
-            if pv._ppFS and pv._ppFS:IsShown() then CreateHitOverlay(pv._ppFS, "powerBarText", true, textLevel) end
-            if pv._portraitFrame and pv._portraitFrame:IsShown() then CreateHitOverlay(pv._portraitFrame, "portrait", false, baseLevel) end
-            if pv._castbar then
-                local castLevel = pv._castbar:GetFrameLevel() + 20
-                CreateHitOverlay(pv._castbar, "castBar", false, castLevel)
-                -- Spell icon -> Show Cast Icon setting.
-                if pv._castIconFrame then CreateHitOverlay(pv._castIconFrame, "castIcon", false, castLevel) end
-            end
-            if pv._nameFS and pv._nameFS:IsShown() then CreateHitOverlay(pv._nameFS, "nameText", true, textLevel) end
-            if pv._hpFS and pv._hpFS:IsShown() then CreateHitOverlay(pv._hpFS, "healthText", true, textLevel) end
-            if pv._extraFS and pv._extraFS:IsShown() then CreateHitOverlay(pv._extraFS, "extraText", true, textLevel) end
-            if pv._centerFS and pv._centerFS:IsShown() then CreateHitOverlay(pv._centerFS, "centerText", true, textLevel) end
-            -- Blizzard Style level number: built whenever the art has a level
-            -- circle and shown with the text (the preview toggles it).
-            if pv._levelFS then
-                local lvOv = CreateHitOverlay(pv._levelFS, "levelText", true, textLevel)
-                pv._levelOv = lvOv
-                if not pv._levelFS:IsShown() then lvOv:Hide() end
-            end
-            -- Buff/Debuff icons -> their aura settings (Simple Display or Location,
-            -- resolved at click time). Overlay every icon so newly shown ones stay
-            -- clickable without a header rebuild.
-            if pv._buffIcons then
-                for i = 1, #pv._buffIcons do
-                    if pv._buffIcons[i] then CreateHitOverlay(pv._buffIcons[i], "buffIcon", false, baseLevel) end
-                end
-            end
-            if pv._debuffIcons then
-                for i = 1, #pv._debuffIcons do
-                    if pv._debuffIcons[i] then CreateHitOverlay(pv._debuffIcons[i], "debuffIcon", false, baseLevel) end
-                end
-            end
-        end
-
-        return abs(y)
-    end
-
-    ---------------------------------------------------------------------------
-    --  Unlock Mode page  (stub SelectPage intercepts this before buildPage)
-    ---------------------------------------------------------------------------
-    local function BuildUnlockPage(pageName, parent, yOffset)
-        -- SelectPage() intercepts "Unlock Mode" and fires _openUnlockMode directly.
-        -- This stub exists only as a safety net in case buildPage is ever called.
-        if EllesmereUI._openUnlockMode then
-            C_Timer.After(0, EllesmereUI._openUnlockMode)
-        end
-        return 100
-    end
-
-
-    ---------------------------------------------------------------------------
-    --  Register the module
-    ---------------------------------------------------------------------------
-    local ufSearchTerms = {}
-    for _, label in pairs(unitLabels) do ufSearchTerms[#ufSearchTerms + 1] = label end
-    for _, label in pairs(miniUnitLabels) do ufSearchTerms[#ufSearchTerms + 1] = label end
-    -- "external defensives" matches the External Defensive aura-filter
-    -- checkbox and the External Defensives bar inside Player Aura Bars.
-    local _paTerms = { "external defensives", "externals", "pain suppression" }
-    for _, t in ipairs(_paTerms) do ufSearchTerms[#ufSearchTerms + 1] = t end
-    local _pabTerms = { "aura bars", "player aura bars", "buff bar", "debuff bar", "cooldown bars", "dispel colors", "grow direction" }
-    for _, t in ipairs(_pabTerms) do ufSearchTerms[#ufSearchTerms + 1] = t end
-
-    -- Rebuild preview when spec changes (class resource pips may appear/disappear)
-    local ufOptSpecFrame = CreateFrame("Frame")
-    ufOptSpecFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-    ufOptSpecFrame:SetScript("OnEvent", function(_, _, unit)
-        if unit ~= "player" then return end
-        -- Only invalidate + rebuild when the panel is actually open. Invalidating while
-        -- closed destroys all cached pages, causing a blank panel on next open.
-        if EllesmereUI._mainFrame and EllesmereUI._mainFrame:IsShown() then
-            EllesmereUI:InvalidatePageCache()
-            C_Timer.After(0.2, function()
-                EllesmereUI:RefreshPage(true)
-            end)
-        end
-    end)
-
-    -- Shared helpers and state for the builders under UnitFrames_Options\
-    -- (loaded before this file, read when a page builds).
-    ns._UFO_OptEnv = {
-        _previewBuffIcons = _previewBuffIcons, _previewCreatureNames = _previewCreatureNames, abs = abs,
-        AddDarkModeBlock = AddDarkModeBlock, allPreviews = allPreviews, ApplyClassIconTexture_Preview = ApplyClassIconTexture_Preview,
-        ApplyPreviewPortraitShape = ApplyPreviewPortraitShape, AttachDebuffModeWarn = AttachDebuffModeWarn, AttachFrameSourceCog = AttachFrameSourceCog,
-        BlizzPreviewScale = BlizzPreviewScale, btbPositionOrder = btbPositionOrder, btbPositionValues = btbPositionValues,
-        btbTextOrder = btbTextOrder, btbTextValues = btbTextValues, buffAnchorOrder = buffAnchorOrder,
-        buffAnchorValues = buffAnchorValues, buffGrowthOrder = buffGrowthOrder, buffGrowthValues = buffGrowthValues,
-        BuildApplyAllRow = BuildApplyAllRow, BuildBarTexDropdown = BuildBarTexDropdown, BuildInactiveNotice = BuildInactiveNotice,
-        CLASS_FULL_COORDS = CLASS_FULL_COORDS, CLASS_FULL_SPRITE_BASE = CLASS_FULL_SPRITE_BASE, classIconLocOrder = classIconLocOrder,
-        classIconLocValues = classIconLocValues, classIconOrder = classIconOrder, classIconValues = classIconValues,
-        classPowerPosOrder = classPowerPosOrder, classPowerPosValues = classPowerPosValues, classPowerStyleOrder = classPowerStyleOrder,
-        classPowerStyleValues = classPowerStyleValues, classThemeSubOrder = classThemeSubOrder, classThemeSubValues = classThemeSubValues,
-        db = db, DebuffModeDropdownCfg = DebuffModeDropdownCfg, detPortraitShapeOrder = detPortraitShapeOrder,
-        detPortraitShapeValues = detPortraitShapeValues, frames = frames, GetUFOptOutline = GetUFOptOutline,
-        GROUP_UNIT_ORDER = GROUP_UNIT_ORDER, HideExhaustionRow = HideExhaustionRow, healthTextOrder = healthTextOrder, healthTextOrderBoss = healthTextOrderBoss,
-        healthTextOrderPlayer = healthTextOrderPlayer, healthTextOrderTargetFocus = healthTextOrderTargetFocus, healthTextValues = healthTextValues,
-        MINI_GROUP_ORDER = MINI_GROUP_ORDER, optState = optState, portraitArtOrder = portraitArtOrder,
-        portraitArtValues = portraitArtValues, portraitModeOrder2 = portraitModeOrder2, portraitModeValues2 = portraitModeValues2,
-        portraitNonPlayerOrder = portraitNonPlayerOrder, portraitNonPlayerValues = portraitNonPlayerValues, PP = PP,
-        PREVIEW_FONT = PREVIEW_FONT, PromptReloadIfUnspawned = PromptReloadIfUnspawned, RegisterWidgetRefresh = RegisterWidgetRefresh,
-        ReloadAndUpdate = ReloadAndUpdate, ResolveBlizzPreview = ResolveBlizzPreview, SetPVFont = SetPVFont,
-        SHORT_LABELS = SHORT_LABELS, SOLID_BACKDROP = SOLID_BACKDROP, SwapAuraSlot = SwapAuraSlot,
-        UF_ImpCastGlowDesc = UF_ImpCastGlowDesc, UF_PurgeGlowDesc = UF_PurgeGlowDesc, UNIT_DB_MAP = UNIT_DB_MAP,
-        UNIT_LABELS_SUP = UNIT_LABELS_SUP, unitSide = unitSide, UpdatePreview = UpdatePreview,
-    }
-
-    ---------------------------------------------------------------------------
-    --  Player Aura Bars page (External Defensives lives inside it, as a
-    --  third built-in bar -- see EUI_PlayerAuraBars_ManagerPages.lua)
-    ---------------------------------------------------------------------------
-
-    EllesmereUI:RegisterModule("EllesmereUIUnitFrames", {
-        title       = "Unit Frames",
-        description = "Configure unit frame appearance and behavior.",
-        pages       = { PAGE_DISPLAY, PAGE_BOSS, PAGE_MINI, PAGE_AURA_BARS },
-        searchTerms = ufSearchTerms,
-        buildPage   = function(pageName, parent, yOffset)
-            if EllesmereUI._prebuilding and pageName == PAGE_AURA_BARS then
-                return
-            end
-            -- Clean up Player Aura Bars root when switching away. Needed here AND in
-            -- onPageCacheRestore below: this covers a fresh build of the destination
-            -- page, that one covers a cache-restored destination -- without both,
-            -- cleanup is inconsistent across tab switches (mirrors EUI_RaidFrames_Options.lua's _bmRoot/_dmRoot/_ccRoot pattern).
-            if pageName ~= PAGE_AURA_BARS and ns._pabRoot then
-                ns._pabRoot:Hide()
-                ns._pabRoot:SetParent(nil)
-                ns._pabRoot = nil
-            end
-            -- Randomize preview creature IDs on every tab switch
-            RandomizePreviewCreatures()
-            ns.UF_AskExisting2DMirror()
-            if pageName == PAGE_DISPLAY then
-                return BuildFrameDisplayPage(pageName, parent, yOffset)
-            elseif pageName == PAGE_BOSS then
-                return ns._BuildBossPage(pageName, parent, yOffset)
-            elseif pageName == PAGE_MINI then
-                return BuildMiniPage(pageName, parent, yOffset)
-            elseif pageName == PAGE_AURA_BARS then
-                if ns.PABMP_BuildPage then return ns.PABMP_BuildPage(pageName, parent, yOffset) end
-            end
-        end,
-        getHeaderBuilder = function(pageName)
-            if pageName == PAGE_DISPLAY then
-                return _displayHeaderBuilder
-            elseif pageName == PAGE_BOSS then
-                return ns._bossHeaderBuilder
-            elseif pageName == PAGE_MINI then
-                return _miniHeaderBuilder
-            end
-            return nil
-        end,
-        -- Main/Mini Frames content gates on whichever unit is selected (default
-        -- always "player"/"targettarget"), so a hidden pre-build that only builds the
-        -- default leaves other units' settings unsearchable until picked live. Both
-        -- unit lists are small and fixed, so build once per unit rather than collapsing to representative shapes.
-        getPrebuildVariants = function(pageName)
-            if pageName == PAGE_DISPLAY then
-                return { setter = EllesmereUI._setUnitFrameUnit, keys = unitOrder, currentKey = optState.selectedUnit }
-            elseif pageName == PAGE_MINI then
-                return { setter = EllesmereUI._setMiniUnit, keys = miniUnitOrder, currentKey = selectedMiniUnit }
-            end
-            return nil
-        end,
-        onPageCacheRestore = function(pageName)
-            local textCheck = ns._ufTextChecks and ns._ufTextChecks[pageName]
-            if textCheck and textCheck() then
-                C_Timer.After(0, function()
-                    if EllesmereUI:GetActiveModule() == "EllesmereUIUnitFrames"
-                       and EllesmereUI:GetActivePage() == pageName then
-                        EllesmereUI:RefreshPage(true)
-                    end
-                end)
-            end
-            -- Clean up Player Aura Bars root when switching away
-            if pageName ~= PAGE_AURA_BARS and ns._pabRoot then
-                ns._pabRoot:Hide()
-                ns._pabRoot:SetParent(nil)
-                ns._pabRoot = nil
-            elseif pageName == PAGE_AURA_BARS and not ns._pabRoot then
-                -- PABMP_BuildPage bypasses `parent` and builds onto the live shared
-                -- scrollFrame into ns._pabRoot (see buildPage's _prebuilding guard
-                -- above). The framework's page cache doesn't know about that
-                -- self-managed root: on a cache-restore decision, content already torn
-                -- down by an earlier switch-away never gets rebuilt. Mirrors
-                -- EUI__General_Options.lua's PAGE_PROFILES/PAGE_OVERRIDES fix (CleanupProfilesRoot + deferred RefreshPage(true) guarded by GetActiveModule/GetActivePage).
-                C_Timer.After(0, function()
-                    if EllesmereUI:GetActiveModule() == "EllesmereUIUnitFrames"
-                       and EllesmereUI:GetActivePage() == pageName then
-                        EllesmereUI:RefreshPage(true)
-                    end
-                end)
-            end
-            RandomizePreviewCreatures()
-            ns.UF_AskExisting2DMirror()
-            -- Hide all UIParent-parented disabled overlays before restoring
-            -- (they persist across tab switches since they're not children of pf)
-            for _, pv in pairs(allPreviews) do
-                if pv and pv._disabledOverlay then pv._disabledOverlay:Hide() end
-            end
-            -- Force re-anchor previews after cache restore (parent changed)
-            for _, pv in pairs(allPreviews) do
-                if pv then
-                    pv._lastOY = nil
-                    -- Reset portrait anchor flag so Update() re-anchors it
-                    if pv._portraitFrame then pv._portraitFrame._anchored = false end
-                    -- Reset health anchor key so Update() re-anchors health bar
-                    if pv._health then pv._health._anchorKey = nil end
-                end
-            end
-            UpdatePreview()
-            -- Refresh hint visibility on cache restore
-            local dismissed = IsPreviewHintDismissed()
-            if pageName == PAGE_DISPLAY and optState._ufPreviewHintFS_display then
-                if dismissed then
-                    optState._ufPreviewHintFS_display:Hide()
-                else
-                    optState._ufPreviewHintFS_display:SetAlpha(0.45)
-                    optState._ufPreviewHintFS_display:Show()
-                end
-            end
-        end,
-        onReset     = function()
-            db:ResetProfile()
-            -- No reload here: Reset EUI Module Settings reloads after this returns.
-        end,
-        -- Tears down Boss Preview on module switch (RegisterOnHide above
-        -- only covers closing the whole options window).
-        onModuleLeave = function()
-            if ns._bossPreviewActive and ns.SetBossPreview then
-                ns.SetBossPreview(false)
-            end
-        end,
-    })
-
-    ---------------------------------------------------------------------------
-    --  Slash command  /euf
-    ---------------------------------------------------------------------------
-    SLASH_ELLESMEREUNITFRAMES1 = "/euf"
-    SlashCmdList.ELLESMEREUNITFRAMES = function(msg)
-        if InCombatLockdown and InCombatLockdown() then
-            print("Cannot open options in combat")
-            return
-        end
-
-        if msg == "reset" then
-            db:ResetProfile()
-            EllesmereUI.RequestReload()
-            return
-        end
-
-        EllesmereUI:ShowModule("EllesmereUIUnitFrames")
-    end
-    end -- ns._InitEUIModule
-
-    -- If SetupOptionsPanel already ran before PLAYER_LOGIN (unlikely but safe),
-    -- fire immediately
-    if ns.db then
-        ns._InitEUIModule()
-    end
-end)
--- LoadOnDemand: this addon loads after PLAYER_LOGIN, so the event above will never fire; run the init now.
-if IsLoggedIn() then initFrame:GetScript("OnEvent")(initFrame) end
+-- Visibility checklist (Never / Always / Mouseover, match mode, Show / Hide lanes).
+local function VisibilityRow(p, unit)
+	local function Items_()
+		local items = {
+			{ value = "state:never", name = "Never" }, { value = "state:always", name = "Always" },
+			{ value = "state:mouseover", name = "Mouseover" },
+			{ value = "match:all", name = "Match All Conditions" }, { value = "match:any", name = "Match Any Condition" },
+		}
+		for _, axis in ipairs(UF.VIS_AXES) do
+			items[#items + 1] = { value = "show:" .. axis.key, name = "Show: " .. axis.label }
+			items[#items + 1] = { value = "hide:" .. axis.key, name = "Hide: " .. axis.label }
+		end
+		return items
+	end
+	local function Axis(key)
+		for _, axis in ipairs(UF.VIS_AXES) do
+			if axis.key == key then
+				return axis
+			end
+		end
+	end
+	local function IsChecked(value)
+		local s = S(unit)
+		local kind, key = value:match("^(%a+):(.+)$")
+		if kind == "state" then
+			return (s.barVisibility or "always") == key
+		elseif kind == "match" then
+			return (s.visibilityMatch or "all") == key
+		end
+		local axis = Axis(key)
+		return UF.VisFlag(s, kind == "show" and axis.show or axis.hide)
+	end
+	local function Toggle_(value)
+		local s = S(unit)
+		local kind, key = value:match("^(%a+):(.+)$")
+		if kind == "state" then
+			s.barVisibility = key
+			return
+		elseif kind == "match" then
+			s.visibilityMatch = key
+			return
+		end
+		local axis = Axis(key)
+		local laneKey = kind == "show" and axis.show or axis.hide
+		local otherKey = kind == "show" and axis.hide or axis.show
+		local on = not UF.VisFlag(s, laneKey)
+		UF.SetVisFlag(s, laneKey, on)
+		if on then
+			UF.SetVisFlag(s, otherKey, false)
+		end
+	end
+	local function Summary()
+		local s = S(unit)
+		local vis = s.barVisibility or "always"
+		local text = vis == "never" and "Never" or (vis == "mouseover" and "Mouseover" or "Always")
+		local n = 0
+		for _, axis in ipairs(UF.VIS_AXES) do
+			if UF.VisFlag(s, axis.show) or UF.VisFlag(s, axis.hide) then
+				n = n + 1
+			end
+		end
+		if n > 0 and vis ~= "never" then
+			text = text .. " + " .. n .. (n == 1 and " condition" or " conditions")
+		end
+		return text
+	end
+	p:MultiSelect("Visibility", "When this frame is shown. Never / Always / Mouseover is the base state; the Show conditions must match (all or any), a Hide condition always hides. Hidden frames fade out but stay clickable while in combat (5.4.8 secure frames).",
+		Items_, IsChecked, Toggle_, Summary)
+	local keys = { "barVisibility", "visibilityModes", "visibilityMatch", "showInRaid", "showInParty", "showSolo" }
+	for _, axis in ipairs(UF.VIS_AXES) do
+		if axis.show:match("^vis") then
+			keys[#keys + 1] = axis.show
+			keys[#keys + 1] = axis.hide
+		end
+	end
+	local group = UF.MAIN_UNITS
+	if unit == "targettarget" or unit == "focustarget" or unit == "pet" then
+		group = UF.MINI_UNITS
+	end
+	Sync(p, "Apply Visibility to all Frames", unit, keys, group)
+	p:Cog("Frame Source & Visibility", {
+		{ type = "dropdown", label = "Frame Source", tip = "EllesmereUI frame, or keep Blizzard's default frame. Needs a UI reload.",
+			items = function() return Items({ { "eui", "EllesmereUI" }, { "blizzard", "Blizzard Default" } }) end,
+			get = function() return UF.FrameSource(unit) end,
+			set = function(v) UF.db.frameSource[unit] = v ~= "eui" and v or nil Reload() end },
+		CT("Show When Health Missing", unit, "showWhenHealthMissing", false, nil,
+			"Shows the frame while this unit is below full health; while enabled, a frame hidden by its visibility setting can still be clicked."),
+		CT("Fade Out of Combat", unit, "oocFadeEnabled", false, nil, "Fades the entire frame (portrait, health and power bars, text) while out of combat."),
+		{ type = "slider", label = "Out of Combat Alpha", min = 0, max = 100, step = 1,
+			get = function() return floor((S(unit).oocAlpha or 0.5) * 100 + 0.5) end,
+			set = function(v) S(unit).oocAlpha = v / 100 end,
+			disabled = function() return not S(unit).oocFadeEnabled end },
+	})
+end
+
+local function BarTextureRow(p, unit, withInherit, sync)
+	p:Dropdown("Bar Texture", "Texture of the health, power and cast bars. Textures from LibSharedMedia are listed too.",
+		function() return UF.BarTextureItems(withInherit) end,
+		function() return S(unit).healthBarTexture or (withInherit and "inherit" or UF.db.healthBarTexture or "none") end,
+		function()
+			local key = S(unit).healthBarTexture or (withInherit and "inherit" or UF.db.healthBarTexture or "none")
+			if key == "inherit" then
+				return "Inherit (Main Frames)"
+			end
+			return UF.BarTextureLabel(key)
+		end,
+		function(v) S(unit).healthBarTexture = (v ~= "inherit") and v or nil end,
+		{ texturePreview = true, previewPath = function(v)
+			if v == "inherit" then
+				return UF.BarTexturePath(UF.Donor(unit).healthBarTexture or UF.db.healthBarTexture)
+			end
+			return UF.BarTexturePath(v)
+		end })
+	if sync then
+		Sync(p, "Apply Bar Texture to all Frames", unit, { "healthBarTexture" })
+	end
+end
+
+-- One health bar text slot: dropdown + swatches + cog (+ sync).
+local function TextSlot(p, unit, slot, label, list, sync)
+	local prefix = slot .. "Text"
+	local contentKey = prefix .. "Content"
+	Dropdown(p, label, "What this text shows.", list, unit, contentKey, "none", nil, function(v)
+		-- Left / Right / Center never show the same thing twice.
+		if v ~= "none" and slot ~= "extra" then
+			local s = S(unit)
+			for _, other in ipairs({ "left", "right", "center" }) do
+				if other ~= slot and s[other .. "TextContent"] == v then
+					s[other .. "TextContent"] = "none"
+				end
+			end
+		end
+	end)
+	local none = NotNone(unit, contentKey)
+	if sync then
+		Sync(p, "Apply " .. label .. " to all Frames", unit,
+			{ contentKey, prefix .. "ClassColor", prefix .. "ColorR", prefix .. "ColorG", prefix .. "ColorB",
+				prefix .. "Size", prefix .. "X", prefix .. "Y", prefix .. "WidthPct", slot == "extra" and "extraTextAlign" or nil })
+	end
+	SwatchRGB(p, "Custom Colored", unit, prefix .. "Color", {
+		active = function() return not S(unit)[prefix .. "ClassColor"] end,
+		disabled = none,
+		onClick = function()
+			if S(unit)[prefix .. "ClassColor"] then
+				S(unit)[prefix .. "ClassColor"] = false
+				return true
+			end
+		end,
+	})
+	ModeSwatch(p, "Class Colored", PlayerClassColor, function() return S(unit)[prefix .. "ClassColor"] end,
+		function() S(unit)[prefix .. "ClassColor"] = true end, none)
+	local rows = {}
+	if slot == "extra" then
+		rows[#rows + 1] = CD("Alignment", ALIGN, unit, "extraTextAlign", "left")
+	end
+	rows[#rows + 1] = { type = "slider", label = "Size", min = 8, max = 100, step = 1,
+		get = function() return S(unit)[prefix .. "Size"] or S(unit).textSize or 12 end,
+		set = function(v) S(unit)[prefix .. "Size"] = v end }
+	rows[#rows + 1] = CS("X Offset", -150, 150, 1, unit, prefix .. "X", 0)
+	rows[#rows + 1] = CS("Y Offset", -150, 150, 1, unit, prefix .. "Y", 0)
+	rows[#rows + 1] = CS("Width %", 20, 200, 5, unit, prefix .. "WidthPct", 100)
+	rows[#rows + 1] = { type = "color", label = "Indicator Color", tip = "Color of the separator (Name > Target) or prefix (Target).",
+		get = ColorGet(unit, prefix .. "TargetSepColor", 1, 1, 1), set = ColorSet(unit, prefix .. "TargetSepColor"),
+		disabled = function() local c = S(unit)[contentKey] return c ~= "nametotarget" and c ~= "targetname" end }
+	rows[#rows + 1] = CT("Indicator Class Colored", unit, prefix .. "TargetSepClassColor", false,
+		function() local c = S(unit)[contentKey] return c ~= "nametotarget" and c ~= "targetname" end)
+	p:Cog(label .. " Settings", rows, { disabled = none, disabledTip = "This option requires a text selection other than none." })
+end
+
+local function FillColorRow(p, unit, sync)
+	p:Label("Fill Color", "Color of the health fill: your own color or the unit's class (players) / reaction (NPCs) color.", Dark)
+	local function classOn() return S(unit).healthClassColored ~= false end
+	local function dynamicOn() return (S(unit).healthColorMode or "none") ~= "none" end
+	if sync then
+		Sync(p, "Apply Bar Color to all Frames", unit, { "healthClassColored", "customFillColor", "gradientEnabled", "gradientDir",
+			"gradientColor", "healthColorMode", "dynamicColor100", "dynamicColor50", "dynamicColor0" })
+		p:Cog("Fill Color Settings", {
+			CD("Dynamic Color", DYNAMIC_COLOR, unit, "healthColorMode", "none", nil,
+				"Color the bar by health left. Classic = green, yellow, red. Custom Colors = a blend of the 3 stop colors (100 / 50 / 0 %). Class Reactive = class color at full, bleeding into the 50 % / 0 % colors."),
+			CT("Enable Gradient", unit, "gradientEnabled", false),
+			CD("Gradient Direction", GRADIENT_DIR, unit, "gradientDir", "HORIZONTAL"),
+			{ type = "color", label = "Color at 100%", get = ColorGet(unit, "dynamicColor100", 0, 1, 0), set = ColorSet(unit, "dynamicColor100"),
+				disabled = function() return S(unit).healthColorMode ~= "customDynamic" end },
+			{ type = "color", label = "Color at 50%", get = ColorGet(unit, "dynamicColor50", 0xEC / 255, 0xEC / 255, 0x32 / 255), set = ColorSet(unit, "dynamicColor50"),
+				disabled = function() local m = S(unit).healthColorMode return m ~= "customDynamic" and m ~= "classReactive" end },
+			{ type = "color", label = "Color at 0%", get = ColorGet(unit, "dynamicColor0", 0xE3 / 255, 0x30 / 255, 0x30 / 255), set = ColorSet(unit, "dynamicColor0"),
+				disabled = function() local m = S(unit).healthColorMode return m ~= "customDynamic" and m ~= "classReactive" end },
+		})
+		Swatch(p, "Gradient End Color", unit, "gradientColor", { 0.2, 0.2, 0.8 }, { disabled = function() return not S(unit).gradientEnabled end })
+	end
+	Swatch(p, "Custom Colored Fill", unit, "customFillColor", { 37 / 255, 193 / 255, 29 / 255 }, {
+		active = function() return not classOn() end, disabled = dynamicOn,
+		onClick = function()
+			if classOn() then
+				S(unit).healthClassColored = false
+				return true
+			end
+		end,
+	})
+	ModeSwatch(p, "Class Colored Fill", PlayerClassColor, classOn, function() S(unit).healthClassColored = true end, dynamicOn)
+end
+
+local function BackgroundRow(p, unit, sync)
+	p:Slider("Bar Background", "Opacity of the background behind the missing health.", 0, 100, 1,
+		Get(unit, "customBgAlpha", 100), Set(unit, "customBgAlpha"), Dark)
+	if sync then
+		Sync(p, "Apply Bar Background to all Frames", unit, { "customBgColor", "customBgAlpha", "bgClassColored" })
+	end
+	Swatch(p, "Custom Background Color", unit, "customBgColor", { 0.067, 0.067, 0.067 }, {
+		active = function() return not S(unit).bgClassColored end,
+		onClick = function()
+			if S(unit).bgClassColored then
+				S(unit).bgClassColored = false
+				return true
+			end
+		end,
+	})
+	ModeSwatch(p, "Class Colored Background", PlayerClassColor, function() return S(unit).bgClassColored end,
+		function() S(unit).bgClassColored = true end)
+end
+
+-- Power bar rows (main frames, pet, boss).
+local function PowerRows(p, unit, full, sync)
+	p:Slider("Power Bar Height", "Height of the power bar. 0 hides it.", 0, 100, 1, Get(unit, "powerHeight", 6), Set(unit, "powerHeight"))
+	if sync then
+		Sync(p, "Apply Power Bar Height to all Frames", unit, { "powerHeight" })
+	end
+	p:Cog("Power Bar Fill", { CT("Reverse Fill", unit, "powerReverseFill", false) })
+	if full then
+		Dropdown(p, "Bar Position", "Where the power bar is. Detached bars can be moved with the cog offsets.", POWER_POS, unit, "powerPosition", "below")
+		if sync then
+			Sync(p, "Apply Bar Position to all Frames", unit, { "powerPosition" })
+		end
+		local function notDetached()
+			local v = S(unit).powerPosition
+			return v ~= "detached_top" and v ~= "detached_bottom"
+		end
+		p:Cog("Position Settings", {
+			CS("Width", 0, 400, 1, unit, "powerWidth", 0, nil, "0 = the frame width."),
+			CS("X Offset", -200, 200, 1, unit, "powerX", 0),
+			CS("Y Offset", -200, 200, 1, unit, "powerY", 0),
+		}, { icon = "resize", disabled = notDetached, disabledTip = "This option requires a detached position to be active." })
+	else
+		p:Toggle("Above Health Bar", "Show the power bar above the health bar instead of below it.",
+			function() return S(unit).powerPosition == "above" end,
+			function(v) S(unit).powerPosition = v and "above" or "below" end)
+	end
+
+	Dropdown(p, "Power Text", "Format of the power text.", POWER_FMT, unit, "powerTextFormat", "perpp", nil, function(v)
+		local s = S(unit)
+		if v == "none" then
+			s.powerPercentText = "none"
+		elseif (s.powerPercentText or "none") == "none" then
+			s.powerPercentText = "center"
+		end
+	end)
+	if sync then
+		Sync(p, "Apply Power Text Format to all Frames", unit, { "powerTextFormat", "powerPercentText", "powerShowPercent" })
+	end
+	p:Cog("Power Text", { CT("Show %", unit, "powerShowPercent", true) }, {
+		disabled = function() local f = S(unit).powerTextFormat return f == "none" or f == "curpp" end,
+		disabledTip = "This option is only available for formats that display a percentage." })
+	Slider(p, "Fill Opacity", "Opacity of the power fill.", 0, 100, 1, unit, "powerBarOpacity", 100)
+	if sync then
+		Sync(p, "Apply Bar Opacity to all Frames", unit, { "powerBarOpacity" })
+	end
+
+	p:Label("Fill Color", "Power color (by power type) or your own color.")
+	local function powerOn() return S(unit).powerPercentPowerColor ~= false end
+	if sync then
+		Sync(p, "Apply Bar Color to all Frames", unit, { "powerPercentPowerColor", "customPowerFillColor", "powerGradientEnabled", "powerGradientDir", "powerGradientColor" })
+	end
+	p:Cog("Gradient Settings", {
+		CT("Enable Gradient", unit, "powerGradientEnabled", false),
+		CD("Gradient Direction", GRADIENT_DIR, unit, "powerGradientDir", "HORIZONTAL"),
+	})
+	Swatch(p, "Gradient End Color", unit, "powerGradientColor", { 0.2, 0.2, 0.8 }, { disabled = function() return not S(unit).powerGradientEnabled end })
+	Swatch(p, "Custom Colored Fill", unit, "customPowerFillColor", { 0, 0, 1 }, {
+		active = function() return not powerOn() end,
+		onClick = function()
+			if powerOn() then
+				S(unit).powerPercentPowerColor = false
+				return true
+			end
+		end,
+	})
+	ModeSwatch(p, "Power Colored Fill", PlayerPowerColor, powerOn, function() S(unit).powerPercentPowerColor = true end)
+
+	p:Slider("Bar Background", "Opacity of the power bar background.", 0, 100, 1, Get(unit, "customPowerBgAlpha", 100), Set(unit, "customPowerBgAlpha"))
+	if sync then
+		Sync(p, "Apply Bar Background to all Frames", unit, { "customPowerBgColor", "customPowerBgAlpha", "powerBgPowerColored" })
+	end
+	Swatch(p, "Custom Background Color", unit, "customPowerBgColor", { 0.067, 0.067, 0.067 }, {
+		active = function() return not S(unit).powerBgPowerColored end,
+		onClick = function()
+			if S(unit).powerBgPowerColored then
+				S(unit).powerBgPowerColored = false
+				return true
+			end
+		end,
+	})
+	ModeSwatch(p, "Power Colored Background", function()
+		local r, g, b = UF.PlayerPowerColor()
+		return r * 0.25, g * 0.25, b * 0.25
+	end, function() return S(unit).powerBgPowerColored end, function() S(unit).powerBgPowerColored = true end)
+
+	Dropdown(p, "Text Position", "Where the power text is on the bar.", POWER_TEXT_POS, unit, "powerPercentText", "none")
+	if sync then
+		Sync(p, "Apply Power Text Position to all Frames", unit, { "powerPercentText", "powerPercentSize", "powerPercentX", "powerPercentY" })
+	end
+	p:Cog("Text Position", {
+		CS("Size", 6, 100, 1, unit, "powerPercentSize", 9),
+		CS("X Offset", -50, 50, 1, unit, "powerPercentX", 0),
+		CS("Y Offset", -50, 50, 1, unit, "powerPercentY", 0),
+	}, { icon = "resize", disabled = NotNone(unit, "powerPercentText"), disabledTip = "This option requires a text position other than none." })
+	p:Label("Text Color", "Color of the power text.")
+	local function textPower() return S(unit).powerPercentTextPowerColor end
+	if sync then
+		Sync(p, "Apply Text Color to all Frames", unit, { "powerPercentTextPowerColor", "powerTextColor" })
+	end
+	Swatch(p, "Custom Text Color", unit, "powerTextColor", { 1, 1, 1 }, {
+		active = function() return not textPower() end,
+		onClick = function()
+			if textPower() then
+				S(unit).powerPercentTextPowerColor = false
+				return true
+			end
+		end,
+	})
+	ModeSwatch(p, "Power Colored Text", PlayerPowerColor, textPower, function() S(unit).powerPercentTextPowerColor = true end)
+
+	p:Slider("Border Size", "Border of a detached power bar, in pixels.", 0, 8, 1, Get(unit, "powerBorderSize", 0), Set(unit, "powerBorderSize"),
+		full and function() local v = S(unit).powerPosition return v ~= "detached_top" and v ~= "detached_bottom" end or nil)
+	Swatch(p, "Border Color", unit, "powerBorderColor", { 0, 0, 0, 1 }, { alpha = true })
+	p:Blank()
+end
+
+-- Cast bar rows. kick = target / focus / boss colors and options.
+local function CastRows(p, unit)
+	local isPlayer = unit == "player"
+	local kick = not isPlayer
+	local enabledKey = isPlayer and "showPlayerCastbar" or "showCastbar"
+	local function off()
+		local v = S(unit)[enabledKey]
+		if isPlayer then
+			return not v
+		end
+		return v == false
+	end
+	if isPlayer then
+		p:Paragraph("For the player frame this is a small cast bar below the frame. Blizzard's own cast bar stays as it is.")
+	end
+	p:Toggle("Show Cast Bar", "Show the cast bar of this frame.", Get(unit, enabledKey, not isPlayer), Set(unit, enabledKey))
+	if unit ~= "boss" then
+		Sync(p, isPlayer and "Apply Show Cast Bar and Fill Color to all Frames" or "Apply Show Cast Bar and Cast Color to Target and Focus", unit,
+			{ "castbarFillColor", "castbarInterruptReadyColor", "castbarUninterruptibleColor" }, isPlayer and UF.MAIN_UNITS or { "target", "focus" })
+	end
+	local rows = {
+		CT("Hide When Idle", unit, "castbarHideWhenInactive", true, nil, "Only show the cast bar while a cast is in progress; hide it the rest of the time."),
+		CS("Fill Opacity", 0, 100, 1, unit, "castFillOpacity", 100, nil, "Opacity of the cast bar fill; below 100 the world shows through the fill instead of the background."),
+		{ type = "toggle", label = "Raise Cast Bar Strata (All)", tip = "Lifts player, target, focus, and boss cast bars above other frames so they are never hidden behind them.",
+			get = function() return UF.db.raiseCastbarStrata ~= false end, set = function(v) UF.db.raiseCastbarStrata = v end },
+	}
+	if kick then
+		rows[#rows + 1] = CT("Show Kick Ready Mid-Cast Tick", unit, "castbarKickTickEnabled", true, nil,
+			"Shows a small white tick mark on the cast bar at the point where the cast will be when your interrupt comes off cooldown.")
+		rows[#rows + 1] = CT("Show Kick Ready Mid-Cast Bar", unit, "castbarInterruptMidCastEnabled", false, nil,
+			"When your interrupt is on cooldown now but will be ready before the enemy cast finishes, color the part of the cast bar during which your interrupt will be available.")
+	end
+	if unit == "boss" then
+		rows[#rows + 1] = CS("Offset X", -500, 500, 1, unit, "castbarOffsetX", 0)
+		rows[#rows + 1] = CS("Offset Y", -200, 200, 1, unit, "castbarOffsetY", 0)
+	end
+	if isPlayer then
+		rows[#rows + 1] = { type = "toggle", label = "Lock to Player Frame", tip = "Off: the cast bar is moved on its own in Unlock Mode.",
+			get = function() return S(unit).lockCastbarToFrame ~= false end, set = function(v) S(unit).lockCastbarToFrame = v end }
+	end
+	rows[#rows + 1] = CT("Custom Border Style", unit, "castBorderCustom", false, nil, "Show the border size and color controls for the cast bar.")
+	p:Cog("Cast Bar", rows, { disabled = off })
+	if kick then
+		Swatch(p, "Interrupt Ready Mid-Cast", unit, "castbarInterruptMidCastColor", { 0.318, 0.820, 0.357 },
+			{ disabled = function() return off() or not S(unit).castbarInterruptMidCastEnabled end })
+		Swatch(p, "Interrupt on CD", unit, "castbarInterruptReadyColor", { 0.92, 0.35, 0.20 }, { disabled = off })
+		Swatch(p, "Uninterruptible Cast", unit, "castbarUninterruptibleColor", { 0.5, 0.5, 0.5 }, { disabled = off })
+		Swatch(p, "Interruptible Cast", unit, "castbarFillColor", { 0.863, 0.820, 0.639 }, { disabled = off })
+	else
+		Swatch(p, "Fill Color", unit, "castbarFillColor", { 0.863, 0.820, 0.639 }, { disabled = off })
+	end
+
+	local heightKey = isPlayer and "playerCastbarHeight" or "castbarHeight"
+	p:Slider("Height", "Height of the cast bar.", 1, 40, 1, Get(unit, heightKey, 14), Set(unit, heightKey), off)
+	if unit ~= "boss" then
+		p:Sync("Apply Cast Bar Height to all Frames", function()
+			local v = S(unit)[heightKey] or 14
+			S("player").playerCastbarHeight = v
+			S("target").castbarHeight = v
+			S("focus").castbarHeight = v
+		end, function()
+			local v = S(unit)[heightKey] or 14
+			return (S("player").playerCastbarHeight or 14) == v and (S("target").castbarHeight or 14) == v and (S("focus").castbarHeight or 14) == v
+		end)
+	end
+
+	local iconKey = isPlayer and "showPlayerCastIcon" or "showCastIcon"
+	local inWidthKey = isPlayer and "playerCastbarIconInWidth" or "castbarIconInWidth"
+	local rightKey = isPlayer and "playerCastbarIconRight" or "castbarIconRight"
+	local portraitKey = isPlayer and "playerCastbarIconOnPortrait" or "castbarIconOnPortrait"
+	local oxKey = isPlayer and "playerCastIconOffsetX" or "castIconOffsetX"
+	local oyKey = isPlayer and "playerCastIconOffsetY" or "castIconOffsetY"
+	p:Toggle("Show Icon", "Show the spell icon.", Get(unit, iconKey, true), Set(unit, iconKey), off)
+	local iconRows = {
+		CT("Make Icon Part of the Bar", unit, inWidthKey, true, nil,
+			"The width of the cast bar includes the icon, rather than placing it to the left of the cast bar's width."),
+		CT("Show Icon on Right", unit, rightKey, false, nil, "Place the cast icon on the right side of the bar instead of the left."),
+	}
+	if unit ~= "boss" then
+		iconRows[#iconRows + 1] = CT("Show Icon on Portrait", unit, portraitKey, false, nil,
+			"Shows the spell icon over the portrait while casting and lets the bar use the full width.")
+	end
+	iconRows[#iconRows + 1] = CS("Offset X", -50, 50, 1, unit, oxKey, 0)
+	iconRows[#iconRows + 1] = CS("Offset Y", -50, 50, 1, unit, oyKey, 0)
+	p:Cog("Cast Icon", iconRows, { disabled = function() return off() or S(unit)[iconKey] == false end })
+
+	p:Slider("Bar Background", "Opacity of the cast bar background.", 0, 100, 1,
+		function() return floor((S(unit).castBgAlpha or 0.5) * 100 + 0.5) end,
+		function(v) S(unit).castBgAlpha = v / 100 end, off)
+	Swatch(p, "Cast Background", unit, "castBgColor", { 0, 0, 0 })
+
+	Dropdown(p, "Spell Name", "Where the spell name is.", TEXT_SIDE, unit, "castSpellNameSide", "left", off, function(v)
+		local s = S(unit)
+		if v ~= "none" and s.showCastTarget ~= false and (s.castSpellTargetSide or "right") == v then
+			s.showCastTarget = false
+		end
+	end)
+	Swatch(p, "Spell Name Color", unit, "castSpellNameColor", { 1, 1, 1 })
+	local nameRows = {
+		CS("Size", 6, 20, 1, unit, "castSpellNameSize", 11),
+		CS("X Offset", -50, 50, 1, unit, "castSpellNameX", 0),
+		CS("Y Offset", -50, 50, 1, unit, "castSpellNameY", 0),
+	}
+	if unit == "target" or unit == "focus" then
+		nameRows[#nameRows + 1] = CT("Combine Spell Name and Target", unit, "castCombineNameTarget", false, nil,
+			"Appends the cast target to the spell name (Spell Name - Target), class colored, and disables the separate Spell Target display.")
+	end
+	p:Cog("Spell Name", nameRows)
+
+	p:Dropdown("Duration", "Where the time left is.", function() return Items(DURATION_SIDE) end,
+		function() return S(unit).showCastDuration == false and "none" or (S(unit).castDurationSide or "right") end,
+		function() return LabelOf(DURATION_SIDE, S(unit).showCastDuration == false and "none" or (S(unit).castDurationSide or "right")) end,
+		function(v)
+			if v == "none" then
+				S(unit).showCastDuration = false
+			else
+				S(unit).showCastDuration = true
+				S(unit).castDurationSide = v
+			end
+		end, nil, off)
+	Swatch(p, "Duration Color", unit, "castDurationColor", { 1, 1, 1 })
+	p:Cog("Duration", {
+		CS("Size", 6, 20, 1, unit, "castDurationSize", 10),
+		CS("X Offset", -50, 50, 1, unit, "castDurationX", 0),
+		CS("Y Offset", -50, 50, 1, unit, "castDurationY", 0),
+	})
+
+	if unit ~= "boss" then
+		p:Dropdown("Spell Target", "Where the name of the cast's target is (5.4.8: the caster's target when the cast starts).",
+			function() return Items(TEXT_SIDE) end,
+			function() return S(unit).showCastTarget == false and "none" or (S(unit).castSpellTargetSide or "right") end,
+			function() return LabelOf(TEXT_SIDE, S(unit).showCastTarget == false and "none" or (S(unit).castSpellTargetSide or "right")) end,
+			function(v)
+				local s = S(unit)
+				if v == "none" then
+					s.showCastTarget = false
+				else
+					s.showCastTarget = true
+					s.castSpellTargetSide = v
+					if (s.castSpellNameSide or "left") == v then
+						s.castSpellNameSide = "none"
+					end
+				end
+			end, nil, function() return off() or S(unit).castCombineNameTarget end)
+		Swatch(p, "Spell Target Color", unit, "castSpellTargetColor", { 1, 1, 1 })
+		p:Cog("Spell Target", {
+			CS("Size", 6, 20, 1, unit, "castSpellTargetSize", 11),
+			CS("X Offset", -50, 50, 1, unit, "castSpellTargetX", 0),
+			CS("Y Offset", -50, 50, 1, unit, "castSpellTargetY", 0),
+		})
+	end
+	Toggle(p, "Reverse Fill", "The bar fills from right to left.", unit, "castReverseFill", false, off)
+
+	local widthKey = isPlayer and "playerCastbarWidth" or "castbarWidth"
+	p:Slider("Cast Bar Width", "Width of the cast bar. 0 = the frame width.", 0, 500, 1, Get(unit, widthKey, unit == "boss" and 0 or 181), Set(unit, widthKey), off)
+	p:Slider("Border Size", "Cast bar border in pixels (Custom Border Style).", 0, 8, 1, Get(unit, "castBorderSize", 1), Set(unit, "castBorderSize"),
+		function() return off() or not S(unit).castBorderCustom end)
+	Swatch(p, "Border", unit, "castBorderColor", { 0, 0, 0 }, {
+		disabled = function() return off() or not S(unit).castBorderCustom end })
+end
+
+-- Buff / debuff rows of main frames.
+local function AuraRows(p, unit)
+	local function buffOff() return S(unit).showBuffs == false end
+	local function debuffOff() return (S(unit).debuffAnchor or "bottomleft") == "none" end
+	local function Swap(key, value)
+		-- Buffs and debuffs never use the same anchor: the other one takes the old spot.
+		local s = S(unit)
+		local otherKey = key == "buffAnchor" and "debuffAnchor" or "buffAnchor"
+		local old = s[key] or (key == "buffAnchor" and "topleft" or "bottomleft")
+		if value ~= "none" and s[otherKey] == value then
+			s[otherKey] = old
+		end
+		s[key] = value
+	end
+	p:Dropdown("Buff Display", "Where the buffs are.", function() return Items(AURA_ANCHOR) end,
+		function() return S(unit).showBuffs == false and "none" or (S(unit).buffAnchor or "topleft") end,
+		function() return LabelOf(AURA_ANCHOR, S(unit).showBuffs == false and "none" or (S(unit).buffAnchor or "topleft")) end,
+		function(v)
+			if v == "none" then
+				S(unit).showBuffs = false
+			else
+				S(unit).showBuffs = true
+				Swap("buffAnchor", v)
+			end
+		end)
+	Sync(p, "Apply Buffs Location to all Frames", unit, { "showBuffs", "buffAnchor" })
+	local buffRows = {
+		CD("Growth Direction", AURA_GROWTH, unit, "buffGrowth", "auto"),
+		CS("Max Count", 1, 40, 1, unit, "maxBuffs", 4),
+		{ type = "slider", label = "Max Per Row", min = 1, max = 40, step = 1,
+			get = function() return S(unit).buffMaxPerRow or S(unit).maxBuffs or 4 end, set = function(v) S(unit).buffMaxPerRow = v end },
+		CT("Cropped Icons", unit, "buffCropIcons", false),
+		CS("Icon Zoom", 0, 0.2, 0.01, unit, "buffIconZoom", 0.07),
+	}
+	if unit ~= "player" then
+		buffRows[#buffRows + 1] = CT("Dispel Type Borders", unit, "buffDispelBorder", false)
+	end
+	p:Cog("Buff Settings", buffRows, { disabled = buffOff })
+	Slider(p, "Buff Size", "Size of the buff icons.", 10, 70, 1, unit, "buffSize", 22, buffOff)
+	p:Cog("Buff Position", {
+		CS("Offset X", -500, 500, 1, unit, "buffOffsetX", 0),
+		CS("Offset Y", -500, 500, 1, unit, "buffOffsetY", 0),
+		CS("Spacing X", -1, 10, 1, unit, "buffSpacingX", 1),
+		CS("Spacing Y", -1, 10, 1, unit, "buffSpacingY", 1),
+	}, { icon = "directions", disabled = buffOff })
+
+	Toggle(p, "Show Buff Duration", "Show the time left on the buff icons.", unit, "buffShowCooldownText", false, buffOff)
+	p:Cog("Duration Text", {
+		CS("Size", 6, 100, 1, unit, "buffCooldownTextSize", 10),
+		CS("Offset X", -100, 100, 1, unit, "buffCooldownTextOffsetX", 0),
+		CS("Offset Y", -100, 100, 1, unit, "buffCooldownTextOffsetY", 0),
+		{ type = "slider", label = "Precise Below (sec)", min = 0, max = 60, step = 1, tip = "Below this many seconds the time shows one decimal. 0 = off.",
+			get = function() return S(unit).buffCooldownTextPrecision or 0 end, set = function(v) S(unit).buffCooldownTextPrecision = v > 0 and v or nil end },
+	}, { icon = "directions", disabled = function() return buffOff() or not S(unit).buffShowCooldownText end })
+	Slider(p, "Buff Stack Size", "Size of the stack number.", 6, 100, 1, unit, "buffStackTextSize", 14, buffOff)
+	p:Cog("Stack Position", {
+		CD("Position", STACK_POS, unit, "buffStackTextPosition", "bottomright"),
+		CS("Offset X", -100, 100, 1, unit, "buffStackTextOffsetX", 0),
+		CS("Offset Y", -100, 100, 1, unit, "buffStackTextOffsetY", 0),
+	}, { icon = "directions", disabled = buffOff })
+
+	p:Dropdown("Debuff Display", "Where the debuffs are.", function() return Items(AURA_ANCHOR) end,
+		function() return S(unit).debuffAnchor or "bottomleft" end,
+		function() return LabelOf(AURA_ANCHOR, S(unit).debuffAnchor or "bottomleft") end,
+		function(v) Swap("debuffAnchor", v) end)
+	local debuffRows = {
+		CD("Growth Direction", AURA_GROWTH, unit, "debuffGrowth", "auto"),
+		CS("Max Count", 1, 40, 1, unit, "maxDebuffs", 20),
+		{ type = "slider", label = "Max Per Row", min = 1, max = 40, step = 1,
+			get = function() return S(unit).debuffMaxPerRow or S(unit).maxDebuffs or 20 end, set = function(v) S(unit).debuffMaxPerRow = v end },
+		CT("Cropped Icons", unit, "debuffCropIcons", false),
+		CS("Icon Zoom", 0, 0.2, 0.01, unit, "debuffIconZoom", 0.07),
+		CT("Dispel Type Borders", unit, "debuffDispelBorder", false),
+	}
+	if unit == "player" then
+		debuffRows[#debuffRows + 1] = CT("Use Dispel Colors", unit, "debuffDispelUsePalette", false,
+			function() return not S(unit).debuffDispelBorder end, "Colors the dispel type borders with your Dispel Colors instead of Blizzard's.")
+	end
+	p:Cog("Debuff Settings", debuffRows, { disabled = debuffOff })
+	Slider(p, "Debuff Size", "Size of the debuff icons.", 10, 70, 1, unit, "debuffSize", 22, debuffOff)
+	p:Cog("Debuff Position", {
+		CS("Offset X", -500, 500, 1, unit, "debuffOffsetX", 0),
+		CS("Offset Y", -500, 500, 1, unit, "debuffOffsetY", 0),
+		CS("Spacing X", -1, 10, 1, unit, "debuffSpacingX", 1),
+		CS("Spacing Y", -1, 10, 1, unit, "debuffSpacingY", 1),
+	}, { icon = "directions", disabled = debuffOff })
+
+	Toggle(p, "Show Debuff Duration", "Show the time left on the debuff icons.", unit, "debuffShowCooldownText", false, debuffOff)
+	p:Cog("Duration Text", {
+		CS("Size", 6, 100, 1, unit, "debuffCooldownTextSize", 10),
+		CS("Offset X", -100, 100, 1, unit, "debuffCooldownTextOffsetX", 0),
+		CS("Offset Y", -100, 100, 1, unit, "debuffCooldownTextOffsetY", 0),
+		{ type = "slider", label = "Precise Below (sec)", min = 0, max = 60, step = 1,
+			get = function() return S(unit).debuffCooldownTextPrecision or 0 end, set = function(v) S(unit).debuffCooldownTextPrecision = v > 0 and v or nil end },
+	}, { icon = "directions", disabled = function() return debuffOff() or not S(unit).debuffShowCooldownText end })
+	Slider(p, "Debuff Stack Size", "Size of the stack number.", 6, 100, 1, unit, "debuffStackTextSize", 14, debuffOff)
+	p:Cog("Stack Position", {
+		CD("Position", STACK_POS, unit, "debuffStackTextPosition", "bottomright"),
+		CS("Offset X", -100, 100, 1, unit, "debuffStackTextOffsetX", 0),
+		CS("Offset Y", -100, 100, 1, unit, "debuffStackTextOffsetY", 0),
+	}, { icon = "directions", disabled = debuffOff })
+
+	-- Filters
+	local label = UF.UNIT_LABELS[unit]
+	if unit == "player" then
+		local buffItems = { { value = "all", name = "All Buffs" }, { value = "duration", name = "Has Duration" } }
+		p:MultiSelect(label .. " Buff Filter", "All Buffs shows every buff. Has Duration shows every buff that has a duration (hides permanent buffs).",
+			function() return buffItems end,
+			function(v)
+				local s = S(unit)
+				if v == "all" then
+					return s.buffShowAll ~= false and not s.buffHasDuration
+				end
+				return s.buffHasDuration
+			end,
+			function(v)
+				local s = S(unit)
+				if v == "all" then
+					s.buffShowAll = not (s.buffShowAll ~= false and not s.buffHasDuration) and true or false
+					s.buffHasDuration = nil
+				else
+					s.buffHasDuration = not s.buffHasDuration or nil
+					if s.buffHasDuration then
+						s.buffShowAll = false
+					end
+				end
+			end,
+			function()
+				local s = S(unit)
+				if s.buffHasDuration then
+					return "Has Duration"
+				end
+				return s.buffShowAll ~= false and "All Buffs" or "None"
+			end, buffOff)
+		local debuffClasses = {
+			{ "ShowAll", "All Debuffs" }, { "HasDuration", "Has Duration" }, { "CastByMe", "Cast By You" },
+			{ "BossAura", "Boss Debuffs" }, { "Dispellable", "Dispellable By You" }, { "DispelTyped", "Dispels" },
+			{ "NonPlayer", "Non-Player Auras" }, { "AnyPlayer", "From Any Player" },
+			{ "DispelMagic", "Magic" }, { "DispelCurse", "Curse" }, { "DispelPoison", "Poison" }, { "DispelDisease", "Disease" },
+			{ "MatchAll", "Match All Filters" },
+		}
+		p:MultiSelect(label .. " Debuff Filter", "All Debuffs shows every debuff. Otherwise only debuffs that match the checked filters (any of them, or all with Match All Filters).",
+			function()
+				local items = {}
+				for i, c in ipairs(debuffClasses) do
+					items[i] = { value = c[1], name = c[2] }
+				end
+				return items
+			end,
+			function(v)
+				local s = S(unit)
+				if v == "ShowAll" then
+					return s.debuffShowAll ~= false
+				elseif v == "HasDuration" then
+					return s.debuffHasDuration
+				elseif v == "MatchAll" then
+					return s.debuffFilterMatch == "all"
+				end
+				return s["debuff" .. v]
+			end,
+			function(v)
+				local s = S(unit)
+				if v == "ShowAll" then
+					s.debuffShowAll = s.debuffShowAll == false
+				elseif v == "HasDuration" then
+					s.debuffHasDuration = not s.debuffHasDuration or nil
+				elseif v == "MatchAll" then
+					s.debuffFilterMatch = s.debuffFilterMatch ~= "all" and "all" or nil
+				else
+					s["debuff" .. v] = not s["debuff" .. v] or nil
+				end
+			end,
+			function()
+				local s = S(unit)
+				if s.debuffShowAll ~= false then
+					return "All Debuffs"
+				end
+				local names = {}
+				for _, c in ipairs(debuffClasses) do
+					if c[1] ~= "ShowAll" and c[1] ~= "MatchAll" and (s["debuff" .. c[1]]) then
+						names[#names + 1] = c[2]
+					end
+				end
+				return #names > 0 and table.concat(names, s.debuffFilterMatch == "all" and " & " or ", ") or "None"
+			end, debuffOff)
+	else
+		local buffClasses = { { "DurOnly", "Has Duration" }, { "Stealable", "Stealable" }, { "Dispellable", "Dispellable" } }
+		p:MultiSelect(label .. " Buff Filter", "Nothing checked shows every buff. Stealable = buffs you can spellsteal or purge. Dispellable = buffs with a dispel type. Has Duration hides permanent buffs.",
+			function()
+				local items = {}
+				for i, c in ipairs(buffClasses) do
+					items[i] = { value = c[1], name = c[2] }
+				end
+				return items
+			end,
+			function(v) return S(unit)["buff" .. v] end,
+			function(v) S(unit)["buff" .. v] = not S(unit)["buff" .. v] or nil end,
+			function()
+				local names = {}
+				for _, c in ipairs(buffClasses) do
+					if S(unit)["buff" .. c[1]] then
+						names[#names + 1] = c[2]
+					end
+				end
+				return #names > 0 and table.concat(names, ", ") or "All Buffs"
+			end, buffOff)
+		p:Cog("Purgeable Buffs", {
+			{ type = "dropdown", label = "Glow Style", tip = "Glows the buffs you can purge or spellsteal. Glowing buffs lead the row.",
+				items = function() return Items({ { 0, "None" }, { 99, "Blizzard Border" } }) end,
+				get = function() return S(unit).buffPurgeGlow or 0 end,
+				set = function(v) S(unit).buffPurgeGlow = v ~= 0 and v or nil end },
+		}, { disabled = buffOff })
+		p:Dropdown(label .. " Debuff Filter", "Which debuffs are shown. 5.4.8 has no 'important' flag: the Boss options use the boss debuff flag.",
+			function() return Items(DEBUFF_MODE) end,
+			function() return UF.DebuffFilterMode(S(unit)) end,
+			function() return LabelOf(DEBUFF_MODE, UF.DebuffFilterMode(S(unit))) end,
+			function(v) S(unit).debuffFilterMode = v end, nil, debuffOff)
+		p:Cog("Debuff Filter", {
+			CT("Has Duration", unit, "debuffHasDuration", false, nil, "Only show debuffs that have a duration, excluding permanent ones."),
+		}, { disabled = debuffOff })
+	end
+
+	if unit == "player" then
+		p:Dropdown("Dispel Overlay", "Tints the health bar while you have a debuff with a dispel type.", function() return Items(DISPEL_OVERLAY) end,
+			function() return UF.db.dispelOverlay or "none" end,
+			function() return LabelOf(DISPEL_OVERLAY, UF.db.dispelOverlay or "none") end,
+			function(v) UF.db.dispelOverlay = v end)
+		p:Cog("Dispel Overlay", {
+			{ type = "slider", label = "Overlay Opacity", min = 5, max = 100, step = 1,
+				get = function() return UF.db.dispelOverlayOpacity or 100 end, set = function(v) UF.db.dispelOverlayOpacity = v end },
+			{ type = "toggle", label = "Only Dispellable by You", tip = "Shows the overlay only for debuffs you can dispel.",
+				get = function() return UF.db.dispelOverlayByMe end, set = function(v) UF.db.dispelOverlayByMe = v end },
+		})
+		p:Label("Dispel Colors", "Colors of the dispel overlay and of Use Dispel Colors.")
+		for _, kind in ipairs({ "Poison", "Disease", "Curse", "Magic" }) do
+			local key = UF.DISPEL_KEYS[kind]
+			p:Swatch(kind, function() local c = UF.db[key] return c.r, c.g, c.b end,
+				function(r, g, b) local c = UF.db[key] c.r, c.g, c.b = r, g, b end)
+		end
+	end
+
+	p:Slider("Aura Border Size", "Border of the aura icons, in pixels.", 0, 8, 1, Get(unit, "auraBorderSize", 1), Set(unit, "auraBorderSize"))
+	p:Swatch("Aura Border Color",
+		function() local s = S(unit) return s.auraBorderR or 0, s.auraBorderG or 0, s.auraBorderB or 0, s.auraBorderA or 1 end,
+		function(r, g, b, a) local s = S(unit) s.auraBorderR, s.auraBorderG, s.auraBorderB = r, g, b if a then s.auraBorderA = a end end,
+		{ alpha = true })
+	p:Toggle("Aura Tooltips", "Show the aura tooltip when you hover a buff or debuff icon.",
+		function() return S(unit).showAuraTooltips ~= false end, function(v) S(unit).showAuraTooltips = v end)
+end
+
+---------------------------------------------------------------------------
+-- Main Frames (player / target / focus)
+---------------------------------------------------------------------------
+local MAIN_LIST = { { "player", "Player" }, { "target", "Target" }, { "focus", "Focus" } }
+local MINI_LIST = { { "targettarget", "Target of Target" }, { "focustarget", "Focus Target" }, { "pet", "Pet" } }
+
+-- "Edit Frame" (which frame the page changes) is the header dropdown above
+-- the preview (PreviewHeader).
+local function UnitSelector(p, list, which)
+	p:Dropdown("Apply All Settings From", "Copy every shared setting from another frame in this group to this frame.",
+		function()
+			local items = {}
+			for _, entry in ipairs(list) do
+				if entry[1] ~= sel[which] then
+					items[#items + 1] = { value = entry[1], name = entry[2] }
+				end
+			end
+			return items
+		end,
+		function() return nil end, function() return "Choose Frame..." end,
+		function(v)
+			local dialog = StaticPopup_Show("EUI_UF_APPLY_ALL", UF.UNIT_LABELS[v], UF.UNIT_LABELS[sel[which]])
+			if dialog then
+				dialog.data = { from = v, to = sel[which] }
+			end
+		end)
+end
+
+local function BuildDisplay(p, unit)
+	p:Section("Display")
+	VisibilityRow(p, unit)
+	p:Toggle("Enable " .. UF.UNIT_LABELS[unit] .. " Frame", "Turn this EllesmereUI frame on or off. Turning on a frame that was off may need a UI reload to hide Blizzard's frame.",
+		function() return UF.db.enabledFrames[unit] ~= false end,
+		function(v) UF.db.enabledFrames[unit] = v end)
+	BarTextureRow(p, unit, false, true)
+	p:Toggle("Dark Mode", "Dark health fill (#111111) with a light grey background for the missing health. Applies to all frames.",
+		function() return UF.db.darkTheme end, function(v) UF.db.darkTheme = v end)
+	p:Slider("Border Size", "Border around the whole frame, in pixels.", 0, 8, 1, Get(unit, "borderSize", 1), Set(unit, "borderSize"))
+	Sync(p, "Apply Border to all Frames", unit, { "borderSize", "borderColor", "borderAlpha" })
+	p:Swatch("Border",
+		function() local c = S(unit).borderColor or {} return c.r or 0, c.g or 0, c.b or 0, S(unit).borderAlpha or 1 end,
+		function(r, g, b, a)
+			local s = S(unit)
+			s.borderColor = s.borderColor or {}
+			s.borderColor.r, s.borderColor.g, s.borderColor.b = r, g, b
+			if a then s.borderAlpha = a end
+		end, { alpha = true })
+	local tipItems = {
+		{ value = "unit", name = "Unit Frame" }, { value = "auras", name = "Main Frames Auras" }, { value = "boss", name = "Boss Frames Auras" },
+	}
+	p:MultiSelect("Show Tooltip For", "Choose which tooltips appear on hover. Affects all unit frames, including boss frames.",
+		function() return tipItems end,
+		function(v)
+			if v == "unit" then
+				return S(unit).showUnitTooltip ~= false
+			elseif v == "auras" then
+				return S(unit).showAuraTooltips ~= false
+			end
+			return UF.db.boss.showAuraTooltips ~= false
+		end,
+		function(v)
+			if v == "unit" then
+				local on = S(unit).showUnitTooltip == false
+				for _, key in ipairs({ "player", "target", "focus", "targettarget", "focustarget", "pet", "boss" }) do
+					UF.db[key].showUnitTooltip = on
+				end
+			elseif v == "auras" then
+				local on = S(unit).showAuraTooltips == false
+				for _, key in ipairs({ "player", "target", "focus", "targettarget", "focustarget", "pet" }) do
+					UF.db[key].showAuraTooltips = on
+				end
+			else
+				UF.db.boss.showAuraTooltips = UF.db.boss.showAuraTooltips == false
+			end
+		end,
+		function()
+			local names = {}
+			if S(unit).showUnitTooltip ~= false then names[#names + 1] = "Unit Frame" end
+			if S(unit).showAuraTooltips ~= false then names[#names + 1] = "Auras" end
+			if UF.db.boss.showAuraTooltips ~= false then names[#names + 1] = "Boss Auras" end
+			return #names > 0 and table.concat(names, ", ") or "None"
+		end)
+	Dropdown(p, "Frame Strata", "Controls the order that overlapping elements display in. Set higher to show above other elements.",
+		STRATA, unit, "frameStrata", "MEDIUM")
+	Sync(p, "Apply Frame Strata to all Frames", unit, { "frameStrata" })
+	p:Cog("Detached Bar Stratas", {
+		{ type = "toggle", label = "Custom Bar Stratas", get = function() return UF.db.enableCustomBarStratas end, set = function(v) UF.db.enableCustomBarStratas = v end },
+		{ type = "dropdown", label = "Detached Power Bar", items = function() return Items(STRATA) end,
+			get = function() return UF.db.detachedPowerStrata or "HIGH" end, set = function(v) UF.db.detachedPowerStrata = v end },
+		{ type = "dropdown", label = "Detached Text Bar", items = function() return Items(STRATA) end,
+			get = function() return UF.db.detachedTextBarStrata or "DIALOG" end, set = function(v) UF.db.detachedTextBarStrata = v end },
+	})
+	p:Toggle("Show Decimal on Health Text", "Show one decimal place on health text: health values like 240.5k and health percent like 77.3%. Power text is unaffected. Applies to all units.",
+		function() return UF.db.showDecimalOnText end, function(v) UF.db.showDecimalOnText = v end)
+	p:Cog("Health Text Decimals", {
+		{ type = "toggle", label = "Only Show for % Health", get = function() return UF.db.showDecimalPercentOnly end, set = function(v) UF.db.showDecimalPercentOnly = v end },
+		{ type = "toggle", label = "Show 2 for Boss", get = function() return UF.db.showDecimalBoss2 ~= false end, set = function(v) UF.db.showDecimalBoss2 = v end },
+		{ type = "toggle", label = "Hide Trailing Zeros", get = function() return UF.db.showDecimalTrimZeros end, set = function(v) UF.db.showDecimalTrimZeros = v end },
+	}, { disabled = function() return not UF.db.showDecimalOnText end })
+
+	local hoverItems = { { value = "highlight", name = "Highlight" } }
+	if unit == "player" then
+		hoverItems[2] = { value = "threat", name = "Player Threat (Non-Tank)" }
+	end
+	p:MultiSelect("Hover Borders", "Highlight: the frame border changes color on mouseover. Player Threat: a border on your player frame when you pull or hold threat as a non-tank, in dungeons and raids.",
+		function() return hoverItems end,
+		function(v)
+			if v == "threat" then
+				return UF.db.playerThreatBorderEnabled
+			end
+			return UF.db.player.highlightEnabled ~= false
+		end,
+		function(v)
+			if v == "threat" then
+				UF.db.playerThreatBorderEnabled = not UF.db.playerThreatBorderEnabled
+			else
+				local on = UF.db.player.highlightEnabled == false
+				for _, key in ipairs(UF.MAIN_UNITS) do
+					UF.db[key].highlightEnabled = on
+				end
+			end
+		end,
+		function()
+			local names = {}
+			if UF.db.player.highlightEnabled ~= false then names[#names + 1] = "Highlight" end
+			if unit == "player" and UF.db.playerThreatBorderEnabled then names[#names + 1] = "Threat" end
+			return #names > 0 and table.concat(names, ", ") or "None"
+		end)
+	if unit == "player" then
+		p:Swatch("Close to Aggro", function() local c = UF.db.playerThreatNearAggroColor return c.r, c.g, c.b end,
+			function(r, g, b) local c = UF.db.playerThreatNearAggroColor c.r, c.g, c.b = r, g, b end,
+			{ active = function() return UF.db.playerThreatBorderEnabled end })
+		p:Swatch("Has Aggro", function() local c = UF.db.playerThreatHasAggroColor return c.r, c.g, c.b end,
+			function(r, g, b) local c = UF.db.playerThreatHasAggroColor c.r, c.g, c.b = r, g, b end,
+			{ active = function() return UF.db.playerThreatBorderEnabled end })
+	end
+	p:Swatch("Highlight",
+		function() local c = UF.db.player.highlightColor or {} return c.r or 1, c.g or 1, c.b or 1, UF.db.player.highlightAlpha or 1 end,
+		function(r, g, b, a)
+			for _, key in ipairs(UF.MAIN_UNITS) do
+				UF.db[key].highlightColor = { r = r, g = g, b = b }
+				if a then UF.db[key].highlightAlpha = a end
+			end
+		end, { alpha = true, active = function() return UF.db.player.highlightEnabled ~= false end })
+
+	if unit == "target" or unit == "focus" then
+		p:Toggle("Show Threat % on Target", "Shows your threat percentage on the target frame while you are in combat with it. The cog adds the focus frame.",
+			function() return UF.db.threatPctEnabled end, function(v) UF.db.threatPctEnabled = v end)
+		p:Cog("Threat % Units", {
+			{ type = "toggle", label = "Show on Focus", get = function() return UF.db.threatPctFocus end, set = function(v) UF.db.threatPctFocus = v end },
+		}, { disabled = function() return not UF.db.threatPctEnabled end })
+		p:Dropdown("Threat % Position", "Where the threat number is.", function() return Items(THREAT_POS) end,
+			function() return UF.db.threatPctPosition or "CENTER" end,
+			function() return LabelOf(THREAT_POS, UF.db.threatPctPosition or "CENTER") end,
+			function(v) UF.db.threatPctPosition = v end, nil, function() return not UF.db.threatPctEnabled end)
+		p:Cog("Threat %", {
+			{ type = "toggle", label = "Color by Threat", tip = "Colors the number by threat status. Off shows it in white.",
+				get = function() return UF.db.threatPctColorByThreat ~= false end, set = function(v) UF.db.threatPctColorByThreat = v end },
+			{ type = "slider", label = "Size", min = 6, max = 20, step = 1, get = function() return UF.db.threatPctSize or 12 end, set = function(v) UF.db.threatPctSize = v end },
+			{ type = "slider", label = "X Offset", min = -100, max = 100, step = 1, get = function() return UF.db.threatPctXOffset or 0 end, set = function(v) UF.db.threatPctXOffset = v end },
+			{ type = "slider", label = "Y Offset", min = -100, max = 100, step = 1, get = function() return UF.db.threatPctYOffset or 0 end, set = function(v) UF.db.threatPctYOffset = v end },
+		}, { disabled = function() return not UF.db.threatPctEnabled end })
+	end
+end
+
+local function BuildPortrait(p, unit)
+	p:Section("Portrait")
+	local function modeNone() return S(unit).showPortrait == false or (S(unit).portraitStyle or "attached") == "none" end
+	local function notDetached() return modeNone() or S(unit).portraitStyle ~= "detached" end
+	p:Dropdown("Portrait Mode", "None, attached to the bars, or detached next to the frame.", function() return Items(PORTRAIT_MODE) end,
+		function() return S(unit).showPortrait == false and "none" or (S(unit).portraitStyle or "attached") end,
+		function() return LabelOf(PORTRAIT_MODE, S(unit).showPortrait == false and "none" or (S(unit).portraitStyle or "attached")) end,
+		function(v)
+			local s = S(unit)
+			s.portraitStyle = v
+			s.showPortrait = v ~= "none"
+			if v ~= "detached" then
+				s.portraitSize = 0
+				if s.portraitSide == "top" then
+					s.portraitSide = unit == "player" and "left" or "right"
+				end
+			end
+		end)
+	Sync(p, "Apply Portrait Mode to all Frames", unit, { "portraitStyle", "showPortrait" })
+	p:Cog("Portrait Settings", {
+		CT("Custom Non-Player Portrait", unit, "portraitNonPlayerOn", false, nil, "Pick what NPCs show in Class art instead of their 2D portrait."),
+	}, { disabled = modeNone, disabledTip = "Portrait Mode is set to None" })
+
+	local ART = { { "3d", "3D Portrait" }, { "2d", "2D Portrait" } }
+	for _, key in ipairs(UF.CLASS_STYLE_ORDER) do
+		ART[#ART + 1] = { "class:" .. key, "Class: " .. UF.CLASS_STYLE_NAMES[key] }
+	end
+	local function ArtValue()
+		local s = S(unit)
+		if s.portraitMode == "class" then
+			return "class:" .. (s.classThemeStyle or "modern")
+		end
+		return s.portraitMode or "2d"
+	end
+	p:Dropdown("Art Style", "3D model, 2D portrait or EllesmereUI class art.", function() return Items(ART) end, ArtValue,
+		function() return LabelOf(ART, ArtValue()) end,
+		function(v)
+			local s = S(unit)
+			local style = v:match("^class:(.+)$")
+			if style then
+				s.portraitMode = "class"
+				s.classThemeStyle = style
+			else
+				s.portraitMode = v
+			end
+			s.showPortrait = true
+			if v == "3d" and s.detachedPortraitShape == "circle" then
+				s.detachedPortraitShape = "portrait"
+			end
+		end, nil, modeNone)
+	Sync(p, "Apply Art Style to all Frames", unit, { "portraitMode", "classThemeStyle" })
+
+	Dropdown(p, "Non-Player Portrait", "What NPCs show while Art Style is Class.", PORTRAIT_NONPLAYER, unit, "portraitNonPlayer", "2d",
+		function() return modeNone() or S(unit).portraitMode ~= "class" or not S(unit).portraitNonPlayerOn end)
+	p:Blank()
+
+	Slider(p, "Size", "Size change of a detached portrait.", -50, 100, 1, unit, "portraitSize", 0, notDetached)
+	Sync(p, "Apply Portrait Size to all Frames", unit, { "portraitSize" })
+	p:Cog("Portrait Zoom", {
+		CS("2D Zoom", 50, 100, 1, unit, "portraitArtScale", 100),
+		CS("3D Zoom", 100, 300, 1, unit, "portrait3dZoom", 100),
+		CS("Class Zoom", 50, 200, 1, unit, "portraitClassZoom", 100, function() return S(unit).portraitMode ~= "class" end),
+		CT("Mirror Portrait", unit, "portraitMirror", false, nil, "Mirrors 2D portraits and class art."),
+	}, { disabled = modeNone })
+	Dropdown(p, "Position", "Side of the portrait. Top needs Detached mode.", PORTRAIT_SIDE, unit, "portraitSide", unit == "player" and "left" or "right", modeNone,
+		function(v)
+			if v == "top" and S(unit).portraitStyle ~= "detached" then
+				S(unit).portraitSide = unit == "player" and "left" or "right"
+			end
+		end)
+	Sync(p, "Apply Portrait Position to all Frames", unit, { "portraitSide" })
+	p:Cog("Portrait Position Offsets", {
+		CS("X Offset", -100, 100, 1, unit, "portraitX", 0),
+		CS("Y Offset", -100, 100, 1, unit, "portraitY", 0),
+	}, { icon = "directions", disabled = notDetached, disabledTip = "This option requires Portrait Mode to be set to Detached." })
+
+	Dropdown(p, "Shape", "Shape of a detached portrait. 5.4.8 has no texture masks: Circle works with 2D portraits.", PORTRAIT_SHAPE, unit,
+		"detachedPortraitShape", "portrait", notDetached)
+	Sync(p, "Apply Portrait Shape to all Frames", unit, { "detachedPortraitShape" })
+	p:Label("Shape Border", "Border of a detached portrait: your color or the unit's class / reaction color.", notDetached)
+	Sync(p, "Apply Shape Border to all Frames", unit, { "detachedPortraitBorderColor", "detachedPortraitClassColor", "detachedPortraitBorderSize",
+		"detachedPortraitBorderOpacity", "detachedPortraitUnitColorDark" })
+	p:Cog("Shape Border Settings", {
+		CS("Size", 1, 7, 1, unit, "detachedPortraitBorderSize", 7),
+		CS("Opacity", 0, 100, 1, unit, "detachedPortraitBorderOpacity", 100),
+		CT("Unit Color in Dark Mode", unit, "detachedPortraitUnitColorDark", false,
+			function() return not (S(unit).detachedPortraitClassColor ~= false and UF.db.darkTheme) end,
+			"Keeps the unit's class or reaction color on the ring in Dark Mode instead of your own class color."),
+	}, { disabled = notDetached })
+	Swatch(p, "Custom Color", unit, "detachedPortraitBorderColor", { 0, 0, 0 }, {
+		active = function() return S(unit).detachedPortraitClassColor == false end,
+		onClick = function()
+			if S(unit).detachedPortraitClassColor ~= false then
+				S(unit).detachedPortraitClassColor = false
+				return true
+			end
+		end,
+	})
+	ModeSwatch(p, "Class Colored", PlayerClassColor, function() return S(unit).detachedPortraitClassColor ~= false end,
+		function() S(unit).detachedPortraitClassColor = true end)
+end
+
+local function BuildHealth(p, unit, mini)
+	p:Section("Health Bar")
+	local list = unit == "player" and HEALTH_TEXT_PLAYER or (mini and HEALTH_TEXT_MINI or HEALTH_TEXT)
+	local sync = not mini
+	Slider(p, "Health Bar Height", "Height of the health bar.", mini and 10 or 15, 100, 1, unit, "healthHeight", mini and 25 or 46)
+	if sync then
+		Sync(p, "Apply Health Bar Height to all Frames", unit, { "healthHeight" })
+	end
+	p:Cog("Health Bar Fill", {
+		CT("Reverse Fill", unit, "healthReverseFill", false),
+		CT("Vertical Fill", unit, "healthVerticalFill", false, nil, "Fill the health bar bottom-to-top instead of left-to-right. Reverse Fill flips it to top-to-bottom."),
+	})
+	Slider(p, "Bar Width", "Width of the health and power bars.", mini and 60 or 80, mini and 300 or 400, 1, unit, "frameWidth", mini and 101 or 181)
+	if sync then
+		Sync(p, "Apply Bar Width to all Frames", unit, { "frameWidth" })
+	end
+	FillColorRow(p, unit, sync)
+	BackgroundRow(p, unit, sync)
+	Toggle(p, "Smooth Health Bars", "Health changes slide instead of jumping.", unit, "smoothBars", false)
+	Slider(p, "Fill Opacity", "Opacity of the health fill.", 0, 100, 1, unit, "healthBarOpacity", 90, Dark)
+	if sync then
+		Sync(p, "Apply Bar Opacity to all Frames", unit, { "healthBarOpacity" })
+	end
+	TextSlot(p, unit, "left", "Left Text", list, sync)
+	TextSlot(p, unit, "right", "Right Text", list, sync)
+	TextSlot(p, unit, "center", "Center Text", list, sync)
+	if not mini or unit == "boss" then
+		TextSlot(p, unit, "extra", "Extra Text (full length)", list, sync)
+	else
+		p:Blank()
+	end
+	Toggle(p, "Level Text: Difficulty Color", "Colors level text by difficulty, from grey (trivial) through green, yellow and orange to red (5+ levels above you).",
+		unit, "levelDifficultyColor", false)
+	Toggle(p, "Level Text: Include Friendly", "Friendly units get their level's color too, instead of white.",
+		unit, "levelDifficultyColorFriendly", false, function() return not S(unit).levelDifficultyColor end)
+end
+
+local function BuildPower(p, unit)
+	p:Section("Power Bar")
+	PowerRows(p, unit, true, true)
+end
+
+local function BuildCast(p, unit)
+	p:Section("Cast Bar")
+	CastRows(p, unit)
+end
+
+local function BuildTextBar(p, unit)
+	p:Section("Text Bar")
+	local function off() return not S(unit).bottomTextBar end
+	Toggle(p, "Enable Text Bar", "An extra bar with its own texts, at the top or bottom of the frame or detached.", unit, "bottomTextBar", false)
+	Sync(p, "Apply Enable Text Bar to all Frames", unit, { "bottomTextBar" })
+	p:Swatch("Text Bar Background",
+		function() local c = S(unit).btbBgColor or {} return c.r or 0.2, c.g or 0.2, c.b or 0.2, S(unit).btbBgOpacity or 1 end,
+		function(r, g, b, a)
+			local s = S(unit)
+			s.btbBgColor = { r = r, g = g, b = b }
+			if a then s.btbBgOpacity = a end
+		end, { alpha = true, disabled = off })
+	Dropdown(p, "Position", "Where the text bar is.", BTB_POS, unit, "btbPosition", "bottom", off)
+	Sync(p, "Apply Text Bar Position to all Frames", unit, { "btbPosition" })
+	local function notDetached() local v = S(unit).btbPosition return off() or (v ~= "detached_top" and v ~= "detached_bottom") end
+	p:Cog("Detached Position Offsets", {
+		CS("X Offset", -200, 200, 1, unit, "btbX", 0),
+		CS("Y Offset", -200, 200, 1, unit, "btbY", 0),
+	}, { icon = "directions", disabled = notDetached, disabledTip = "This option requires a detached position to be active." })
+	Slider(p, "Height", "Height of the text bar.", 0, 100, 1, unit, "bottomTextBarHeight", 16, off)
+	Sync(p, "Apply Text Bar Height to all Frames", unit, { "bottomTextBarHeight" })
+	Slider(p, "Width", "Width of a detached text bar. 0 = the frame width.", 0, 400, 1, unit, "btbWidth", 0, notDetached)
+	Sync(p, "Apply Text Bar Width to all Frames", unit, { "btbWidth" })
+
+	local function Slot(prefix, label)
+		local contentKey = prefix .. "Content"
+		Dropdown(p, label, "What this text shows.", BTB_TEXT, unit, contentKey, "none", off, function(v)
+			if v ~= "none" then
+				local s = S(unit)
+				for _, other in ipairs({ "btbLeft", "btbRight", "btbCenter" }) do
+					if other ~= prefix and s[other .. "Content"] == v then
+						s[other .. "Content"] = "none"
+					end
+				end
+			end
+		end)
+		Sync(p, "Apply Text Bar " .. label .. " to all Frames", unit, { contentKey, prefix .. "ClassColor", prefix .. "PowerColor",
+			prefix .. "ColorR", prefix .. "ColorG", prefix .. "ColorB", prefix .. "Size", prefix .. "X", prefix .. "Y" })
+		local function none() return off() or (S(unit)[contentKey] or "none") == "none" end
+		p:Cog("BTB " .. label .. " Settings", {
+			CS("Size", 8, 100, 1, unit, prefix .. "Size", 11),
+			CS("X Offset", -50, 50, 1, unit, prefix .. "X", 0),
+			CS("Y Offset", -30, 30, 1, unit, prefix .. "Y", 0),
+			CS("Width %", 20, 200, 5, unit, prefix .. "WidthPct", 100),
+		}, { disabled = none, disabledTip = "This option requires a text selection other than none." })
+		ModeSwatch(p, "Power Colored", PlayerPowerColor, function() return S(unit)[prefix .. "PowerColor"] end,
+			function() S(unit)[prefix .. "PowerColor"] = true S(unit)[prefix .. "ClassColor"] = false end, none)
+		SwatchRGB(p, "Custom Colored", unit, prefix .. "Color", {
+			active = function() return not S(unit)[prefix .. "ClassColor"] and not S(unit)[prefix .. "PowerColor"] end,
+			disabled = none,
+			onClick = function()
+				local s = S(unit)
+				if s[prefix .. "ClassColor"] or s[prefix .. "PowerColor"] then
+					s[prefix .. "ClassColor"], s[prefix .. "PowerColor"] = false, false
+					return true
+				end
+			end,
+		})
+		ModeSwatch(p, "Class Colored", PlayerClassColor, function() return S(unit)[prefix .. "ClassColor"] end,
+			function() S(unit)[prefix .. "ClassColor"] = true S(unit)[prefix .. "PowerColor"] = false end, none)
+	end
+	Slot("btbLeft", "Left Text")
+	Slot("btbRight", "Right Text")
+	Slot("btbCenter", "Center Text")
+	Dropdown(p, "Class Icon", "EllesmereUI class art on the text bar.", CLASS_ICON, unit, "btbClassIcon", "none", off)
+	Sync(p, "Apply Text Bar Class Icon to all Frames", unit, { "btbClassIcon" })
+	p:Cog("Class Icon Settings", {
+		CS("Size", 8, 60, 1, unit, "btbClassIconSize", 14),
+		CD("Location", ALIGN, unit, "btbClassIconLocation", "left"),
+		CS("X Offset", -50, 50, 1, unit, "btbClassIconX", 0),
+		CS("Y Offset", -50, 50, 1, unit, "btbClassIconY", 0),
+	}, { disabled = function() return off() or (S(unit).btbClassIcon or "none") == "none" end,
+		disabledTip = "This option requires a Class Icon other than None." })
+end
+
+local function BuildClassResource(p, unit)
+	if unit ~= "player" then
+		return
+	end
+	p:Section("Class Resource")
+	local function notModern() return S(unit).classPowerStyle ~= "modern" end
+	Dropdown(p, "Enable Class Resource", "Modern: EllesmereUI pips for combo points, holy power, chi, shadow orbs, soul shards, burning embers, runes, arcane charges and maelstrom weapon; bars for demonic fury and eclipse. Blizzard: the stock MoP class bar under the frame.",
+		CP_STYLE, unit, "classPowerStyle", "none", nil, function(v) S(unit).showClassPowerBar = v ~= "none" end)
+	p:Label("Fill Color", "Class color, or your own color.", notModern)
+	local function classOn() return S(unit).classPowerClassColor ~= false end
+	Swatch(p, "Empty Bar Color", unit, "classPowerEmptyColor", { 0.2, 0.2, 0.2, 1 }, { alpha = true })
+	Swatch(p, "Custom Colored", unit, "classPowerCustomColor", { 1, 0.82, 0 }, {
+		active = function() return not classOn() end,
+		onClick = function()
+			if classOn() then
+				S(unit).classPowerClassColor = false
+				return true
+			end
+		end,
+	})
+	ModeSwatch(p, "Dynamic Colored", function()
+		local c = UF.RESOURCE_CLASS_COLORS[select(2, UnitClass("player"))]
+		if c then return c[1], c[2], c[3] end
+		return 1, 0.82, 0
+	end, classOn, function() S(unit).classPowerClassColor = true end)
+	Dropdown(p, "Position", "Top: above the health bar. Bottom: below the frame. Above Health Bar: inside the frame, as wide as the bar.",
+		CP_POS, unit, "classPowerPosition", "top", notModern)
+	p:Cog("Class Resource Position", {
+		CS("X Offset", -100, 100, 1, unit, "classPowerBarX", 0),
+		CS("Y Offset", -100, 100, 1, unit, "classPowerBarY", 0),
+		{ type = "toggle", label = "Lock to Player Frame", tip = "Off: the class resource is moved on its own in Unlock Mode.",
+			get = function() return S(unit).lockClassPowerToFrame ~= false end, set = function(v) S(unit).lockClassPowerToFrame = v end },
+	}, { icon = "directions", disabled = function() return notModern() or S(unit).classPowerPosition == "above" end })
+	Slider(p, "Size", "Width of one pip (the height follows).", 4, 100, 1, unit, "classPowerSize", 8, notModern)
+	Slider(p, "Bar Spacing", "Gap between the pips, in pixels.", 0, 10, 1, unit, "classPowerSpacing", 2, notModern)
+	p:ColorRow("Background Color", "Background behind the pips.",
+		ColorGet(unit, "classPowerBgColor", 0.082, 0.082, 0.082, 1), ColorSet(unit, "classPowerBgColor", true), { alpha = true }, notModern)
+end
+
+local function BuildAbsorbs(p, unit)
+	p:Section("Absorbs and Heals")
+	local function shieldNone() return (S(unit).showPlayerAbsorb or "none") == "none" end
+	p:Dropdown("Absorb Style", "How damage absorb shields (UnitGetTotalAbsorbs) are drawn on the health bar.",
+		function() return UF.AbsorbItems(UF.ABSORB_STYLE_ORDER) end,
+		function() return S(unit).showPlayerAbsorb or "none" end,
+		function() local v = S(unit).showPlayerAbsorb or "none" return UF.ABSORB_STYLE_NAMES[v] or v:gsub("^sm:", "") end,
+		function(v)
+			local s = S(unit)
+			s.showPlayerAbsorb = v
+			s.absorbOpacity = v == "clean" and 30 or 90
+		end, { texturePreview = true, previewPath = function(v) return UF.AbsorbTexture(v) end })
+	Sync(p, "Apply Absorb Style, color and rendering to all Frames", unit, { "showPlayerAbsorb", "absorbColor", "absorbEdgeMode", "showOvershield", "overshieldMode", "absorbGlowLine" })
+	p:Cog("Absorb Rendering", {
+		CD("Placement", ABSORB_PLACEMENT, unit, "absorbEdgeMode", "overlay"),
+		{ type = "dropdown", label = "Show Overshield", tip = "Overshield is the part of an absorb exceeding your empty health. Always backfills it over current health from the shield's edge; From Left grows it from the opposite end of the bar; Never hides it.",
+			items = function() return Items(OVERSHIELD) end,
+			get = function() local s = S(unit) return s.overshieldMode or (s.showOvershield == false and "never" or "always") end,
+			set = function(v) S(unit).overshieldMode = v S(unit).showOvershield = v ~= "never" end },
+		CT("Blizzard Glow Line", unit, "absorbGlowLine", false, nil, "Adds a glow line where the overshield meets current health."),
+		{ type = "toggle", label = "Show on Boss Frames", tip = "Render absorbs on Boss Frames using the Target frame's absorb styling.",
+			get = function() return UF.db.boss.showAbsorbs ~= false end, set = function(v) UF.db.boss.showAbsorbs = v end },
+	})
+	Swatch(p, "Absorb Color", unit, "absorbColor", { 1, 1, 1 }, { disabled = shieldNone })
+	Slider(p, "Absorb Opacity", "Opacity of the absorb shield.", 5, 100, 1, unit, "absorbOpacity", 80, shieldNone)
+
+	local function healNone() return (S(unit).healAbsorbStyle or "clean") == "none" end
+	p:Dropdown("Heal Absorb Style", "How heal absorbs (UnitGetTotalHealAbsorbs) are drawn over current health.",
+		function() return UF.AbsorbItems(UF.HEAL_ABSORB_STYLE_ORDER) end,
+		function() return S(unit).healAbsorbStyle or "clean" end,
+		function() local v = S(unit).healAbsorbStyle or "clean" return UF.ABSORB_STYLE_NAMES[v] or v:gsub("^sm:", "") end,
+		function(v)
+			S(unit).healAbsorbStyle = v
+			S(unit).healAbsorbOpacity = v == "clean" and 50 or 75
+		end, { texturePreview = true, previewPath = function(v) return UF.AbsorbTexture(v) end })
+	Sync(p, "Apply Heal Absorb Style, color and rendering to all Frames", unit, { "healAbsorbStyle", "healAbsorbColor", "healAbsorbEdgeMode", "healAbsorbBgOpacity" })
+	p:Cog("Heal Absorb Rendering", {
+		CD("Placement", ABSORB_PLACEMENT, unit, "healAbsorbEdgeMode", "overlay"),
+		CS("Backing Opacity", 0, 100, 1, unit, "healAbsorbBgOpacity", 15),
+	})
+	Swatch(p, "Heal Absorb Color", unit, "healAbsorbColor", { 0.8, 0.15, 0.15 }, {
+		disabled = function() return healNone() or UF.ABSORB_PRECOLORED[S(unit).healAbsorbStyle or ""] end })
+	Slider(p, "Heal Absorb Opacity", "Opacity of the heal absorb.", 5, 100, 1, unit, "healAbsorbOpacity", 65, healNone)
+
+	Dropdown(p, "Absorb Bar", "A thin strip that shows the absorb amount.", ABSORB_BAR, unit, "absorbBarPosition", "none")
+	Slider(p, "Bar Height", "Height of the absorb strip.", 1, 20, 1, unit, "absorbBarHeight", 4, NotNone(unit, "absorbBarPosition"))
+	Swatch(p, "Absorb Bar Color", unit, "absorbBarColor", { 1, 1, 1, 1 }, { alpha = true, disabled = NotNone(unit, "absorbBarPosition") })
+	Dropdown(p, "Heal Absorb Bar", "A thin strip that shows the heal absorb amount.", HEAL_ABSORB_BAR, unit, "healAbsorbBarPosition", "none")
+	Slider(p, "Bar Height", "Height of the heal absorb strip.", 1, 20, 1, unit, "healAbsorbBarHeight", 4, NotNone(unit, "healAbsorbBarPosition"))
+	Swatch(p, "Heal Absorb Bar Color", unit, "healAbsorbBarColor", { 200 / 255, 29 / 255, 29 / 255, 1 }, { alpha = true, disabled = NotNone(unit, "healAbsorbBarPosition") })
+
+	local function predOff() return not S(unit).healPrediction end
+	Toggle(p, "Heal Prediction", "Shows incoming heals past the health bar: yours, then other players'.", unit, "healPrediction", false)
+	Swatch(p, "Other players' heals", unit, "healPredOtherColor", { 40 / 255, 170 / 255, 40 / 255 }, { disabled = predOff })
+	Swatch(p, "Your heals", unit, "healPredColor", { 102 / 255, 243 / 255, 102 / 255 }, { disabled = predOff })
+	Slider(p, "Prediction Opacity", "Opacity of the incoming heals.", 5, 100, 1, unit, "healPredOpacity", 60, predOff)
+	Slider(p, "Overheal", "How far incoming heals can extend past the end of the health bar, as a percent of its length. 0 keeps them inside the bar.",
+		0, 50, 1, unit, "healPredOverheal", 0, predOff)
+	p:Dropdown("Heal Prediction Texture", "Texture of the incoming heals.",
+		function()
+			local items = { { value = "health", name = "Health Bar" }, { value = "flat", name = "Flat" } }
+			for _, item in ipairs(UF.BarTextureItems(false)) do
+				if item.value ~= "none" then
+					items[#items + 1] = item
+				end
+			end
+			return items
+		end,
+		function() return S(unit).healPredTexture or "health" end,
+		function()
+			local v = S(unit).healPredTexture or "health"
+			return v == "health" and "Health Bar" or (v == "flat" and "Flat" or UF.BarTextureLabel(v))
+		end,
+		function(v) S(unit).healPredTexture = v end, nil, predOff)
+end
+
+local function BuildExtras(p, unit)
+	p:Section("Extras")
+	if unit == "player" or unit == "target" then
+		local function off() return (S(unit).combatIndicatorStyle or "none") == "none" end
+		Dropdown(p, "Combat Indicator", "An icon on the frame while the unit is in combat.", COMBAT_STYLE, unit, "combatIndicatorStyle", unit == "player" and "class" or "none")
+		Sync(p, "Apply Combat Indicator Style to all Frames", unit, { "combatIndicatorStyle" }, { "player", "target" })
+		p:Cog("Combat Indicator Settings", {
+			{ type = "toggle", label = "Class Colored", get = function() return S(unit).combatIndicatorColor == "classcolor" end,
+				set = function(v) S(unit).combatIndicatorColor = v and "classcolor" or "custom" end,
+				disabled = function() return (S(unit).combatIndicatorStyle or ""):match("^combat%d$") ~= nil end },
+			CD("Position", COMBAT_POS, unit, "combatIndicatorPosition", "healthbar"),
+			CS("Size", 8, 64, 1, unit, "combatIndicatorSize", 22),
+			CS("X Offset", -200, 200, 1, unit, "combatIndicatorX", 0),
+			CS("Y Offset", -200, 200, 1, unit, "combatIndicatorY", 0),
+		}, { disabled = off })
+		Swatch(p, "Combat Indicator Color", unit, "combatIndicatorCustomColor", { 1, 1, 1 }, {
+			disabled = function()
+				local style = S(unit).combatIndicatorStyle or "none"
+				return style == "none" or style:match("^combat%d$") ~= nil or S(unit).combatIndicatorColor == "classcolor"
+			end })
+	else
+		p:Label("Combat Indicator", "The Combat Indicator is not available for the Focus frame.", function() return true end)
+	end
+	p:Label("Enemy Colors", "Health and name colors of NPCs by reaction, and of tapped units. Shared by all frames.")
+	for _, entry in ipairs({ { "tapped", "Tapped" }, { "friendly", "Friendly NPC" }, { "neutral", "Neutral" }, { "hostile", "Hostile" } }) do
+		local key = entry[1]
+		p:Swatch(entry[2], function() return UF.EnemyColor(key) end,
+			function(r, g, b) UF.db.enemyColors[key] = { r = r, g = g, b = b } end)
+	end
+
+	Toggle(p, "Raid Marker", "Show the raid target icon on the frame.", unit, "raidMarkerEnabled", false)
+	Sync(p, "Apply Raid Marker to all Frames", unit, { "raidMarkerEnabled" })
+	local function markerOff() return not S(unit).raidMarkerEnabled end
+	Slider(p, "Marker Size", "Size of the raid target icon.", 12, 64, 1, unit, "raidMarkerSize", 28, markerOff)
+	Sync(p, "Apply Marker Size to all Frames", unit, { "raidMarkerSize" })
+	p:Cog("Raid Marker Settings", {
+		CD("Position", ALIGN, unit, "raidMarkerAlign", "right"),
+		CS("X Offset", -200, 200, 1, unit, "raidMarkerX", 0),
+		CS("Y Offset", -200, 200, 1, unit, "raidMarkerY", 0),
+	}, { icon = "directions", disabled = markerOff })
+
+	if unit == "player" or unit == "target" then
+		Toggle(p, "Leader Indicator", "Show the group leader crown and the assistant icon.", unit, "leaderIndicatorEnabled", true)
+		Sync(p, "Apply Leader Indicator to all Frames", unit, { "leaderIndicatorEnabled" }, { "player", "target" })
+		local function leaderOff() return S(unit).leaderIndicatorEnabled == false end
+		Slider(p, "Leader Icon Size", "Size of the leader icon.", 8, 48, 1, unit, "leaderIndicatorSize", 16, leaderOff)
+		p:Cog("Leader Indicator Settings", {
+			CD("Icon Style", LEADER_STYLE, unit, "leaderIndicatorStyle", "blizzard", nil, "Art used for the leader crown and the assistant icon."),
+			CD("Position", INDICATOR_POS, unit, "leaderIndicatorPosition", "topleft"),
+			CS("X Offset", -200, 200, 1, unit, "leaderIndicatorX", 0),
+			CS("Y Offset", -200, 200, 1, unit, "leaderIndicatorY", 0),
+		}, { disabled = leaderOff })
+	end
+	if unit == "target" then
+		Toggle(p, "Elite/Rare Indicator", "Marks elite, rare elite and rare targets.", unit, "eliteIndicatorEnabled", false)
+		local function eliteOff() return not S(unit).eliteIndicatorEnabled end
+		p:Cog("Elite/Rare Indicator", {
+			CT("Show in Instances", unit, "eliteIndicatorShowInInstances", false, nil, "Also show the badge in dungeons and raids, where most enemies are elite."),
+		}, { disabled = eliteOff })
+		Slider(p, "Elite Icon Size", "Size of the badge.", 8, 48, 1, unit, "eliteIndicatorSize", 16, eliteOff)
+		p:Cog("Elite/Rare Indicator Settings", {
+			CD("Position", INDICATOR_POS, unit, "eliteIndicatorPosition", "topleft"),
+			CS("X Offset", -200, 200, 1, unit, "eliteIndicatorX", 0),
+			CS("Y Offset", -200, 200, 1, unit, "eliteIndicatorY", 0),
+		}, { disabled = eliteOff })
+	end
+	if unit == "player" or unit == "target" then
+		local modes = unit == "target" and { { "off", "Off" }, { "always", "Always" }, { "opposite", "Opposite Faction" } } or { { "off", "Off" }, { "always", "On" } }
+		Dropdown(p, "Faction Indicator", "A Horde / Alliance badge on the frame.", modes, unit, "factionIndicatorMode", "off")
+		local function factionOff() return (S(unit).factionIndicatorMode or "off") == "off" end
+		local rows = { CD("PvP Flag", FACTION_PVP, unit, "factionIndicatorPvP", unit == "player" and "only" or "dim") }
+		if unit == "target" then
+			rows[2] = CT("Players Only", unit, "factionIndicatorPlayersOnly", false, nil, "Hide the faction badge on faction NPCs such as guards.")
+		end
+		p:Cog("Faction Indicator", rows, { disabled = factionOff })
+		Slider(p, "Faction Icon Size", "Size of the faction badge.", 8, 48, 1, unit, "factionIndicatorSize", 18, factionOff)
+		Sync(p, "Apply Faction Icon Size to all Frames", unit, { "factionIndicatorSize" }, { "player", "target" })
+		p:Cog("Faction Indicator Settings", {
+			CD("Icon Style", FACTION_STYLE, unit, "factionIndicatorStyle", "classic"),
+			CD("Position", INDICATOR_POS, unit, "factionIndicatorPosition", "topright"),
+			CS("X Offset", -200, 200, 1, unit, "factionIndicatorX", 0),
+			CS("Y Offset", -200, 200, 1, unit, "factionIndicatorY", 0),
+		}, { disabled = factionOff })
+	end
+end
+
+local function BuildMain(p)
+	local unit = sel.main
+	p:Section("Frame")
+	UnitSelector(p, MAIN_LIST, "main")
+	p:Blank()
+	BuildDisplay(p, unit)
+	BuildPortrait(p, unit)
+	BuildHealth(p, unit, false)
+	BuildPower(p, unit)
+	BuildCast(p, unit)
+	BuildTextBar(p, unit)
+	BuildClassResource(p, unit)
+	p:Section("Buffs and Debuffs")
+	AuraRows(p, unit)
+	BuildAbsorbs(p, unit)
+	BuildExtras(p, unit)
+end
+
+---------------------------------------------------------------------------
+-- Mini Frames (target of target / focus target / pet)
+---------------------------------------------------------------------------
+local function BuildMini(p)
+	local unit = sel.mini
+	p:Section("Frame")
+	UnitSelector(p, MINI_LIST, "mini")
+	local LOOK = { { "target", "Target" }, { "focus", "Focus" }, { "player", "Player" } }
+	p:Dropdown("Copy Look From", "The main frame this frame copies its border, bar texture and hover highlight from.",
+		function() return Items(LOOK) end,
+		function() return S(unit).lookSource or "focus" end,
+		function() return LabelOf(LOOK, S(unit).lookSource or "focus") end,
+		function(v) S(unit).lookSource = v ~= "focus" and v or nil end)
+
+	p:Section("Display")
+	local labels = { targettarget = "Enable Target of Target", focustarget = "Enable Focus Target", pet = "Enable Pet Frame" }
+	p:Toggle(labels[unit], "Turn this EllesmereUI frame on or off. Turning on a frame that was off may need a UI reload to hide Blizzard's frame.",
+		function() return UF.db.enabledFrames[unit] ~= false end, function(v) UF.db.enabledFrames[unit] = v end)
+	local sourceRows = {
+		{ type = "dropdown", label = "Frame Source", tip = "EllesmereUI frame, or keep Blizzard's default frame. Needs a UI reload.",
+			items = function() return Items({ { "eui", "EllesmereUI" }, { "blizzard", "Blizzard Default" } }) end,
+			get = function() return UF.FrameSource(unit) end,
+			set = function(v) UF.db.frameSource[unit] = v ~= "eui" and v or nil Reload() end },
+	}
+	if unit == "pet" then
+		sourceRows[2] = { type = "toggle", label = "Always Show Pet Frame", tip = "Show the pet frame whenever you have a pet, ignoring its visibility settings.",
+			get = function() return UF.db.pet.alwaysShow end, set = function(v) UF.db.pet.alwaysShow = v or nil end }
+	end
+	p:Cog("Frame Source", sourceRows)
+	Toggle(p, "Show Portrait", "Show a portrait next to the bars.", unit, "showPortrait", false)
+	local portraitRows = {
+		{ type = "toggle", label = "Portrait on Right", get = function() return S(unit).portraitSide == "right" end,
+			set = function(v) S(unit).portraitSide = v and "right" or "left" end },
+	}
+	if unit ~= "pet" then
+		portraitRows[#portraitRows + 1] = { type = "dropdown", label = "Art Style", items = function() return Items({ { "2d", "2D Portrait" }, { "class", "Class" } }) end,
+			get = function() return S(unit).portraitMode == "class" and "class" or "2d" end, set = function(v) S(unit).portraitMode = v end }
+		portraitRows[#portraitRows + 1] = CD("Class Style", (function()
+			local list = {}
+			for _, key in ipairs(UF.CLASS_STYLE_ORDER) do
+				list[#list + 1] = { key, UF.CLASS_STYLE_NAMES[key] }
+			end
+			return list
+		end)(), unit, "classThemeStyle", "modern", function() return S(unit).portraitMode ~= "class" end)
+		portraitRows[#portraitRows + 1] = CT("Custom Non-Player Portrait", unit, "portraitNonPlayerOn", false)
+		portraitRows[#portraitRows + 1] = CD("Non-Player Portrait", { { "2d", "2D Portrait" }, { "none", "Nothing" } }, unit, "portraitNonPlayer", "2d",
+			function() return S(unit).portraitMode ~= "class" or not S(unit).portraitNonPlayerOn end)
+	end
+	portraitRows[#portraitRows + 1] = CT("Mirror Portrait", unit, "portraitMirror", false)
+	p:Cog("Portrait Settings", portraitRows, { disabled = function() return not S(unit).showPortrait end })
+	BarTextureRow(p, unit, true, false)
+	Dropdown(p, "Strata", "Overrides the Frame Strata set in the main frames for this frame only.", STRATA, unit, "frameStrata", "MEDIUM")
+	p:Slider("Border Size", "Overrides the border size from the main frames for this frame only. Border color and texture still follow the main frames.",
+		0, 4, 1, function() return S(unit).borderSizeOverride or UF.Donor(unit).borderSize or 1 end,
+		function(v) S(unit).borderSizeOverride = v end)
+	p:Toggle("Show Highlight Border", "Show the main frames' hover highlight border on this frame.",
+		function() return S(unit).showHighlightBorder ~= false end, function(v) S(unit).showHighlightBorder = v end)
+	VisibilityRow(p, unit)
+	p:Blank()
+
+	BuildHealth(p, unit, true)
+	if unit == "pet" then
+		p:Section("Power Bar")
+		PowerRows(p, unit, false, false)
+	end
+end
+
+---------------------------------------------------------------------------
+-- Boss Frames
+---------------------------------------------------------------------------
+local function BuildBoss(p)
+	local unit = "boss"
+	p:WideButton(function() return UF.IsBossPreview() and "Deactivate Boss Preview" or "Activate Boss Preview" end,
+		"Shows 5 sample boss frames so you can see your settings. Turns off in combat.",
+		function() return UF.IsBossPreview() end,
+		function() UF.SetBossPreview(not UF.IsBossPreview()) end)
+
+	p:Section("Display")
+	p:Toggle("Enable Boss Frames", "Turn the EllesmereUI boss frames on or off.",
+		function() return UF.db.enabledFrames.boss ~= false end, function(v) UF.db.enabledFrames.boss = v end)
+	p:Cog("Frame Source", {
+		{ type = "dropdown", label = "Frame Source", tip = "EllesmereUI frames, or keep Blizzard's boss frames. Needs a UI reload.",
+			items = function() return Items({ { "eui", "EllesmereUI" }, { "blizzard", "Blizzard Default" } }) end,
+			get = function() return UF.FrameSource("boss") end,
+			set = function(v) UF.db.frameSource.boss = v ~= "eui" and v or nil Reload() end },
+	})
+	Toggle(p, "Show Portrait", "Show a portrait next to the bars.", unit, "showPortrait", false)
+	p:Cog("Portrait Settings", {
+		{ type = "toggle", label = "Portrait on Right", get = function() return S(unit).portraitSide ~= "left" end,
+			set = function(v) S(unit).portraitSide = v and "right" or "left" end },
+		CT("Mirror Portrait", unit, "portraitMirror", false),
+	}, { disabled = function() return not S(unit).showPortrait end })
+	Dropdown(p, "Stack Direction", "Boss 2 to 5 go down or up from boss 1.", { { "up", "Up" }, { "down", "Down" } }, unit, "bossStackDirection", "down")
+	p:Slider("Vertical Spacing", "Distance between the tops of two boss frames.", 0, 200, 1,
+		function() return math.abs(UF.db.bossSpacing or 80) end, function(v) UF.db.bossSpacing = v end)
+	BarTextureRow(p, unit, true, false)
+	local hoverItems = { { value = "hover", name = "Hover Border" }, { value = "target", name = "Target Border" } }
+	p:MultiSelect("Hover Borders", "Hover Border recolors the border on mouseover; Target Border recolors the border of the boss you target.",
+		function() return hoverItems end,
+		function(v) return S(unit)[v == "hover" and "bossHoverBorderEnabled" or "bossTargetBorderEnabled"] end,
+		function(v)
+			local key = v == "hover" and "bossHoverBorderEnabled" or "bossTargetBorderEnabled"
+			S(unit)[key] = not S(unit)[key]
+		end,
+		function()
+			local names = {}
+			if S(unit).bossHoverBorderEnabled then names[#names + 1] = "Hover" end
+			if S(unit).bossTargetBorderEnabled then names[#names + 1] = "Target" end
+			return #names > 0 and table.concat(names, ", ") or "None"
+		end)
+	p:Swatch("Target", ColorGet(unit, "bossTargetBorderColor", 1, 1, 1), ColorSet(unit, "bossTargetBorderColor"),
+		{ active = function() return S(unit).bossTargetBorderEnabled end })
+	p:Swatch("Hover", ColorGet(unit, "bossHoverBorderColor", 1, 1, 1), ColorSet(unit, "bossHoverBorderColor"),
+		{ active = function() return S(unit).bossHoverBorderEnabled end })
+	local BORDER = { { "inherit", "Inherit (Main Frames)" }, { "solid", "Solid" } }
+	p:Dropdown("Border Style", "Border drawn around the boss frames. Inherit (Main Frames) uses the main frames' border.",
+		function() return Items(BORDER) end,
+		function() return S(unit).borderCustom and "solid" or "inherit" end,
+		function() return S(unit).borderCustom and "Solid" or "Inherit (Main Frames)" end,
+		function(v) S(unit).borderCustom = v == "solid" end)
+	local function inherit() return not S(unit).borderCustom end
+	Slider(p, "Border Size", "Border size in pixels.", 0, 8, 1, unit, "borderSize", 1, inherit)
+	p:Swatch("Border",
+		function() local c = S(unit).borderColor or {} return c.r or 0, c.g or 0, c.b or 0, S(unit).borderAlpha or 1 end,
+		function(r, g, b, a)
+			local s = S(unit)
+			s.borderColor = { r = r, g = g, b = b }
+			if a then s.borderAlpha = a end
+		end, { alpha = true, disabled = inherit })
+	Dropdown(p, "Strata", "Overrides the Frame Strata set in the main frames for this frame only.", STRATA, unit, "frameStrata", "MEDIUM")
+	p:Blank()
+
+	p:Section("Buffs and Debuffs")
+	local function simpleBuff() return UF.BossSimpleMode(S(unit).simpleBuffs, false) end
+	local function simpleDebuff() return UF.BossSimpleMode(S(unit).simpleDebuffs, true) end
+	p:Dropdown("Simple Buff Display", "Force boss buffs into a single large row matched to the frame height.",
+		function() return Items(SIMPLE_DISPLAY) end, simpleBuff, function() return LabelOf(SIMPLE_DISPLAY, simpleBuff()) end,
+		function(v)
+			local s = S(unit)
+			s.simpleBuffs = v
+			if v ~= "none" then
+				s.showBuffs = false
+				if simpleDebuff() == v then
+					s.simpleDebuffs = "none"
+				end
+			end
+		end)
+	p:Cog("Simple Buff Position", {
+		CS("Max Count", 1, 20, 1, unit, "maxBuffs", 4),
+		CS("Offset X", -200, 200, 1, unit, "simpleBuffOffsetX", 0),
+		CS("Offset Y", -200, 200, 1, unit, "simpleBuffOffsetY", 0),
+		CS("Spacing", -1, 10, 1, unit, "simpleBuffSpacing", 1),
+		CT("Show Duration", unit, "simpleBuffShowCooldownText", false),
+		CS("Duration Size", 6, 100, 1, unit, "simpleBuffCooldownTextSize", 14),
+	}, { icon = "directions", disabled = function() return simpleBuff() == "none" end })
+	p:Dropdown("Simple Debuff Display", "Force boss debuffs into a single large row matched to the frame height.",
+		function() return Items(SIMPLE_DISPLAY) end, simpleDebuff, function() return LabelOf(SIMPLE_DISPLAY, simpleDebuff()) end,
+		function(v)
+			local s = S(unit)
+			s.simpleDebuffs = v
+			if v ~= "none" then
+				s.debuffAnchor = "none"
+				if simpleBuff() == v then
+					s.simpleBuffs = "none"
+				end
+			end
+		end)
+	p:Cog("Simple Debuff Position", {
+		CS("Max Count", 1, 20, 1, unit, "maxDebuffs", 10),
+		CS("Offset X", -200, 200, 1, unit, "simpleDebuffOffsetX", 0),
+		CS("Offset Y", -200, 200, 1, unit, "simpleDebuffOffsetY", 0),
+		CS("Spacing", -1, 10, 1, unit, "simpleDebuffSpacing", 1),
+		CT("Show Duration", unit, "simpleDebuffShowCooldownText", false),
+		CS("Duration Size", 6, 100, 1, unit, "simpleDebuffCooldownTextSize", 14),
+	}, { icon = "directions", disabled = function() return simpleDebuff() == "none" end })
+
+	local function buffOff() return simpleBuff() ~= "none" or S(unit).showBuffs == false end
+	local function debuffOff() return simpleDebuff() ~= "none" or (S(unit).debuffAnchor or "bottomleft") == "none" end
+	p:Dropdown("Buffs Location", "Where the buffs are (when Simple Buff Display is None).", function() return Items(AURA_ANCHOR) end,
+		function() return S(unit).showBuffs == false and "none" or (S(unit).buffAnchor or "topleft") end,
+		function() return LabelOf(AURA_ANCHOR, S(unit).showBuffs == false and "none" or (S(unit).buffAnchor or "topleft")) end,
+		function(v)
+			if v == "none" then
+				S(unit).showBuffs = false
+			else
+				S(unit).showBuffs = true
+				S(unit).buffAnchor = v
+			end
+		end, nil, function() return simpleBuff() ~= "none" end)
+	p:Cog("Buff Settings", {
+		CD("Growth Direction", AURA_GROWTH, unit, "buffGrowth", "auto"),
+		CS("Max Count", 1, 20, 1, unit, "maxBuffs", 4),
+		{ type = "slider", label = "Max Per Row", min = 1, max = 20, step = 1,
+			get = function() return S(unit).buffMaxPerRow or S(unit).maxBuffs or 4 end, set = function(v) S(unit).buffMaxPerRow = v end },
+		CT("Dispel Type Borders", unit, "buffDispelBorder", false),
+		CS("Size", 10, 70, 1, unit, "buffSize", 22),
+		CS("Offset X", -200, 200, 1, unit, "buffOffsetX", 0),
+		CS("Offset Y", -200, 200, 1, unit, "buffOffsetY", 0),
+		CS("Spacing", -1, 10, 1, unit, "buffSpacing", 1),
+		CT("Show Duration", unit, "buffShowCooldownText", false),
+		CS("Duration Size", 6, 100, 1, unit, "buffCooldownTextSize", 10),
+	}, { disabled = buffOff })
+	p:Dropdown("Debuffs Location", "Where the debuffs are (when Simple Debuff Display is None).", function() return Items(AURA_ANCHOR) end,
+		function() return S(unit).debuffAnchor or "bottomleft" end,
+		function() return LabelOf(AURA_ANCHOR, S(unit).debuffAnchor or "bottomleft") end,
+		function(v) S(unit).debuffAnchor = v end, nil, function() return simpleDebuff() ~= "none" end)
+	p:Cog("Debuff Settings", {
+		CD("Growth Direction", AURA_GROWTH, unit, "debuffGrowth", "auto"),
+		CS("Max Count", 1, 20, 1, unit, "maxDebuffs", 10),
+		{ type = "slider", label = "Max Per Row", min = 1, max = 20, step = 1,
+			get = function() return S(unit).debuffMaxPerRow or S(unit).maxDebuffs or 10 end, set = function(v) S(unit).debuffMaxPerRow = v end },
+		CT("Dispel Type Borders", unit, "debuffDispelBorder", false),
+		CS("Size", 10, 70, 1, unit, "debuffSize", 22),
+		CS("Offset X", -200, 200, 1, unit, "debuffOffsetX", 0),
+		CS("Offset Y", -200, 200, 1, unit, "debuffOffsetY", 0),
+		CS("Spacing", -1, 10, 1, unit, "debuffSpacing", 1),
+		CT("Show Duration", unit, "debuffShowCooldownText", false),
+		CS("Duration Size", 6, 100, 1, unit, "debuffCooldownTextSize", 10),
+	}, { disabled = debuffOff })
+	p:Slider("Stack Size", "Size of the stack number on buffs and debuffs.", 6, 100, 1,
+		function() return S(unit).debuffStackTextSize or 14 end,
+		function(v) S(unit).debuffStackTextSize = v S(unit).buffStackTextSize = v end)
+	p:Cog("Stack Position", {
+		{ type = "dropdown", label = "Position", items = function() return Items(STACK_POS) end,
+			get = function() return S(unit).debuffStackTextPosition or "bottomright" end,
+			set = function(v) S(unit).debuffStackTextPosition = v S(unit).buffStackTextPosition = v end },
+	}, { icon = "directions" })
+	p:Slider("Aura Border Size", "Border of the aura icons, in pixels.", 0, 8, 1, Get(unit, "auraBorderSize", 1), Set(unit, "auraBorderSize"))
+	p:Swatch("Aura Border Color",
+		function() local s = S(unit) return s.auraBorderR or 0, s.auraBorderG or 0, s.auraBorderB or 0, s.auraBorderA or 1 end,
+		function(r, g, b, a) local s = S(unit) s.auraBorderR, s.auraBorderG, s.auraBorderB = r, g, b if a then s.auraBorderA = a end end,
+		{ alpha = true })
+	p:Dropdown("Boss Debuff Filter", "Which debuffs are shown. 5.4.8 has no 'important' flag: the Boss options use the boss debuff flag.",
+		function() return Items(DEBUFF_MODE) end,
+		function() return UF.DebuffFilterMode(S(unit)) end,
+		function() return LabelOf(DEBUFF_MODE, UF.DebuffFilterMode(S(unit))) end,
+		function(v) S(unit).debuffFilterMode = v end)
+	p:Cog("Debuff Filter", { CT("Has Duration", unit, "debuffHasDuration", false) })
+	local buffClasses = { { "DurOnly", "Has Duration" }, { "Stealable", "Stealable" }, { "Dispellable", "Dispellable" } }
+	p:MultiSelect("Boss Buff Filter", "Nothing checked shows every buff.",
+		function()
+			local items = {}
+			for i, c in ipairs(buffClasses) do
+				items[i] = { value = c[1], name = c[2] }
+			end
+			return items
+		end,
+		function(v) return S(unit)["buff" .. v] end,
+		function(v) S(unit)["buff" .. v] = not S(unit)["buff" .. v] or nil end,
+		function()
+			local names = {}
+			for _, c in ipairs(buffClasses) do
+				if S(unit)["buff" .. c[1]] then
+					names[#names + 1] = c[2]
+				end
+			end
+			return #names > 0 and table.concat(names, ", ") or "All Buffs"
+		end)
+
+	BuildHealth(p, unit, true)
+	p:Section("Power Bar")
+	PowerRows(p, unit, false, false)
+	p:Section("Cast Bar")
+	CastRows(p, unit)
+
+	p:Section("Indicators")
+	p:Slider("Out of Range Alpha", "Fades boss frames that are out of your spell range. 100 turns it off.", 10, 100, 1,
+		function() return floor((S(unit).oorAlpha or 0.4) * 100 + 0.5) end, function(v) S(unit).oorAlpha = v / 100 end)
+	Toggle(p, "Spell Target", "Show the name of who the boss is casting on (5.4.8: the boss's target when the cast starts).", unit, "showCastTarget", false)
+	p:Cog("Spell Target", {
+		CS("X Offset", -300, 300, 1, unit, "castSpellTargetX", 0),
+		CS("Y Offset", -300, 300, 1, unit, "castSpellTargetY", 0),
+	})
+	Toggle(p, "Show Raid Marker", "Show the raid target icon next to the boss frame.", unit, "raidMarkerEnabled", true)
+	p:Cog("Raid Marker Position", {
+		CS("X Offset", -50, 50, 1, unit, "raidMarkerX", 0),
+		CS("Y Offset", -50, 50, 1, unit, "raidMarkerY", 0),
+		CD("Alignment", ALIGN, unit, "raidMarkerAlign", "left"),
+	}, { icon = "directions" })
+	Slider(p, "Raid Marker Size", "Size of the raid target icon.", 12, 48, 1, unit, "raidMarkerSize", 28, function() return not S(unit).raidMarkerEnabled end)
+end
+
+---------------------------------------------------------------------------
+-- Content header (retail): "Edit Frame" dropdown and a live preview of the
+-- selected frame, built by the unit frame code itself with sample data.
+---------------------------------------------------------------------------
+local headerPreviews = {}   -- unit key -> preview frame (reused across rebuilds)
+
+local function PreviewHeader(list, which, fixedUnit)
+	return function(page, host, width)
+		local DD_H, DD_W, MAX_H = 34, 350, 260
+		local top = 20
+		local unit = fixedUnit or sel[which]
+		if list then
+			local dd = page:HeaderDropdown(host, DD_W, DD_H, function() return Items(list) end,
+				function() return sel[which] end, function() return LabelOf(list, sel[which]) end,
+				function(v)
+					sel[which] = v
+					if ns.RebuildSettingsPage then
+						ns.RebuildSettingsPage()
+					end
+				end)
+			dd:SetPoint("TOP", host, "TOP", 0, -top)
+			top = top + DD_H + 20
+		end
+		local pv = headerPreviews[unit]
+		if not pv then
+			if InCombatLockdown() then
+				return top
+			end
+			pv = UF.CreateHeaderPreview(unit, host)
+			headerPreviews[unit] = pv
+		end
+		pv:SetParent(host)
+		pv:Show()
+		local function Relayout()
+			if InCombatLockdown() then return end
+			pv:SetScale(1)
+			pv:ClearAllPoints()
+			pv:SetPoint("TOPLEFT", host, "TOPLEFT", 0, -top)
+			UF.LayoutHeaderPreview(pv)
+			local fw, fh = pv:GetSize()
+			local bl, bt, bw, bh = UF.HeaderPreviewBounds(pv)
+			if not bl then bl, bt, bw, bh = 0, 0, fw, fh end
+			local scale = math.min(1, (width - 40) / math.max(1, bw), MAX_H / math.max(1, bh))
+			pv:SetScale(scale)
+			pv:ClearAllPoints()
+			pv:SetPoint("TOPLEFT", host, "TOPLEFT",
+				(width - bw * scale) / 2 / scale - bl, -top / scale - bt)
+			return top + bh * scale + 20
+		end
+		page:OnRefresh(function()
+			if host:IsVisible() and pv:GetParent() == host then
+				local h = Relayout()
+				if h then page:SetHeaderHeight(h) end
+			end
+		end)
+		-- Sizes are known once the window shows: measure again then.
+		host:HookScript("OnShow", function()
+			if pv:GetParent() == host then
+				local h = Relayout()
+				if h then page:SetHeaderHeight(h) end
+			end
+		end)
+		return Relayout() or top
+	end
+end
+
+local UF_PAGES = {
+	{
+		key = "mainFrames",
+		name = "Main Frames",
+		description = "Configure unit frame appearance and behavior.",
+		pageKey = function() return sel.main end,
+		build = BuildMain,
+		header = PreviewHeader(MAIN_LIST, "main"),
+	},
+	{
+		key = "bossFrames",
+		name = "Boss Frames",
+		description = "Configure unit frame appearance and behavior.",
+		build = BuildBoss,
+		header = PreviewHeader(nil, nil, "boss"),
+	},
+	{
+		key = "miniFrames",
+		name = "Mini Frames",
+		description = "Configure unit frame appearance and behavior.",
+		pageKey = function() return sel.mini end,
+		build = BuildMini,
+		header = PreviewHeader(MINI_LIST, "mini"),
+	},
+}
+-- Player Aura Bars (EUI_PlayerAuraBars_Options.lua), the retail fourth tab.
+if ns.PAB_OptionsTab then
+	UF_PAGES[#UF_PAGES + 1] = ns.PAB_OptionsTab
+end
+
+ns.RegisterSettingsModule({
+	-- EllesmereUI: Core Addons > Unit Frames.
+	key = "unitFrames",
+	name = "Unit Frames",
+	group = "Core Addons",
+	tabs = UF_PAGES,
+	reset = function() ns.ResetUnitFrameSettings() end,
+	resetTip = "Set all Unit Frames settings back to default. Frame positions are kept.",
+	onEnter = function() if UF.db then UF.SetPreview(true) end end,
+	onLeave = function()
+		if UF.db then
+			UF.SetPreview(false)
+			UF.SetBossPreview(false)
+		end
+	end,
+})

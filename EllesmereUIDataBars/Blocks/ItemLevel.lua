@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIDataBars_Compat.lua
 -- Blocks\ItemLevel.lua
 -- Item level block factory.
 
@@ -36,8 +36,10 @@ ns.BlockFactories.ilvl = function(blockCfg, slot, content, barCtx)
     local inst = { cfg = blockCfg, slot = slot, content = content, ctx = barCtx }
     inst.key = InstKey(barCtx, blockCfg)
     -- PLAYER_REGEN_ENABLED: geometry and the secure click overlay both wait for regen, so the block needs a pass there.
+    -- 5.4.8 port: no PLAYER_AVG_ITEM_LEVEL_UPDATE (skipped by
+    -- RegisterInstEvents); bag changes move the Total value.
     inst.events = { "PLAYER_AVG_ITEM_LEVEL_UPDATE", "PLAYER_EQUIPMENT_CHANGED",
-                    "PLAYER_ENTERING_WORLD", "PLAYER_REGEN_ENABLED" }
+                    "PLAYER_ENTERING_WORLD", "PLAYER_REGEN_ENABLED", "BAG_UPDATE_DELAYED" }
 
     local mouseOver = false
 

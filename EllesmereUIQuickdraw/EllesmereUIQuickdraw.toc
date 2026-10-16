@@ -1,36 +1,14 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Quickdraw
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
 ## Notes: Hold a keybind to open a menu of actions; point or scroll to choose, release to fire.
-## Author: Ellesmere
-## Version: 9.5.5
+## Author: EllesmereUI port
+## Version: 3.18.0
 ## Dependencies: EllesmereUI
 ## SavedVariables: EllesmereUIQuickdrawDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
-# Note: Bindings.xml (one binding per palette, routed to the secure buttons via
-# SetOverrideBindingClick) is intentionally NOT listed here -- WoW auto-loads a
-# file named Bindings.xml from the addon root, and listing it as well registers
-# every <Binding> twice. Same reasoning as EllesmereUIActionBars.toc.
-# The EUI_RADIAL binding ACTION names inside it predate the module's current
-# name and stay for good: WoW stores keybinds against the action string, so
-# renaming it would unbind every palette. Only the BINDING_HEADER/BINDING_NAME
-# display strings carry the Quickdraw name.
+# Bindings.xml (EUI_RADIAL1..16, one per action menu) is loaded by the game
+# from the addon folder; do not list it here.
 
-# Main Lua
 EllesmereUIQuickdraw.lua
-EUI_Quickdraw_Slots.lua
-EUI_Quickdraw_Actions.lua
 EUI_Quickdraw_View.lua
-EUI_Quickdraw_Geometry.lua
-EUI_Quickdraw_Nests.lua
-EUI_Quickdraw_Advance.lua
-EUI_Quickdraw_Paint.lua
-EUI_Quickdraw_Pointer.lua
-EUI_Quickdraw_Live.lua
 EUI_Quickdraw_Secure.lua
-EUI_Quickdraw_Gates.lua
-EUI_Quickdraw_Runtime.lua
-
-# Options page lives in the LoadOnDemand EllesmereUIOptions addon.

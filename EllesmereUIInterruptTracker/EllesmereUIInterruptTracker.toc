@@ -1,0 +1,10 @@
+## Interface: 50400
+## Title: |cff0cd29fEllesmereUI|r Interrupt Tracker
+## Notes: Interrupt cooldowns of your group (from ExRT / ExCD2 logic).
+## Author: EllesmereUI port
+## Version: 3.1.0
+## Dependencies: EllesmereUI
+## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ExRT, ElvUI, Details, DBM-Core, WeakAuras, VuhDo
+## SavedVariables: EllesmereUIInterruptTrackerDB
+
+EllesmereUIInterruptTracker.lua

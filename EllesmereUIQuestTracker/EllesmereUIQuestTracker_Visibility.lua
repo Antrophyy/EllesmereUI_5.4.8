@@ -1,567 +1,502 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
--- EllesmereUIQuestTracker_Visibility.lua
+-- EllesmereUIQuestTracker_Visibility.lua (5.4.8 port)
 --
--- Visibility and positioning for ObjectiveTrackerFrame.
+-- Retail: visibility checklist (Never / Always / Mouseover, Show / Hide
+-- conditions), arena auto-hide, Hide When In Raid (Always / Boss Combat), our
+-- own background behind the tracker with a 1px accent top line, and Force
+-- Quest Tracker on Screen. Here for the WatchFrame.
 --
--- Rules that must never be broken:
---   1. Never SetScript on ObjectiveTrackerFrame -- HookScript only.
---   2. Never walk the tracker's children to call EnableMouse, and never
---      SetParent / SetPoint / Hide the EditMode-managed frame from our
---      execution (its show and size handlers mark the container dirty under
---      our taint). Hiding is alpha on the frame plus mouse-off on the NAMED
---      click sinks Blizzard hangs off each block (EQT.ApplyTrackerMouse in
---      the Skin file), restored only for the frames we switched off.
---   3. Positioning is delegated to Blizzard's Edit Mode; we provide a
---      ctrl-drag session-only nudge on top, nothing persistent.
+-- Position: retail moves the tracker in Blizzard Edit Mode; 5.4.8 has none,
+-- so the tracker gets an Unlock Mode mover. Like ElvUI MoP (WatchFrameHolder):
+-- a holder frame of ours, the WatchFrame anchored to it and a SetPoint hook
+-- that puts it back when UIParent_ManageFramePositions moves it. Nothing is
+-- moved in combat (queued for PLAYER_REGEN_ENABLED). Only after the player
+-- moved it once; until then Blizzard keeps placing it.
+--
+-- Challenge Mode: EllesmereUIMythicTimer hides the WatchFrame during a run
+-- (Show hook, alpha 0 in combat). While it does, this file leaves the
+-- WatchFrame alone (no Show / Hide / alpha) and only hides its background.
 -------------------------------------------------------------------------------
-local _, ns = ...
-local EQT = ns.EQT
+local addonName, P = ...
+local ns = EllesmereUI
+local EQT = P.EQT
 
-local _eqtSuppressed      = false
-
--- Forward-declared so the auto-hide path can toggle BG visibility. The BG
--- is actually created further down (EnsureBG / InitVisibility).
-local _bgFrame
-
-local function GetTracker() return _G.ObjectiveTrackerFrame end
-
--- BG and top accent divider anchor directly to the tracker's own top edge. The custom
--- top-module-padding system (and the EQT.TOP_ANCHOR_OFFSET it used to publish) was
--- removed from Skin.lua -- Blizzard's own default topModulePadding now governs the
--- header-to-content gap, so the BG/divider no longer need a matching Y-offset.
-local function TopGapOffset()
-    return 0
-end
-
-local function GetBGLeftOffset()
-    -- Blizzard quest icons extend 13px left of the tracker. Preserve the
-    -- existing 6px breathing room without widening icon-disabled layouts.
-    return EQT.Cfg("showQuestIcons") and -19 or -6
-end
-
--- When "Hide All Objectives" is on, otf.Header/HeaderMenu is faded to alpha 0 but
--- Blizzard's topModulePadding still reserves its layout slot above the first module
--- (the same "dead gap" this suite has run into before) -- otf:GetTop() doesn't move to
--- reclaim it. Anchor the BG's top edge to the header's own bottom edge in that case
--- instead, so the BG shrinks to skip the empty gap. When the header is shown, keep
--- anchoring to the tracker's own top edge so the BG covers the header as before.
--- Returns: anchorFrame, relPoint ("TOP" or "BOTTOM" -- caller appends LEFT/RIGHT).
-local function GetBGTopAnchor()
-    local otf = GetTracker()
-    if not otf then return nil, "TOP" end
-    if EQT.ShouldHideMasterHeader and EQT.ShouldHideMasterHeader() then
-        local header = otf.HeaderMenu or otf.Header
-        if header then return header, "BOTTOM" end
-    end
-    return otf, "TOP"
-end
+local function WF() return _G.WatchFrame end
 
 -------------------------------------------------------------------------------
--- Auto-hide: arenas always hide. Raids hide per the "Hide When In Raid"
--- option -- "always" hides for the whole raid, "boss" (default) only hides
--- during an encounter. _inEncounter is driven by ENCOUNTER_START/END below.
+-- Visibility checklist (retail EvalVisibility on the "visibility" key; same
+-- lane keys as the other 5.4.8 ports). Dragonriding and Housing lanes skipped.
 -------------------------------------------------------------------------------
-local _inEncounter = false
--- Instance type cached on the zone events below: GetInstanceInfo per
--- evaluation showed up in idle profiles (the shared mouseover scan calls
--- ShouldAutoHide at 6.7 Hz). Pure Lua-side caching of our own evaluation
--- input -- no frame writes, no hooks, nothing the tracker taint rules cover.
-local _instanceType = select(2, GetInstanceInfo()) or "none"
+local function InCombat()
+	return (InCombatLockdown() or UnitAffectingCombat("player")) and true or false
+end
+
+EQT.VIS_AXES = {
+	{ key = "in_combat", label = "In Combat", show = "in_combat", hide = "hide_in_combat", test = InCombat },
+	{ key = "out_of_combat", label = "Out of Combat", show = "out_of_combat", hide = "hide_out_of_combat",
+		test = function() return not InCombat() end },
+	{ key = "in_raid", label = "In Raid Group", show = "in_raid", hide = "hide_in_raid",
+		test = function() return IsInRaid() and true or false end },
+	{ key = "in_party", label = "In Party", show = "in_party", hide = "hide_in_party",
+		test = function() return (IsInGroup() and not IsInRaid()) and true or false end },
+	{ key = "solo", label = "Solo", show = "solo", hide = "hide_solo",
+		test = function() return not IsInGroup() end },
+	{ key = "instances", label = "Instances", show = "visOnlyInstances", hide = "visHideInstances",
+		test = function() local inside = IsInInstance() return inside and true or false end },
+	{ key = "mounted", label = "Mounted", show = "visOnlyMounted", hide = "visHideMounted",
+		test = function() return IsMounted() and true or false end },
+	{ key = "target", label = "Target", show = "visHideNoTarget", hide = "visHideWithTarget",
+		test = function() return UnitExists("target") and true or false end },
+	{ key = "enemy", label = "Enemy Target", show = "visHideNoEnemy", hide = "visHideWithEnemy",
+		test = function() return (UnitExists("target") and UnitCanAttack("player", "target")) and true or false end },
+	{ key = "resting", label = "Resting", show = "visOnlyResting", hide = "visHideResting",
+		test = function() return IsResting() and true or false end },
+}
+
+function EQT.VisFlag(s, key)
+	if key:match("^vis") then
+		return s[key] and true or false
+	end
+	local modes = s.visibilityModes
+	if type(modes) == "table" and modes[key] then
+		return true
+	end
+	-- Legacy scalar modes (visibility = "in_combat" ...) read as their Show lane.
+	local vis = s.visibility
+	if vis and vis ~= "always" and vis ~= "never" and vis ~= "mouseover" and vis == key then
+		return true
+	end
+	return false
+end
+
+function EQT.SetVisFlag(s, key, on)
+	if key:match("^vis") then
+		s[key] = on and true or nil
+		return
+	end
+	if type(s.visibilityModes) ~= "table" then s.visibilityModes = {} end
+	s.visibilityModes[key] = on and true or nil
+end
+
+function EQT.VisBase(s)
+	local vis = s and s.visibility or "always"
+	if vis == "never" then
+		return "never"
+	elseif vis == "mouseover" then
+		return "mouseover"
+	end
+	return "always"
+end
+
+function EQT.SetVisBase(s, mode)
+	local old = s.visibility
+	if old and old ~= "always" and old ~= "never" and old ~= "mouseover" then
+		EQT.SetVisFlag(s, old, true)
+	end
+	s.visibility = mode
+end
+
+-- true = shown, false = hidden, "mouseover" = shown while hovered.
+function EQT.EvalVisibility(s)
+	if s.enabled == false then return false end
+	local base = EQT.VisBase(s)
+	if base == "never" then
+		return false
+	end
+	local anyShow, allOk, anyOk = false, true, false
+	for _, axis in ipairs(EQT.VIS_AXES) do
+		local hideOn = EQT.VisFlag(s, axis.hide)
+		local showOn = EQT.VisFlag(s, axis.show)
+		if hideOn or showOn then
+			local now = axis.test()
+			if hideOn and now then
+				return false
+			end
+			if showOn then
+				anyShow = true
+				if now then anyOk = true else allOk = false end
+			end
+		end
+	end
+	if anyShow then
+		if s.visibilityMatch == "any" then
+			if not anyOk then return false end
+		elseif not allOk then
+			return false
+		end
+	end
+	if base == "mouseover" then
+		return "mouseover"
+	end
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- Auto-hide: arenas always; raids per Hide When In Raid ("always" = whole
+-- raid, "boss" = during ENCOUNTER_START .. ENCOUNTER_END).
+-------------------------------------------------------------------------------
+local inEncounter = false
 local function ShouldAutoHide()
-    local instanceType = _instanceType
-    if instanceType == "arena" then return true end
-    if instanceType == "raid" then
-        local cfg = EQT.DB()
-        if cfg and cfg.hideInRaidMode == "always" then
-            return true
-        end
-        -- Default / "boss": only hide during an encounter.
-        return _inEncounter
-    end
-    return false
+	local _, instanceType = GetInstanceInfo()
+	if instanceType == "arena" then return true end
+	if instanceType == "raid" then
+		if EQT.Cfg("hideInRaidMode") == "always" then return true end
+		return inEncounter
+	end
+	return false
+end
+EQT.ShouldAutoHide = ShouldAutoHide
+
+-- Same rule as TrackerShouldBeHidden() in EllesmereUIMythicTimer.lua.
+local function MythicTimerOwnsTracker()
+	local emt = ns.MythicTimer
+	if not (emt and emt.DB and emt.currentRun) then return false end
+	local root = emt.DB()
+	if not (root and root.enabled) then return false end
+	local run = emt.currentRun
+	if run.active then return true end
+	if run.completed then
+		local _, iType = GetInstanceInfo()
+		return iType == "party"
+	end
+	return false
+end
+EQT.MythicTimerOwnsTracker = MythicTimerOwnsTracker
+
+-------------------------------------------------------------------------------
+-- Background (our own UIParent frame, never a child of the WatchFrame)
+-------------------------------------------------------------------------------
+local bgFrame
+local function EnsureBG()
+	if bgFrame then return bgFrame end
+	local wf = WF()
+	if not wf then return nil end
+	bgFrame = CreateFrame("Frame", "EllesmereUIQTBackground", UIParent)
+	bgFrame:SetFrameStrata(wf:GetFrameStrata() or "LOW")
+	bgFrame:SetFrameLevel(math.max(0, wf:GetFrameLevel() - 1))
+	bgFrame:EnableMouse(false)
+	local tex = bgFrame:CreateTexture(nil, "BACKGROUND")
+	tex:SetAllPoints()
+	bgFrame.tex = tex
+	local line = bgFrame:CreateTexture(nil, "OVERLAY")
+	line:SetPoint("TOPLEFT", bgFrame, "TOPLEFT", 0, 0)
+	line:SetPoint("TOPRIGHT", bgFrame, "TOPRIGHT", 0, 0)
+	bgFrame.line = line
+	bgFrame:Hide()
+	return bgFrame
 end
 
--- Single source of truth for "is the tracker visually on screen right now".
--- otf:IsShown() alone is not enough: HardHide() (below) falls back to SetAlpha(0) in
--- combat because Show()/Hide() are protected on this EditMode frame, so IsShown() stays
--- true while the frame is invisible. Every place that decides whether to show/hide our
--- BG chrome must read this instead of re-deriving its own partial view of "visible" --
--- that drift (some checks knew about alpha/ShouldAutoHide, some didn't) is what caused
--- the BG to flicker back in during combat.
-local function TrackerIsVisible(otf)
-    if not otf then return false end
-    if not otf:IsShown() then return false end
-    if otf:GetAlpha() <= 0 then return false end
-    if ShouldAutoHide() then return false end
-    return true
-end
-EQT.TrackerIsVisible = TrackerIsVisible
-
--- Suspend/resume all QT event frames in raids/arenas/M+. Prevents quest
--- events (QUEST_LOG_UPDATE etc.) from doing skin/resize/classify work when
--- the tracker is hidden anyway. Re-registers on zone-out / unsuppress.
-local _eventsSuspended = false
--- Acts once per hide: no frame joins the set after the first suspend (all
--- enroll at file load or in the login init, before any visibility pass).
-local function SuspendQTEvents()
-    if _eventsSuspended then return end
-    _eventsSuspended = true
-    if EQT._eventFrames then
-        for _, f in ipairs(EQT._eventFrames) do
-            f:UnregisterAllEvents()
-        end
-    end
-end
-local function ResumeQTEvents()
-    if not _eventsSuspended then return end
-    _eventsSuspended = false
-    if EQT._eventFrames and EQT._eventRegistrations then
-        for i, f in ipairs(EQT._eventFrames) do
-            local evts = EQT._eventRegistrations[i]
-            if evts then
-                local refresh
-                for _, ev in ipairs(evts) do
-                    f:RegisterEvent(ev)
-                    if ev == "PLAYER_ENTERING_WORLD" then refresh = true end
-                end
-                -- Catch up on what was missed while unregistered.
-                local onEvent = refresh and f:GetScript("OnEvent")
-                if onEvent then onEvent(f, "PLAYER_ENTERING_WORLD") end
-            end
-        end
-    end
+-- Lowest shown line of the tracker (quests, achievements, timers, scenario).
+local function LowestBottom()
+	local low
+	local function check(f)
+		if f and f.IsVisible and f:IsVisible() then
+			local b = f:GetBottom()
+			if b and (not low or b < low) then low = b end
+		end
+	end
+	for _, list in ipairs({ WATCHFRAME_QUESTLINES, WATCHFRAME_ACHIEVEMENTLINES, WATCHFRAME_TIMERLINES }) do
+		if type(list) == "table" then
+			for _, line in pairs(list) do check(line) end
+		end
+	end
+	check(_G.WatchFrameScenarioFrame)
+	return low
 end
 
--- Suppression API (cross-module hide). Routed through UpdateVisibility so
--- suppression composes with the user's chosen visibility mode / options.
-function EQT.ApplySuppression(on)
-    _eqtSuppressed = on and true or false
-    if EQT.UpdateVisibility then EQT.UpdateVisibility() end
+local function OnePixel(region)
+	local es = region:GetEffectiveScale() or 1
+	local perfect = ns.PP and ns.PP.perfect
+	if not perfect or perfect <= 0 then perfect = 1 end
+	return (es > 0) and (perfect / es) or 1
 end
 
--- ObjectiveTrackerFrame is EditMode-managed: Hide()/Show() route through the system
--- template's protected HideBase/ShowBase, so calling either from addon execution during
--- combat is blocked (ADDON_ACTION_BLOCKED) -- and the raid/encounter auto-hide fires
--- exactly at combat start (vehicle boss pulls hit this). In combat fall back to alpha
--- suppression on the top-level frame, with the block click sinks switched off by name
--- (EQT.ApplyTrackerMouse; alpha alone left them clickable). The shared visibility
--- dispatcher re-runs UpdateVisibility on PLAYER_REGEN_ENABLED, where the real Hide()
--- lands -- same recovery shape as the M+ timer's HideTracker, minus the private regen
--- listener it needs (we are dispatcher-driven).
-local function HardHide(otf)
-    if InCombatLockdown() then
-        otf:SetAlpha(0)
-        if EQT.ApplyTrackerMouse then EQT.ApplyTrackerMouse(false) end
-    else
-        otf:SetAlpha(1)  -- clear any combat alpha-suppression before hiding
-        otf:Hide()
-    end
+local function ResizeBG()
+	local bg = bgFrame
+	local wf = WF()
+	if not (bg and wf) then return end
+	local visible = wf:IsShown() and wf:GetAlpha() > 0 and not ShouldAutoHide() and not MythicTimerOwnsTracker()
+	local header = _G.WatchFrameHeader
+	local hasContent = header and header:IsShown()
+	if not visible or not hasContent then
+		bg:Hide()
+		return
+	end
+	local top = wf:GetTop()
+	local hideHeader = EQT.ShouldHideMasterHeader and EQT.ShouldHideMasterHeader()
+	local anchor = hideHeader and _G.WatchFrameLines or wf
+	local anchorTop = anchor and anchor:GetTop() or top
+	local low = (not wf.collapsed) and LowestBottom() or nil
+	if not low then
+		low = (header:GetBottom() or (anchorTop or 0) - 20)
+	end
+	local height = (anchorTop or 0) - low + 6
+	if height < 10 then height = 10 end
+	bg:ClearAllPoints()
+	bg:SetPoint("TOPLEFT", anchor, "TOPLEFT", -6, 0)
+	bg:SetPoint("TOPRIGHT", wf, "TOPRIGHT", 11 - 24, 0)
+	bg:SetHeight(height)
+	bg:SetAlpha(wf:GetAlpha())
+	bg:Show()
+end
+EQT.ResizeBGToContent = ResizeBG
+
+function EQT.ApplyBackground()
+	local bg = EnsureBG()
+	if not bg then return end
+	local c = EQT.DB()
+	bg.tex:SetTexture(c.bgR or 0, c.bgG or 0, c.bgB or 0, c.bgAlpha or 0.5)
+	if c.showTopLine == false then
+		bg.line:Hide()
+	else
+		local r, g, b = EQT.GetAccent()
+		bg.line:SetTexture(r, g, b, 1)
+		bg.line:SetHeight(OnePixel(bg))
+		bg.line:Show()
+	end
+	ResizeBG()
 end
 
-local _showHookInstalled = false
-local function InstallShowHook()
-    if _showHookInstalled then return end
-    local otf = GetTracker()
-    if not otf then return end
-    _showHookInstalled = true
-    -- Raid/arena auto-hide. Runs before other Show hooks (hooksecurefunc
-    -- stacks); the M+ timer installs its own similar hook for M+.
-    hooksecurefunc(otf, "Show", function(self)
-        if _eqtSuppressed then return end
-        if ShouldAutoHide() then HardHide(self) end
-    end)
-    -- BG follows the tracker's actual IsShown() state, regardless of who hid it (us, M+
-    -- timer, Blizzard). OnHide fires after the Hide lands, OnShow fires after Show
-    -- lands but the M+ timer's Show-hook re-hides it synchronously, so by the time
-    -- OnShow fires the frame may already be hidden again -- we re-check IsShown().
-    otf:HookScript("OnHide", function() if _bgFrame then _bgFrame:Hide() end end)
-    otf:HookScript("OnShow", function()
-        if _eqtSuppressed then return end
-        if EQT.ResizeBGToContent then EQT.ResizeBGToContent() end
-        if EQT.QueueResize then EQT.QueueResize() end
-    end)
+-------------------------------------------------------------------------------
+-- Show / hide
+-------------------------------------------------------------------------------
+local hiddenByUs = false     -- we Hide() it for the arena / raid auto-hide
+local moState = false        -- visibility = mouseover
+local moFrame = CreateFrame("Frame")
+moFrame:Hide()
+
+local function SetTrackerAlpha(a)
+	local wf = WF()
+	if not wf then return end
+	wf:SetAlpha(a)
+	if bgFrame then bgFrame:SetAlpha(a) end
+end
+
+-- Mouseover: alpha 1 while the cursor is over the tracker.
+local moElapsed = 0
+moFrame:SetScript("OnUpdate", function(self, elapsed)
+	moElapsed = moElapsed + elapsed
+	if moElapsed < 0.1 then return end
+	moElapsed = 0
+	local wf = WF()
+	if not wf or MythicTimerOwnsTracker() then return end
+	local over = wf:IsShown() and wf:IsMouseOver()
+	SetTrackerAlpha(over and 1 or 0)
+end)
+
+local function HardHide(wf)
+	if InCombatLockdown() then
+		wf:SetAlpha(0)
+		P.Defer("QTHide", function() EQT.UpdateVisibility() end)
+	else
+		wf:SetAlpha(1)
+		wf:Hide()
+	end
 end
 
 local function UpdateVisibility()
-    InstallShowHook()
-    local autoHide = ShouldAutoHide()
-    if _eqtSuppressed or autoHide then SuspendQTEvents() else ResumeQTEvents() end
-    local otf = GetTracker()
-    if not otf then return end
-
-    -- Raid/arena auto-hide takes precedence and uses a hard Hide(); the
-    -- Show-hook re-hides if Blizzard tries to bring it back.
-    if autoHide then
-        HardHide(otf)
-        if _bgFrame then _bgFrame:Hide() end
-        return
-    end
-
-    if not otf:IsShown() then
-        -- Show() is protected in combat like Hide() (see HardHide). Skip;
-        -- the dispatcher's PLAYER_REGEN_ENABLED pass re-runs us and the
-        -- real Show() lands then.
-        if not InCombatLockdown() then otf:Show() end
-    end
-
-    -- User visibility: enabled flag, visibility mode, and the visHide* opts.
-    -- EvalVisibility returns true / false / "mouseover".
-    local cfg = EQT.DB()
-    local vis = true
-    if EllesmereUI and EllesmereUI.EvalVisibility then
-        vis = EllesmereUI.EvalVisibility(cfg)
-    end
-
-    local alpha
-    if _eqtSuppressed or vis == false then
-        alpha = 0
-    elseif vis == "mouseover" then
-        -- Mouseover poll raises alpha to 1 on hover.
-        alpha = 0
-    else
-        alpha = 1
-    end
-
-    otf:SetAlpha(alpha)
-    if _bgFrame then _bgFrame:SetAlpha(alpha) end
-    -- Alpha never affects mouse: an invisible tracker's block buttons would
-    -- still take the clicks meant for the world (see EQT.ApplyTrackerMouse).
-    if EQT.ApplyTrackerMouse then EQT.ApplyTrackerMouse(alpha > 0) end
-
-    -- Let ResizeBGToContent decide BG shown/hidden based on real content;
-    -- an unconditional Show here would resurrect the empty-state BG.
-    if EQT.ResizeBGToContent then EQT.ResizeBGToContent() end
+	local wf = WF()
+	if not wf then return end
+	if MythicTimerOwnsTracker() then
+		-- The Mythic+ timer hides it; never fight that.
+		moFrame:Hide()
+		hiddenByUs = false
+		if bgFrame then bgFrame:Hide() end
+		return
+	end
+	if ShouldAutoHide() then
+		moFrame:Hide()
+		hiddenByUs = true
+		HardHide(wf)
+		if bgFrame then bgFrame:Hide() end
+		return
+	end
+	if hiddenByUs then
+		if InCombatLockdown() then
+			P.Defer("QTHide", function() EQT.UpdateVisibility() end)
+		else
+			hiddenByUs = false
+			wf:Show()
+		end
+	end
+	local vis = EQT.EvalVisibility(EQT.DB())
+	if ns._unlockActive then vis = true end
+	if vis == "mouseover" then
+		moState = true
+		moFrame:Show()
+		SetTrackerAlpha(wf:IsMouseOver() and 1 or 0)
+	else
+		moState = false
+		moFrame:Hide()
+		SetTrackerAlpha(vis and 1 or 0)
+	end
+	ResizeBG()
 end
 EQT.UpdateVisibility = UpdateVisibility
+EQT.RefreshStateDriver = UpdateVisibility
 
--- Kept as a no-op so the options-refresh path that used to trigger a state-
--- driver rebuild doesn't error.
-function EQT.RefreshStateDriver() UpdateVisibility() end
+-- Called after every WatchFrame_Update (see _Skin.lua).
+function EQT.OnTrackerUpdate()
+	ResizeBG()
+end
+
+-------------------------------------------------------------------------------
+-- Force Quest Tracker on Screen (retail forceOnScreen)
+-------------------------------------------------------------------------------
+function EQT.ApplyForceOnScreen()
+	local wf = WF()
+	if not wf then return end
+	local on = EQT.Cfg("forceOnScreen") ~= false
+	P.Defer("QTClamp", function() wf:SetClampedToScreen(on) end)
+end
+
+-------------------------------------------------------------------------------
+-- Position (Unlock Mode mover)
+-------------------------------------------------------------------------------
+local HOLDER_W, HOLDER_DEFAULT_H = 204, 480
+local holder
+local takenOver = false
+
+-- ElvUI's own WatchFrame mover takes the same frame: leave it to ElvUI.
+local function ElvUIMovesTracker()
+	return _G.WatchFrameHolder ~= nil or _G.WatchFrameMover ~= nil
+end
+
+local function HolderSize()
+	local pos = EQT.Cfg("pos")
+	local w = (WATCHFRAME_EXPANDEDWIDTH or HOLDER_W)
+	local h = (pos and pos.h) or HOLDER_DEFAULT_H
+	return w, h
+end
+
+local function EnsureHolder()
+	if holder then return holder end
+	holder = CreateFrame("Frame", "EllesmereUIQuestTrackerHolder", UIParent)
+	holder:SetSize(HolderSize())
+	holder:SetClampedToScreen(true)
+	return holder
+end
+
+local function AnchorTracker()
+	local wf = WF()
+	if not (wf and holder and takenOver) then return end
+	if InCombatLockdown() then
+		P.Defer("QTAnchor", AnchorTracker)
+		return
+	end
+	local _, h = HolderSize()
+	wf:ClearAllPoints()
+	wf:SetPoint("TOPRIGHT", holder, "TOPRIGHT", 0, 0)
+	wf:SetHeight(h)
+end
+
+local hookDone = false
+local function InstallSetPointHook()
+	if hookDone then return end
+	hookDone = true
+	hooksecurefunc(WF(), "SetPoint", function(_, _, rel)
+		if not takenOver or rel == holder then return end
+		AnchorTracker()
+	end)
+end
+
+function EQT.ApplyPosition()
+	local wf = WF()
+	if not wf or ElvUIMovesTracker() then return end
+	local pos = EQT.Cfg("pos")
+	EnsureHolder()
+	holder:SetSize(HolderSize())
+	if pos and pos.point then
+		holder:ClearAllPoints()
+		holder:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
+		takenOver = true
+		InstallSetPointHook()
+		AnchorTracker()
+		return
+	end
+	if takenOver then
+		-- Position reset: give the tracker back first (it hangs on the holder).
+		if InCombatLockdown() then
+			P.Defer("QTPos", EQT.ApplyPosition)
+			return
+		end
+		takenOver = false
+		wf:ClearAllPoints()
+		-- Blizzard's default spot (UIParent_ManageFramePositions refines it later).
+		wf:SetPoint("TOPRIGHT", _G.MinimapCluster or UIParent, "BOTTOMRIGHT", -(CONTAINER_OFFSET_X or 0), 0)
+		wf:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMRIGHT", -(CONTAINER_OFFSET_X or 0), CONTAINER_OFFSET_Y or 70)
+	end
+	-- Not moved: the holder sits where Blizzard put the tracker.
+	holder:ClearAllPoints()
+	holder:SetPoint("TOPRIGHT", wf, "TOPRIGHT", 0, 0)
+end
+
+local function RegisterUnlock()
+	if not (ns.RegisterUnlockElements and ns.MakeUnlockElement) then return end
+	ns:RegisterUnlockElements({
+		ns.MakeUnlockElement({
+			key   = "EUI_QuestTracker",
+			label = "Quest Tracker",
+			group = "Quest Tracker",
+			order = 1,
+			noResize = true,
+			isHidden = function() return ElvUIMovesTracker() end,
+			getFrame = function() return EnsureHolder() end,
+			getSize  = function() return HolderSize() end,
+			savePos = function(_, point, relPoint, x, y)
+				local _, h = HolderSize()
+				EQT.Set("pos", { point = point, relPoint = relPoint, x = x, y = y, h = h })
+			end,
+			loadPos = function()
+				local p = EQT.Cfg("pos")
+				if not p then return nil end
+				return { point = p.point, relPoint = p.relPoint, x = p.x, y = p.y }
+			end,
+			clearPos = function() EQT.Set("pos", nil) end,
+			applyPos = function() EQT.ApplyPosition() end,
+		}),
+	}, addonName)
+end
 
 -------------------------------------------------------------------------------
 -- Entry point
 -------------------------------------------------------------------------------
--------------------------------------------------------------------------------
--- Background frame. Our own UIParent-parented frame anchored to the tracker's
--- bounds. Never a child of ObjectiveTrackerFrame -- keeps us off the secure
--- tree. Color and alpha driven by DB (bgR/G/B/Alpha).
--------------------------------------------------------------------------------
-local function EnsureBG()
-    if _bgFrame then return _bgFrame end
-    -- Stock styles keep Blizzard's own panel behind the tracker: no background.
-    if EQT.Blizz() then return nil end
-    local otf = GetTracker()
-    if not otf then return nil end
-    _bgFrame = CreateFrame("Frame", "EllesmereUIQTBackground", UIParent)
-    _bgFrame:SetFrameStrata(otf:GetFrameStrata() or "MEDIUM")
-    _bgFrame:SetFrameLevel(math.max(0, otf:GetFrameLevel() - 1))
-    -- Start the background flush with the top anchor (see GetBGTopAnchor()
-    -- above) so it doesn't bleed above the content or leave a gap below it.
-    -- Bottom edge extends past the last block (re-anchored dynamically below).
-    local topOfs = TopGapOffset()
-    local leftOfs = GetBGLeftOffset()
-    local anchorFrame, anchorPoint = GetBGTopAnchor()
-    anchorFrame = anchorFrame or otf
-    _bgFrame:SetPoint("TOPLEFT", anchorFrame, anchorPoint .. "LEFT", leftOfs, topOfs)
-    -- Bottom is re-anchored dynamically in ResizeBGToContent(); this is
-    -- only the fallback extent when no content has loaded yet (30px tall).
-    _bgFrame:SetPoint("BOTTOMRIGHT", anchorFrame, anchorPoint .. "RIGHT", 11, topOfs - 30)
-    local tex = _bgFrame:CreateTexture(nil, "BACKGROUND")
-    tex:SetAllPoints()
-    _bgFrame._tex = tex
-
-    -- 1px physical-pixel-perfect accent divider at the very top of the BG
-    -- (i.e. at the topOfs cutoff line). Full width of the tracker, anchored
-    -- directly to it so the line matches tracker width regardless of BG
-    -- padding. Same snap pattern as PP.CreateBorder.
-    local divider = _bgFrame:CreateTexture(nil, "OVERLAY")
-    divider:SetPoint("TOPLEFT",  anchorFrame, anchorPoint .. "LEFT",  leftOfs, topOfs)
-    divider:SetPoint("TOPRIGHT", anchorFrame, anchorPoint .. "RIGHT",  11, topOfs)
-    _bgFrame._divider = divider
-    return _bgFrame
-end
-
-local function ApplyTopDivider()
-    local bg = _bgFrame
-    if not bg or not bg._divider then return end
-    local tex = bg._divider
-    if EQT.Cfg("showTopLine") == false then
-        tex:Hide()
-        return
-    end
-    local PP_CORE = EllesmereUI and EllesmereUI.PP
-    local PP_SEC  = EllesmereUI and EllesmereUI.PanelPP
-    if PP_SEC and PP_SEC.DisablePixelSnap then PP_SEC.DisablePixelSnap(tex) end
-    local perfect = (PP_CORE and PP_CORE.perfect) or (PP_SEC and PP_SEC.mult) or 1
-    local otf = GetTracker()
-    local es = (otf and otf.GetEffectiveScale and otf:GetEffectiveScale()) or 1
-    local onePixel = (es and es > 0) and (perfect / es) or (PP_SEC and PP_SEC.mult) or 1
-    tex:SetHeight(onePixel)
-    local eg = EllesmereUI and EllesmereUI.ELLESMERE_GREEN
-    local r, g, b = (eg and eg.r) or 0.047, (eg and eg.g) or 0.824, (eg and eg.b) or 0.624
-    tex:SetColorTexture(r, g, b, 1)
-    tex:Show()
-end
-
--- Find the module that sits at the bottom of the tracker. Used to anchor the
--- BG's bottom edge.
---
--- Reference-only: no coordinate is read here, because Blizzard's block geometry
--- turns into a secret value once our execution is tainted and comparing one
--- throws. The container anchors each displayed module below the previous one in
--- ipairs(modules) order, so the last displayed one owns the bottom edge -- the
--- same frame Blizzard anchors its own NineSlice background to.
-local function IsUsableAnchor(frame)
-    if not frame or type(frame) ~= "table" then return false end
-    if not frame.IsShown or not frame.GetObjectType then return false end
-    return frame:IsShown()
-end
-
-local function GetLowestContentFrame()
-    local otf = GetTracker()
-    if not otf then return nil end
-    local modules = otf.modules or otf.MODULES
-    if not modules then return nil end
-    local lowestModule
-    local _scenarioTracker = _G.ScenarioObjectiveTracker
-    local _widgetTracker = _G.UIWidgetObjectiveTracker
-    for _, tracker in ipairs(modules) do
-        -- Skip ScenarioObjectiveTracker: its M+ challenge mode blocks
-        -- aren't quest content. Showing our bg/top-line around them
-        -- during M+ produces visible chrome with no actual quests.
-        --
-        -- Skip UIWidgetObjectiveTracker: its blocks share Blizzard's widget
-        -- pool with tooltip/AreaPOI widgets. ANY method call here (GetBottom,
-        -- GetObjectType, IsShown) taints the pool, causing "attempt to compare
-        -- a secret number value" in LayoutFrame.lua when GameTooltip later lays
-        -- out an AreaPOI widget set. See HookTracker in the Skin module, which
-        -- refuses to touch these frames for the same reason.
-        if tracker == _scenarioTracker or tracker == _widgetTracker then
-            -- skip
-        -- EndLayout hides a module that has nothing to display, so IsShown is
-        -- the content gate, and a later module sits further down. Anchoring to
-        -- the module rather than to its lowest block matters: blocks go back
-        -- into Blizzard's pool on collapse, which clears their points and drags
-        -- an anchored BG along; module frames are permanent.
-        elseif IsUsableAnchor(tracker) then
-            lowestModule = tracker
-        end
-    end
-    return lowestModule
-end
-
--- Event-driven resize with a debounce. Every QueueResize call coalesces into a single
--- deferred ResizeBGToContent pass; bursts of layout events that used to trigger up to
--- 60 frames of per-frame work now fire the resize once per tick. If the measured lowest
--- frame keeps shifting after a resize (e.g. Blizzard's collapse/expand animation), each
--- shift re- queues exactly one more pass -- never a continuous OnUpdate loop.
-local _resizePending = false
-local function QueueResize()
-    -- No background (not built yet, or a stock style): nothing to resize, so
-    -- arm no timer (ResizeBGToContent would return on the nil frame anyway).
-    if _resizePending or not _bgFrame then return end
-    _resizePending = true
-    C_Timer.After(0.05, function()
-        _resizePending = false
-        if EQT.ResizeBGToContent then EQT.ResizeBGToContent() end
-    end)
-end
-EQT.QueueResize = QueueResize
-
-local function ResizeBGToContent()
-    local bg = _bgFrame
-    local otf = GetTracker()
-    if not bg or not otf then return end
-    -- Tracker hidden (e.g. raid/arena auto-hide, Blizzard hide, or the
-    -- combat alpha-fallback in HardHide): BG follows.
-    if not TrackerIsVisible(otf) then
-        if bg:IsShown() then bg:Hide() end
-        return
-    end
-    -- During active M+ challenge mode, always hide BG. The tracker shows Blizzard's
-    -- scenario blocks (objectives/trash count) which aren't quest content we should
-    -- decorate. Prevents chrome flashing during dungeon start/timer transitions.
-    if C_ChallengeMode and C_ChallengeMode.IsChallengeModeActive
-       and C_ChallengeMode.IsChallengeModeActive() then
-        if bg:IsShown() then bg:Hide() end
-        return
-    end
-    local lowest = GetLowestContentFrame()
-    -- Transient "no visible content" states happen for a frame during
-    -- track/untrack/collapse/expand while blocks are recycled. Keep the
-    -- BG at its last position to avoid a hide/show blink.
-    if not lowest then
-        if bg._lastLowest then
-            -- Had content before -- keep BG visible at last known size.
-            -- A deferred check will hide if content truly went away.
-            if not bg._hideCheck then
-                bg._hideCheck = true
-                C_Timer.After(0.2, function()
-                    bg._hideCheck = nil
-                    if EQT.ResizeBGToContent then EQT.ResizeBGToContent() end
-                end)
-            end
-            return
-        end
-        -- Never had content: hide.
-        if bg:IsShown() then bg:Hide() end
-        return
-    end
-    bg._hideCheck = nil
-    if not bg:IsShown() then bg:Show() end
-    local topOfs = TopGapOffset()
-    local leftOfs = GetBGLeftOffset()
-    local anchorFrame, anchorPoint = GetBGTopAnchor()
-    anchorFrame = anchorFrame or otf
-    if bg._divider then
-        bg._divider:ClearAllPoints()
-        bg._divider:SetPoint("TOPLEFT",  anchorFrame, anchorPoint .. "LEFT",  leftOfs, topOfs)
-        bg._divider:SetPoint("TOPRIGHT", anchorFrame, anchorPoint .. "RIGHT", 11, topOfs)
-    end
-    -- UpdateHeight sizes a module to contentsHeight + bottomSpacing, so its
-    -- bottom sits bottomSpacing below its last block. Adding that back keeps the
-    -- 15px gap the old SetHeight calculation produced, still coordinate-free.
-    local bottomSpacing = lowest.bottomSpacing
-    if issecretvalue and issecretvalue(bottomSpacing) then bottomSpacing = nil end
-    if type(bottomSpacing) ~= "number" then bottomSpacing = 0 end
-    bg:ClearAllPoints()
-    bg:SetPoint("TOPLEFT",  anchorFrame, anchorPoint .. "LEFT",  leftOfs, topOfs)
-    bg:SetPoint("TOPRIGHT", anchorFrame, anchorPoint .. "RIGHT", 11, topOfs)
-    bg:SetPoint("BOTTOM",   lowest,      "BOTTOM",               0, bottomSpacing - 15)
-    bg._lastLowest = lowest
-end
-EQT.ResizeBGToContent = ResizeBGToContent
-
-function EQT.ApplyBackground()
-    local bg = EnsureBG()
-    if not bg then return end
-    local cfg = EQT.DB()
-    local r = cfg.bgR or 0
-    local g = cfg.bgG or 0
-    local b = cfg.bgB or 0
-    local a = cfg.bgAlpha or 0.5
-    bg._tex:SetColorTexture(r, g, b, a)
-    ResizeBGToContent()
-    ApplyTopDivider()
-end
-
--- Force Quest Tracker on Screen: when the saved preference is on, keep the
--- ObjectiveTrackerFrame clamped to the screen; otherwise allow it to be dragged
--- off-screen (the default). Applied at load and whenever the options toggle
--- changes. Persists via the quest tracker DB.
-function EQT.ApplyForceOnScreen()
-    local otf = GetTracker()
-    if not otf then return end
-    local cfg = EQT.DB()
-    local force = cfg and cfg.forceOnScreen == true or false
-    otf:SetClampedToScreen(force)
-end
-
+local inited = false
 function EQT.InitVisibility()
-    local otf = GetTracker()
-    if not otf then return end
+	local wf = WF()
+	if inited or not wf then return end
+	inited = true
+	EnsureBG()
+	-- Blizzard shows it again (zone change, scenario): re-check the auto-hide.
+	hooksecurefunc(wf, "Show", function(self)
+		if MythicTimerOwnsTracker() then return end
+		if ShouldAutoHide() then HardHide(self) end
+	end)
+	wf:HookScript("OnHide", function() if bgFrame then bgFrame:Hide() end end)
+	wf:HookScript("OnShow", function() ResizeBG() end)
 
-    EnsureBG()
-    EQT.ApplyBackground()
-    EQT.ApplyForceOnScreen()
-    InstallShowHook()
-
-    -- Live-update the top accent divider when the user changes UI Accent Color
-    -- (no background, so no divider, under the stock styles).
-    if not EQT.Blizz() and EllesmereUI and EllesmereUI.RegAccent then
-        EllesmereUI.RegAccent({ type = "callback", fn = ApplyTopDivider })
-    end
-
-    -- After init, sync BG to the tracker's current shown state. On /reload
-    -- inside M+ (or a raid), otf may already be hidden by the time we run
-    -- and OnHide won't fire again, leaving BG + divider visible alone.
-    local function SyncBGToTracker()
-        if not _bgFrame then return end
-        if TrackerIsVisible(otf) then _bgFrame:Show() else _bgFrame:Hide() end
-    end
-    SyncBGToTracker()
-    C_Timer.After(0.1, SyncBGToTracker)
-    C_Timer.After(0.5, SyncBGToTracker)
-
-    local evt = CreateFrame("Frame")
-    evt:RegisterEvent("PLAYER_ENTERING_WORLD")
-    evt:RegisterEvent("ZONE_CHANGED_NEW_AREA")
-    evt:RegisterEvent("ENCOUNTER_START")
-    evt:RegisterEvent("ENCOUNTER_END")
-    evt:SetScript("OnEvent", function(_, event)
-        if event == "ENCOUNTER_START" then
-            _inEncounter = true
-        elseif event == "ENCOUNTER_END" then
-            _inEncounter = false
-        elseif event == "PLAYER_ENTERING_WORLD" then
-            -- Clear stale encounter state from a missed ENCOUNTER_END.
-            _inEncounter = false
-        end
-        -- Refresh the cached instance type on every edge here (zone changes
-        -- carry it; the encounter events ride along harmlessly).
-        _instanceType = select(2, GetInstanceInfo()) or "none"
-        UpdateVisibility()
-        SyncBGToTracker()
-    end)
-
-    -- Register with the shared visibility dispatcher for combat/mount
-    -- visibility modes. Bails immediately when suppressed (M+/raid).
-    EllesmereUI.RegisterVisibilityUpdater(function()
-        if _eqtSuppressed then return end
-        UpdateVisibility()
-    end)
-
-    -- Mouseover mode: poll both the tracker and our BG frame as one target
-    -- so hovering either fades them in together. SetAlpha on the proxy
-    -- drives both frames in lockstep.
-    if EllesmereUI.RegisterMouseoverTarget then
-        local moProxy = {}
-        moProxy.IsShown = function()
-            return TrackerIsVisible(otf)
-        end
-        moProxy.IsMouseOver = function()
-            if otf and otf:IsMouseOver() then return true end
-            if _bgFrame and _bgFrame:IsShown() and _bgFrame:IsMouseOver() then return true end
-            return false
-        end
-        moProxy.GetRect = function()
-            if _bgFrame and _bgFrame:IsShown() then return _bgFrame:GetRect() end
-            if otf then return otf:GetRect() end
-            return nil
-        end
-        moProxy.GetEffectiveScale = function()
-            if otf then return otf:GetEffectiveScale() end
-            return 1
-        end
-        moProxy.SetAlpha = function(_, a)
-            if otf then otf:SetAlpha(a) end
-            if _bgFrame then _bgFrame:SetAlpha(a) end
-            if EQT.ApplyTrackerMouse then EQT.ApplyTrackerMouse((a or 0) > 0) end
-        end
-        -- The monitor reveals via SetAlpha(1) + Show(). The BG may have been Hidden by
-        -- a resize pass while idling at alpha 0 (TrackerIsVisible reads mouseover-idle
-        -- the same as the combat alpha-hide), so the reveal must re-Show it or hovering
-        -- brings back the tracker without its background. Hide() stays alpha-only; the
-        -- next resize pass re-hides the frame cleanly.
-        moProxy.Show = function()
-            if _bgFrame then _bgFrame:Show() end
-            if EQT.ApplyTrackerMouse then EQT.ApplyTrackerMouse(true) end
-        end
-        moProxy.Hide = function()
-            if otf then otf:SetAlpha(0) end
-            if _bgFrame then _bgFrame:SetAlpha(0) end
-            if EQT.ApplyTrackerMouse then EQT.ApplyTrackerMouse(false) end
-        end
-        moProxy.EnableMouse = function() end
-        EllesmereUI.RegisterMouseoverTarget(moProxy, function()
-            if ShouldAutoHide() then return false end
-            if _eqtSuppressed then return false end
-            -- Hover-gated sets only reveal while their conditions pass; a
-            -- legacy single "mouseover" behaves exactly as before.
-            return EllesmereUI.VisWantsMouseover(EQT.DB(), "visibility")
-        end)
-    end
-
-    C_Timer.After(0.5, UpdateVisibility)
+	local evt = CreateFrame("Frame")
+	for _, e in ipairs({
+		"PLAYER_ENTERING_WORLD", "ZONE_CHANGED_NEW_AREA", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED",
+		"GROUP_ROSTER_UPDATE", "PLAYER_TARGET_CHANGED", "PLAYER_UPDATE_RESTING", "COMPANION_UPDATE",
+		"ENCOUNTER_START", "ENCOUNTER_END", "CHALLENGE_MODE_COMPLETED", "WORLD_STATE_TIMER_START",
+		"WORLD_STATE_TIMER_STOP",
+	}) do
+		evt:RegisterEvent(e)
+	end
+	evt:SetScript("OnEvent", function(_, event)
+		if event == "ENCOUNTER_START" then
+			inEncounter = true
+		elseif event == "ENCOUNTER_END" or event == "PLAYER_ENTERING_WORLD" then
+			inEncounter = false
+		end
+		UpdateVisibility()
+		if event == "CHALLENGE_MODE_COMPLETED" or event == "WORLD_STATE_TIMER_START" or event == "WORLD_STATE_TIMER_STOP"
+			or event == "PLAYER_ENTERING_WORLD" then
+			-- Again once the Mythic+ timer has its run state (it checks 3s after a load).
+			P.After(0.5, UpdateVisibility)
+			P.After(3.5, UpdateVisibility)
+		end
+	end)
+	RegisterUnlock()
 end

@@ -1,457 +1,296 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
--------------------------------------------------------------------------------
--- EUI_QuestTracker_Options.lua
---
--- Options page for the Blizzard-backed quest tracker. All legacy display,
--- font, and color options from the custom-tracker era have been removed.
--- Surviving options are: enable, visibility mode, auto-hide rules,
--- auto-accept / auto-turn-in, quest item hotkey, and skin toggles.
--------------------------------------------------------------------------------
-local ns = EllesmereUI._ModuleNS["EllesmereUIQuestTracker"]  -- module namespace (published by the module at its load)
-if not ns then return end  -- module disabled: no options page
-local EQT = ns.EQT
+-- Settings page of Quest Tracker (retail EUI_QuestTracker_Options.lua: same
+-- sections, labels, tooltips and keys). Part of EllesmereUIOptions (load on
+-- demand); skipped when EllesmereUIQuestTracker is not loaded.
+-- Not on 5.4.8: Show Quest Icons (no quest type icons on the WatchFrame),
+-- Ignore Older Expansion Quests, the Edit Mode link (Unlock Mode moves it).
 
-local initFrame = CreateFrame("Frame")
-initFrame:RegisterEvent("PLAYER_LOGIN")
-initFrame:SetScript("OnEvent", function(self)
-    self:UnregisterEvent("PLAYER_LOGIN")
-    if not EllesmereUI or not EllesmereUI.RegisterModule then return end
-    if not EQT then return end
+local ns = EllesmereUI
+if not IsAddOnLoaded("EllesmereUIQuestTracker") then
+	return
+end
 
-    local function DB()
-        local d = _G._EQT_DB
-        if d and d.profile and d.profile.questTracker then
-            return d.profile.questTracker
-        end
-        return {}
-    end
-    local function Cfg(k)    return DB()[k]  end
-    local function Set(k, v) DB()[k] = v     end
+local EQT = _G.EllesmereUIQuestTracker
+if not EQT or not EQT.DB then
+	return
+end
 
-    local function RefreshAll()
-        if EQT.RefreshStateDriver then EQT.RefreshStateDriver() end
-        if EQT.UpdateVisibility   then EQT.UpdateVisibility()   end
-        if EQT.RestyleAll         then EQT.RestyleAll()         end
-        if EQT.ApplyBackground    then EQT.ApplyBackground()    end
-        if EQT.ApplyMasterHeaderVisibility then EQT.ApplyMasterHeaderVisibility() end
-    end
+local U = ns.OptionsUtil
 
-    local function BuildPage(_, parent, yOffset)
-        local W  = EllesmereUI.Widgets
-        local PP = EllesmereUI.PP
-        local y  = yOffset
-        local row, h
+local function DB() return EQT.DB() end
+local function Cfg(k) return DB()[k] end
+local function Set(k, v) DB()[k] = v end
 
-        if EllesmereUI.ClearContentHeader then EllesmereUI:ClearContentHeader() end
-        parent._showRowDivider = true
+---------------------------------------------------------------------------
+-- Visibility checklist (retail BuildVisibilityRow)
+---------------------------------------------------------------------------
+local function Axis(key)
+	for _, axis in ipairs(EQT.VIS_AXES) do
+		if axis.key == key then
+			return axis
+		end
+	end
+end
 
-        -- Drag instructions (centered, above settings). Wrapped in a Frame so the
-        -- search system collects it as an orphan and auto-hides it during search.
-        do
-            local fontPath = EllesmereUI.GetFontPath() or STANDARD_TEXT_FONT
-            local infoFrame = CreateFrame("Frame", nil, parent)
-            infoFrame:SetSize(parent:GetWidth() or 400, 20)
-            infoFrame:SetPoint("TOP", parent, "TOP", 0, y - 20)
-            infoFrame._isSpacer = true
-            local infoLabel = infoFrame:CreateFontString(nil, "OVERLAY")
-            infoLabel:SetFont(fontPath, 15, "")
-            infoLabel:SetTextColor(1, 1, 1, 0.75)
-            infoLabel:SetPoint("CENTER")
-            infoLabel:SetJustifyH("CENTER")
-            infoLabel:SetText(EllesmereUI.L("Reposition this element within Blizzard Edit Mode"))
+local function VisibilityItems()
+	local items = {
+		{ value = "state:never", name = "Never" },
+		{ value = "state:always", name = "Always" },
+		{ value = "state:mouseover", name = "Mouseover" },
+		{ value = "match:all", name = "Match All Conditions" },
+		{ value = "match:any", name = "Match Any Condition" },
+	}
+	for _, axis in ipairs(EQT.VIS_AXES) do
+		items[#items + 1] = { value = "show:" .. axis.key, name = "Show: " .. axis.label }
+		items[#items + 1] = { value = "hide:" .. axis.key, name = "Hide: " .. axis.label }
+	end
+	return items
+end
 
-            -- Accent toggle beneath the label. "Force Quest Tracker on Screen" keeps
-            -- the tracker clamped to the screen; clicking again ("Allow Quest Tracker
-            -- to be Moved Offscreen") releases it so it can be dragged off-screen. The
-            -- choice is saved in the quest tracker DB (forceOnScreen) and re-applied at
-            -- load by EQT.ApplyForceOnScreen(), so it persists through reload/logout.
-            -- Edit Mode is opened so the user can reposition the frame after toggling.
-            local EG = EllesmereUI.ELLESMERE_GREEN
-            local fosBtn = CreateFrame("Button", nil, parent)
-            local fosFS = fosBtn:CreateFontString(nil, "OVERLAY")
-            fosFS:SetFont(fontPath, 15, "")
-            fosFS:SetTextColor(EG.r, EG.g, EG.b, 0.75)
-            fosFS:SetPoint("CENTER")
-            local function UpdateForceOnScreenLabel()
-                local on = Cfg("forceOnScreen") == true
-                fosFS:SetText(EllesmereUI.L(on and "Allow Quest Tracker to be Moved Offscreen" or "Force Quest Tracker on Screen"))
-                fosBtn:SetSize(fosFS:GetStringWidth() + 12, 18)
-            end
-            UpdateForceOnScreenLabel()
-            fosBtn:SetPoint("TOP", infoLabel, "BOTTOM", 0, -10)
-            fosBtn:SetScript("OnEnter", function() fosFS:SetTextColor(EG.r, EG.g, EG.b, 1) end)
-            fosBtn:SetScript("OnLeave", function() fosFS:SetTextColor(EG.r, EG.g, EG.b, 0.75) end)
-            fosBtn:SetScript("OnClick", function()
-                if InCombatLockdown() then return end
-                Set("forceOnScreen", not (Cfg("forceOnScreen") == true))
-                if EQT.ApplyForceOnScreen then EQT.ApplyForceOnScreen() end
-                UpdateForceOnScreenLabel()
-                if EditModeManagerFrame then ShowUIPanel(EditModeManagerFrame) end
-            end)
-            y = y - 68
-        end
+local function VisibilityRow(p)
+	p:MultiSelect("Visibility", "When the quest tracker is shown. Never / Always / Mouseover is the base state; the Show conditions must match (all or any), a Hide condition always hides.",
+		VisibilityItems,
+		function(value)
+			local s = DB()
+			local kind, key = value:match("^(%a+):(.+)$")
+			if kind == "state" then
+				return EQT.VisBase(s) == key
+			elseif kind == "match" then
+				return (s.visibilityMatch or "all") == key
+			end
+			local axis = Axis(key)
+			return EQT.VisFlag(s, kind == "show" and axis.show or axis.hide)
+		end,
+		function(value)
+			local s = DB()
+			local kind, key = value:match("^(%a+):(.+)$")
+			if kind == "state" then
+				EQT.SetVisBase(s, key)
+				return
+			elseif kind == "match" then
+				s.visibilityMatch = key
+				return
+			end
+			local axis = Axis(key)
+			local laneKey = kind == "show" and axis.show or axis.hide
+			local otherKey = kind == "show" and axis.hide or axis.show
+			local on = not EQT.VisFlag(s, laneKey)
+			EQT.SetVisFlag(s, laneKey, on)
+			if on then
+				EQT.SetVisFlag(s, otherKey, false)
+			end
+		end,
+		function()
+			local s = DB()
+			local base = EQT.VisBase(s)
+			local text = base == "never" and "Never" or (base == "mouseover" and "Mouseover" or "Always")
+			local n = 0
+			for _, axis in ipairs(EQT.VIS_AXES) do
+				if EQT.VisFlag(s, axis.show) or EQT.VisFlag(s, axis.hide) then
+					n = n + 1
+				end
+			end
+			if n > 0 and base ~= "never" then
+				text = text .. " + " .. n .. (n == 1 and " condition" or " conditions")
+			end
+			return text
+		end)
+end
 
-        -- Stock styles (Blizzard Style / Classic WoW UI) keep Blizzard's own
-        -- tracker art, text and quest icons: the background, font and colour
-        -- rows only apply to the EllesmereUI look.
-        local BS = EllesmereUI.BlizzStyle
-        local STOCK = BS and BS.Get("questtracker")
+---------------------------------------------------------------------------
+-- Helpers
+---------------------------------------------------------------------------
+local function ListLabel(list, value)
+	for _, item in ipairs(list) do
+		if item.value == value then
+			return item.name
+		end
+	end
+	return tostring(value or "")
+end
 
-        -- -- DISPLAY ---------------------------------------------------------
-        _, h = W:SectionHeader(parent, "DISPLAY", y); y = y - h
-        if BS then y = BS.Note(parent, y, "questtracker") end
+local RAID_ITEMS = {
+	{ value = "always", name = "Always" },
+	{ value = "boss", name = "Boss Combat" },
+}
 
-        -- Row 1: Visibility | Hide When In Raid. The raid-hide dropdown moved up from
-        -- the Background Opacity row into the slot the old Visibility Options dropdown
-        -- left behind: it answers the same question the Visibility control does.
-        _, h = EllesmereUI.BuildVisibilityRow(W, parent, y,
-            { getStore = DB, legacyKey = "visibility",
-              caps = { partyIncludesRaid = false, luaDragonriding = true },
-              onChanged = function() RefreshAll() end,
-              onOptionChanged = function() RefreshAll() end },
-            { type="dropdown", text="Hide When In Raid",
-              tooltip="Always: hide the tracker the whole time you are in a raid.\nBoss Combat: keep it visible and only hide during boss encounters.",
-              values = { always = "Always", boss = "Boss Combat" },
-              order  = { "always", "boss" },
-              getValue=function() return Cfg("hideInRaidMode") or "boss" end,
-              setValue=function(v) Set("hideInRaidMode", v); if EQT.UpdateVisibility then EQT.UpdateVisibility() end end })
-        y = y - h
+local function FontItems()
+	local lead = { { name = "EUI Global Font", value = "__global" } }
+	return U and U.FontItems and U.FontItems(lead) or lead
+end
 
-        if not STOCK then
-        -- Row 2: Background Opacity (slider + inline color swatch) | Show Top Line.
-        -- Show Top Line moved up from the old trailing half-row to close the gap left
-        -- by Hide When In Raid; both settings describe the tracker's background chrome.
-        local bgRow
-        bgRow, h = W:DualRow(parent, y,
-            { type="slider", text="Background Opacity",
-              min = 0, max = 1, step = 0.05,
-              getValue=function() return Cfg("bgAlpha") or 0.5 end,
-              setValue=function(v) Set("bgAlpha", v); if EQT.ApplyBackground then EQT.ApplyBackground() end end },
-            { type="toggle", text="Show Top Line",
-              tooltip="Draws a 1px accent line above the background at the top of the tracker.",
-              getValue=function() return Cfg("showTopLine") ~= false end,
-              setValue=function(v) Set("showTopLine", v); if EQT.ApplyBackground then EQT.ApplyBackground() end end })
-        if not EllesmereUI._prebuilding then
-            local rgn = bgRow._leftRegion
-            local ctrl = rgn._control
-            local bgSwatch, bgSwatchRefresh = EllesmereUI.BuildColorSwatch(
-                rgn, bgRow:GetFrameLevel() + 3,
-                function()
-                    return (Cfg("bgR") or 0), (Cfg("bgG") or 0), (Cfg("bgB") or 0)
-                end,
-                function(r, g, b)
-                    Set("bgR", r); Set("bgG", g); Set("bgB", b)
-                    if EQT.ApplyBackground then EQT.ApplyBackground() end
-                end,
-                false, 20)
-            PP.Point(bgSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
-            EllesmereUI.RegisterWidgetRefresh(function() bgSwatchRefresh() end)
-        end
-        y = y - h
+local function FontPreview(value)
+	if value == "__global" then
+		return ns.GetFontPath and ns.GetFontPath("questTracker")
+	end
+	return ns.ResolveFontName and ns.ResolveFontName(value)
+end
 
-        -- Row 3: Header Font Size | Title Font Size
-        _, h = W:DualRow(parent, y,
-            { type="slider", text="Header Font Size",
-              min = 8, max = 24, step = 1,
-              getValue=function() return Cfg("headerFontSize") or 13 end,
-              setValue=function(v) Set("headerFontSize", v); RefreshAll() end },
-            { type="slider", text="Title Font Size",
-              min = 8, max = 24, step = 1,
-              getValue=function() return Cfg("titleFontSize") or 12 end,
-              setValue=function(v) Set("titleFontSize", v); RefreshAll() end }
-            )
-        y = y - h
+-- r, g, b keys with a fallback (the retail Get*RGB fallbacks).
+local function RGBGetter(rk, gk, bk, d)
+	return function()
+		return Cfg(rk) or d[1], Cfg(gk) or d[2], Cfg(bk) or d[3], 1
+	end
+end
+local function RGBSetter(rk, gk, bk)
+	return function(r, g, b)
+		Set(rk, r)
+		Set(gk, g)
+		Set(bk, b)
+	end
+end
 
-        -- Row 3b: Objective Font Size | Font
-        do
-            local fontValues, fontOrder = EllesmereUI.BuildFontDropdownData()
-            _, h = W:DualRow(parent, y,
-                { type="slider", text="Objective Font Size",
-                  min = 8, max = 24, step = 1,
-                  getValue=function() return Cfg("objectiveFontSize") or 10 end,
-                  setValue=function(v) Set("objectiveFontSize", v); RefreshAll() end },
-                { type="dropdown", text="Font",
-                  values=fontValues, order=fontOrder,
-                  getValue=function() return Cfg("font") or "__global" end,
-                  setValue=function(v)
-                      Set("font", v)
-                      EllesmereUI:ShowConfirmPopup({
-                          title       = "Reload Required",
-                          message     = "Font changed. A UI reload is needed to apply the new font.",
-                          confirmText = "Reload Now",
-                          cancelText  = "Later",
-                          reload      = true,
-                      })
-                  end })
-        end
-        y = y - h
-        end -- not STOCK
+local function ClassRGBA()
+	local r, g, b = EQT.GetClassColorRGB()
+	return r, g, b, 1
+end
+local function AccentRGBA()
+	local r, g, b = EQT.GetAccent()
+	return r, g, b, 1
+end
 
-        -- Row 4: Show Quest Icons | Hide All Objectives. Both stock styles show
-        -- Blizzard's native icons, so the toggle is gated there.
-        local questIconsCfg = { type="toggle", text="Show Quest Icons",
-              tooltip="Show Blizzard's native quest type icons/buttons on the right instead of EllesmereUI's custom icons. Requires a UI reload.",
-              getValue=function() return Cfg("showQuestIcons") or false end,
-              setValue=function(v)
-                  Set("showQuestIcons", v)
-                  EllesmereUI:ShowConfirmPopup({
-                      title       = "Reload Required",
-                      message     = "Changing quest icons requires a UI reload to apply.",
-                      confirmText = "Reload Now",
-                      cancelText  = "Later",
-                      reload      = true,
-                  })
-              end }
-        if BS then BS.Gate("questtracker", questIconsCfg) end
-        _, h = W:DualRow(parent, y,
-            questIconsCfg,
-            { type="toggle", text="Hide All Objectives",
-              tooltip = STOCK
-                  and "Hides the master header and its minimize button at the top of the tracker."
-                  or "Hides the master header and its minimize button at the top of the tracker. When shown, it's skinned to match the section headers below it (Quests, Achievements, ...).",
-              -- The module's own rule, so the per-style default (hidden under
-              -- the EllesmereUI look, shown under the stock styles) reads true.
-              getValue=function()
-                  if EQT.ShouldHideMasterHeader then return EQT.ShouldHideMasterHeader() end
-                  return Cfg("hideAllObjectivesHeader") ~= false
-              end,
-              setValue=function(v)
-                  Set("hideAllObjectivesHeader", v)
-                  if EQT.ApplyMasterHeaderVisibility then EQT.ApplyMasterHeaderVisibility() end
-                  if EQT.QueueResize then EQT.QueueResize() end
-              end })
-        y = y - h
+-- Header Color / Line Color: Class Color, Custom Color, Accent Color
+-- (prefix .. "ShowClassColor", prefix .. "UseAccent"; accent until set false).
+local function ModeSwatches(p, prefix)
+	local classKey, accentKey = prefix .. "ShowClassColor", prefix .. "UseAccent"
+	local function isClass() return Cfg(classKey) == true end
+	local function isAccent() return not isClass() and Cfg(accentKey) ~= false end
+	-- Added nearest the control first: Accent, Custom, then Class (shows Class, Custom, Accent).
+	p:Swatch("Accent Color", AccentRGBA, function() end,
+		{ readonly = true, active = isAccent,
+		  onClick = function() Set(classKey, false); Set(accentKey, true); return true end })
+	p:Swatch("Custom Color", RGBGetter(prefix .. "R", prefix .. "G", prefix .. "B", { 1, 1, 1 }),
+		function(r, g, b)
+			RGBSetter(prefix .. "R", prefix .. "G", prefix .. "B")(r, g, b)
+			Set(classKey, false)
+			Set(accentKey, false)
+		end,
+		{ active = function() return not isClass() and not isAccent() end,
+		  onClick = function()
+			if isClass() or isAccent() then
+				Set(classKey, false)
+				Set(accentKey, false)
+				return true
+			end
+		  end })
+	p:Swatch("Class Color", ClassRGBA, function() end,
+		{ readonly = true, active = isClass,
+		  onClick = function() Set(classKey, true); Set(accentKey, false); return true end })
+end
 
-        if not STOCK then
-        -- -- COLORS ----------------------------------------------------------
-        _, h = W:SectionHeader(parent, "COLORS", y); y = y - h
+---------------------------------------------------------------------------
+-- Page
+---------------------------------------------------------------------------
+local function Build(p)
+	p:Paragraph("Move the quest tracker in Unlock Mode.")
+	-- Retail: toggles forceOnScreen (keeps the tracker clamped to the screen).
+	p:WideButton(function()
+			return Cfg("forceOnScreen") ~= false and "Allow Quest Tracker to be Moved Offscreen" or "Force Quest Tracker on Screen"
+		end,
+		"Force Quest Tracker on Screen keeps the tracker inside the screen; click again to let it be moved off screen.",
+		function() return false end,
+		function()
+			if InCombatLockdown() then return end
+			Set("forceOnScreen", not (Cfg("forceOnScreen") ~= false))
+		end)
 
-        -- `default` must mirror the fallback in the matching Get*RGB()
-        -- function in EllesmereUIQuestTracker_Skin.lua, or the swatch will
-        -- show a color (black) that doesn't match what's actually rendered
-        -- until the user picks one explicitly.
-        local function MakeColorRow(leftLabel, leftKeys, leftDefault, rightLabel, rightKeys, rightDefault)
-            local r, rowH = W:DualRow(parent, y,
-                { type="label", text = leftLabel },
-                { type="label", text = rightLabel })
-            local function wire(rgn, keys, default)
-                local sw, swRefresh = EllesmereUI.BuildColorSwatch(
-                    rgn, r:GetFrameLevel() + 3,
-                    function()
-                        return (Cfg(keys.r) or default[1]), (Cfg(keys.g) or default[2]), (Cfg(keys.b) or default[3])
-                    end,
-                    function(cr, cg, cb)
-                        Set(keys.r, cr); Set(keys.g, cg); Set(keys.b, cb)
-                        RefreshAll()
-                    end,
-                    false, 20)
-                PP.Point(sw, "RIGHT", rgn, "RIGHT", -20, 0)
-                EllesmereUI.RegisterWidgetRefresh(function() swRefresh() end)
-            end
-            if not EllesmereUI._prebuilding then
-            wire(r._leftRegion,  leftKeys,  leftDefault)
-            if rightKeys then wire(r._rightRegion, rightKeys, rightDefault) end
-            end
-            return r, rowH
-        end
+	-- DISPLAY
+	p:Section("Display")
+	VisibilityRow(p)
+	p:Dropdown("Hide When In Raid",
+		"Always: hide the tracker the whole time you are in a raid.\nBoss Combat: keep it visible and only hide during boss encounters.",
+		function() return RAID_ITEMS end,
+		function() return Cfg("hideInRaidMode") or "boss" end,
+		function() return ListLabel(RAID_ITEMS, Cfg("hideInRaidMode") or "boss") end,
+		function(v) Set("hideInRaidMode", v) end)
 
-        _, h = MakeColorRow(
-            "Title Color",    { r = "titleR",     g = "titleG",     b = "titleB"     }, { 1.0,   0.910, 0.471 },
-            "Completed Color",{ r = "completedR", g = "completedG", b = "completedB" }, { 0.251, 1.0,   0.349 })
-        y = y - h
+	p:Slider("Background Opacity", nil, 0, 1, 0.05,
+		function() return Cfg("bgAlpha") or 0.5 end,
+		function(v) Set("bgAlpha", v) end)
+	p:Swatch("Background Color", RGBGetter("bgR", "bgG", "bgB", { 0, 0, 0 }), RGBSetter("bgR", "bgG", "bgB"))
+	p:Toggle("Show Top Line", "Draws a 1px accent line above the background at the top of the tracker.",
+		function() return Cfg("showTopLine") ~= false end,
+		function(v) Set("showTopLine", v) end)
 
-        -- Header Color / Line Color: each offers Class Color, Custom Color
-        -- (free RGB picker, same swatch behavior as the rows above) and
-        -- Accent Color. Default is Accent Color for both (headerUseAccent /
-        -- lineUseAccent are treated as true until explicitly set to false).
-        -- `customDefault` must mirror the fallback baked into the matching
-        -- Get*RGB() function in EllesmereUIQuestTracker_Skin.lua.
-        local function MakeColorModeSwatches(prefix, customDefault)
-            local classKey  = prefix .. "ShowClassColor"
-            local accentKey = prefix .. "UseAccent"
-            local rKey, gKey, bKey = prefix .. "R", prefix .. "G", prefix .. "B"
+	p:Slider("Header Font Size", nil, 8, 24, 1,
+		function() return Cfg("headerFontSize") or 13 end,
+		function(v) Set("headerFontSize", v) end)
+	p:Slider("Title Font Size", nil, 8, 24, 1,
+		function() return Cfg("titleFontSize") or 12 end,
+		function(v) Set("titleFontSize", v) end)
 
-            local function isClass()  return Cfg(classKey) == true end
-            local function isAccent() return not isClass() and Cfg(accentKey) ~= false end
+	p:Slider("Objective Font Size", nil, 8, 24, 1,
+		function() return Cfg("objectiveFontSize") or 10 end,
+		function(v) Set("objectiveFontSize", v) end)
+	p:Dropdown("Font", nil, FontItems,
+		function() return Cfg("font") or "__global" end,
+		function() return ListLabel(FontItems(), Cfg("font") or "__global") end,
+		function(v) Set("font", v) end,
+		{ fontPreview = true, fontPath = FontPreview })
 
-            local classSwatch = {
-                tooltip = "Class Color", hasAlpha = false,
-                getValue = function()
-                    local cc = EllesmereUI._playerClass and EllesmereUI.GetClassColor(EllesmereUI._playerClass)
-                    if cc then return cc.r, cc.g, cc.b end
-                    return 1.0, 1.0, 1.0
-                end,
-                setValue = function() end,
-                onClick = function()
-                    Set(classKey, true); Set(accentKey, false)
-                    RefreshAll(); EllesmereUI:RefreshPage()
-                end,
-                refreshAlpha = function() return isClass() and 1 or 0.3 end,
-            }
+	p:Toggle("Hide All Objectives",
+		"Hides the master header and its minimize button at the top of the tracker. When shown, it's skinned to match the section headers below it (Quests, Achievements, ...).",
+		function() return EQT.ShouldHideMasterHeader() end,
+		function(v) Set("hideAllObjectivesHeader", v) end)
+	p:Blank()
 
-            local customSwatch = {
-                tooltip = "Custom Color", hasAlpha = false,
-                getValue = function()
-                    return (Cfg(rKey) or customDefault[1]), (Cfg(gKey) or customDefault[2]), (Cfg(bKey) or customDefault[3])
-                end,
-                setValue = function(r, g, b)
-                    Set(rKey, r); Set(gKey, g); Set(bKey, b)
-                    Set(classKey, false); Set(accentKey, false)
-                    RefreshAll(); EllesmereUI:RefreshPage()
-                end,
-                onClick = function(self)
-                    if isClass() or isAccent() then
-                        Set(classKey, false); Set(accentKey, false)
-                        RefreshAll(); EllesmereUI:RefreshPage()
-                        return
-                    end
-                    if self._eabOrigClick then self._eabOrigClick(self) end
-                end,
-                refreshAlpha = function()
-                    if isClass() then return 0.15 end
-                    return isAccent() and 0.3 or 1
-                end,
-            }
+	-- COLORS
+	p:Section("Colors")
+	p:Label("Title Color")
+	p:Swatch("Title Color", RGBGetter("titleR", "titleG", "titleB", { 1.0, 0.910, 0.471 }), RGBSetter("titleR", "titleG", "titleB"))
+	p:Label("Completed Color")
+	p:Swatch("Completed Color", RGBGetter("completedR", "completedG", "completedB", { 0.251, 1.0, 0.349 }),
+		RGBSetter("completedR", "completedG", "completedB"))
+	p:Label("Focused Color")
+	p:Swatch("Focused Color", RGBGetter("focusR", "focusG", "focusB", { 0.871, 0.251, 1.0 }), RGBSetter("focusR", "focusG", "focusB"))
+	p:Label("Header Color")
+	ModeSwatches(p, "header")
+	p:Label("Line Color")
+	ModeSwatches(p, "line")
+	p:Blank()
 
-            local accentSwatch = {
-                tooltip = "Accent Color", hasAlpha = false,
-                getValue = function() return EllesmereUI.ResolveActiveAccent() end,
-                setValue = function() end,
-                onClick = function()
-                    Set(classKey, false); Set(accentKey, true)
-                    RefreshAll(); EllesmereUI:RefreshPage()
-                end,
-                refreshAlpha = function() return isAccent() and 1 or 0.3 end,
-            }
+	-- EXTRAS
+	p:Section("Extras")
+	local function acceptOff() return not Cfg("autoAccept") end
+	local function turnInOff() return not Cfg("autoTurnIn") end
+	p:Toggle("Auto Accept Quests", nil,
+		function() return Cfg("autoAccept") or false end,
+		function(v) Set("autoAccept", v) end)
+	p:Cog("Auto Accept Settings", {
+		{ type = "toggle", label = "Prevent Multi Quest Accept",
+		  get = function() return Cfg("autoAcceptPreventMulti") ~= false end,
+		  set = function(v) Set("autoAcceptPreventMulti", v) end },
+		{ type = "toggle", label = "Hold Shift to Skip",
+		  get = function() return Cfg("autoAcceptShiftSkip") ~= false end,
+		  set = function(v) Set("autoAcceptShiftSkip", v) end },
+		{ type = "toggle", label = "Ignore Low Level Quests",
+		  get = function() return Cfg("autoAcceptIgnoreTrivial") or false end,
+		  set = function(v) Set("autoAcceptIgnoreTrivial", v) end },
+	}, { disabled = acceptOff })
+	p:Toggle("Auto Turn In Quests", nil,
+		function() return Cfg("autoTurnIn") or false end,
+		function(v) Set("autoTurnIn", v) end)
+	p:Cog("Auto Turn In Settings", {
+		{ type = "toggle", label = "Hold Shift to Skip",
+		  get = function() return Cfg("autoTurnInShiftSkip") ~= false end,
+		  set = function(v) Set("autoTurnInShiftSkip", v) end },
+	}, { disabled = turnInOff })
 
-            return classSwatch, customSwatch, accentSwatch
-        end
+	p:Keybind("Quest Item Hotkey", "Uses the item of your tracked quest (the first quest item in your log if no tracked quest has one). Right-click to clear.",
+		function() return Cfg("questItemHotkey") end,
+		function(v)
+			if v == "" then v = nil end
+			Set("questItemHotkey", v)
+		end)
+end
 
-        -- Focused Color | Header Color
-        do
-            local hClass, hCustom, hAccent = MakeColorModeSwatches("header", { 1.0, 1.0, 1.0 })
-            local r, rowH = W:DualRow(parent, y,
-                { type="label", text="Focused Color" },
-                { type="multiSwatch", text="Header Color",
-                  swatches = { hClass, hCustom, hAccent } })
-            if not EllesmereUI._prebuilding then
-            local sw, swRefresh = EllesmereUI.BuildColorSwatch(
-                r._leftRegion, r:GetFrameLevel() + 3,
-                function() return (Cfg("focusR") or 0.871), (Cfg("focusG") or 0.251), (Cfg("focusB") or 1.0) end,
-                function(cr, cg, cb) Set("focusR", cr); Set("focusG", cg); Set("focusB", cb); RefreshAll() end,
-                false, 20)
-            PP.Point(sw, "RIGHT", r._leftRegion, "RIGHT", -20, 0)
-            EllesmereUI.RegisterWidgetRefresh(function() swRefresh() end)
-            end
-            h = rowH
-        end
-        y = y - h
-
-        -- Line Color | spacer
-        do
-            local lClass, lCustom, lAccent = MakeColorModeSwatches("line", { 1.0, 1.0, 1.0 })
-            _, h = W:DualRow(parent, y,
-                { type="multiSwatch", text="Line Color",
-                  swatches = { lClass, lCustom, lAccent } },
-                { type="spacer" })
-        end
-        y = y - h
-
-        y = y - 10
-        end -- not STOCK
-
-        -- -- EXTRAS ----------------------------------------------------------
-        _, h = W:SectionHeader(parent, "EXTRAS", y); y = y - h
-
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Auto Accept Quests",
-              getValue=function() return Cfg("autoAccept") or false end,
-              setValue=function(v) Set("autoAccept", v) end },
-            { type="toggle", text="Auto Turn In Quests",
-              getValue=function() return Cfg("autoTurnIn") or false end,
-              setValue=function(v) Set("autoTurnIn", v) end })
-        local acceptRows = {
-            { type="toggle", label="Prevent Multi Quest Accept",
-              get=function() return Cfg("autoAcceptPreventMulti") ~= false end,
-              set=function(v) Set("autoAcceptPreventMulti", v) end },
-            { type="toggle", label="Hold Shift to Skip",
-              get=function() return Cfg("autoAcceptShiftSkip") ~= false end,
-              set=function(v) Set("autoAcceptShiftSkip", v) end },
-            { type="toggle", label="Ignore Low Level Quests",
-              get=function() return Cfg("autoAcceptIgnoreTrivial") or false end,
-              set=function(v) Set("autoAcceptIgnoreTrivial", v) end },
-        }
-        -- WoW Forever has no older expansions to skip.
-        if not EllesmereUI.IS_FOREVER then
-            acceptRows[#acceptRows + 1] = { type="toggle", label="Ignore Older Expansion Quests",
-                get=function() return Cfg("autoAcceptIgnoreOldExpansion") or false end,
-                set=function(v) Set("autoAcceptIgnoreOldExpansion", v) end }
-        end
-        EllesmereUI.BuildInlineCog(row._leftRegion, {
-            title = "Auto Accept Settings",
-            rows = acceptRows,
-        })
-
-        EllesmereUI.BuildInlineCog(row._rightRegion, {
-            title = "Auto Turn In Settings",
-            rows = {
-                { type="toggle", label="Hold Shift to Skip",
-                  get=function() return Cfg("autoTurnInShiftSkip") ~= false end,
-                  set=function(v) Set("autoTurnInShiftSkip", v) end },
-            },
-        })
-        y = y - h
-
-        -- Quest Item Hotkey row
-        local kbRow
-        kbRow, h = W:DualRow(parent, y,
-            { type="label", text="" },
-            { type="label", text="" })
-        if not EllesmereUI._prebuilding then
-            local rgn = kbRow._leftRegion
-            local SIDE_PAD = 20
-
-            local label = EllesmereUI.MakeFont(rgn, 14, nil,
-                EllesmereUI.TEXT_WHITE_R, EllesmereUI.TEXT_WHITE_G, EllesmereUI.TEXT_WHITE_B)
-            PP.Point(label, "LEFT", rgn, "LEFT", SIDE_PAD, 0)
-            label:SetText(EllesmereUI.L("Quest Item Hotkey"))
-
-            local kbBtn, refresh = EllesmereUI.BuildKeybindButton(rgn, {
-                w = 120, h = 26, pp = PP, level = 5,
-                get = function() return Cfg("questItemHotkey") end,
-                set = function(v)
-                    Set("questItemHotkey", v)
-                    if EQT.ApplyQuestItemHotkey then EQT.ApplyQuestItemHotkey() end
-                end,
-            })
-            PP.Point(kbBtn, "RIGHT", rgn, "RIGHT", -SIDE_PAD, 0)
-            EllesmereUI.RegisterWidgetRefresh(refresh)
-        end
-        y = y - h
-
-        return math.abs(y)
-    end
-
-    _G._EBS_BuildQuestTrackerPage = BuildPage
-
-    EllesmereUI:RegisterModule("EllesmereUIQuestTracker", {
-        title       = "Quest Tracker",
-        description = "Blizzard tracker skin, visibility rules, auto-accept/turn-in, quest-item hotkey.",
-        pages       = { "Quest Tracker" },
-        buildPage   = function(pageName, p, yOffset) return BuildPage(pageName, p, yOffset) end,
-        onReset = function()
-            local d = _G._EQT_DB
-            if d and d.ResetProfile then d:ResetProfile() end
-            RefreshAll()
-            EllesmereUI:InvalidatePageCache()
-        end,
-    })
-
-    SLASH_EQTOPTS1 = "/eqtopts"
-    SlashCmdList.EQTOPTS = function()
-        if InCombatLockdown and InCombatLockdown() then return end
-        EllesmereUI:ShowModule("EllesmereUIQuestTracker")
-    end
-end)
--- LoadOnDemand: this addon loads after PLAYER_LOGIN, so the event above will never fire; run the init now.
-if IsLoggedIn() then initFrame:GetScript("OnEvent")(initFrame) end
+ns.RegisterSettingsModule({
+	key = "questTracker",
+	name = "Quest Tracker",
+	group = "UI Reskin Addons",
+	tabs = {
+		{ key = "questTracker", name = "Quest Tracker",
+		  description = "Blizzard tracker skin, visibility rules, auto-accept/turn-in, quest-item hotkey.", build = Build },
+	},
+	reset = function() EQT.Reset() end,
+	resetTip = "Set all Quest Tracker settings back to default.",
+})

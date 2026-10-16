@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIDataBars_Compat.lua
 -- Blocks\MicroMenu.lua
 -- Micro menu block factory and Blizzard micro menu hider.
 
@@ -34,6 +34,16 @@ local BlockColorOf         = K.BlockColorOf
 local ParkSecureFrame      = K.ParkSecureFrame
 
 -------------------------------------------------------------------------------
+--  5.4.8 PORT: the 5.4.8 micro buttons (CharacterMicroButton, Spellbook,
+--  Talents, Achievements, Quest Log, Guild, Group Finder, Dungeon Journal,
+--  Pets & Mounts, Shop, Help) behind the same secure click passthrough; the
+--  Talents button is its own entry (as on WoW Forever); Social clicks the chat
+--  frame's FriendsMicroButton; Housing does not exist. Blizzard style art is
+--  the 5.4.8 micro button texture (no atlases). The Blizzard micro menu hider
+--  targets the Action Bars port's micro bar holder (EABMicroBar), else the
+--  micro buttons themselves. The character tooltip shows the 5.4.8 stats
+--  (no Versatility).
+-------------------------------------------------------------------------------
 --  MICROMENU (SECURE; three verbatim mechanisms)
 --    1. Secure click-passthrough buttons (*clickbutton1 -> Blizzard button)
 --    2. Combat lockout via RegisterStateDriver _onstate-combatlock snippet (never addon-Lua EnableMouse/SetAlpha on these frames post-creation)
@@ -42,13 +52,14 @@ local ParkSecureFrame      = K.ParkSecureFrame
 local MM_SPACING = 2
 local MM_MEDIA = ns.MICROMENU_MEDIA
 
--- Button key -> icon file in EllesmereUI\media\micromenu\ (one PNG per button).
+-- Button key -> icon file in media\micromenu\ (one TGA per button).
 local MM_ICON_FILE = {
     menu    = "menu-options",
     guild   = "menu-guild",
     social  = "menu-friends",
     char    = "menu-character",
     spell   = "menu-spellbook",
+    talent  = "menu-vault",
     ach     = "menu-achievements",
     quest   = "menu-quests",
     lfg     = "menu-group",
@@ -65,17 +76,16 @@ local mmButtonDefs = {
     { key = 'guild',   binding = 'TOGGLEGUILD',       label = GUILD,                            info = true },
     { key = 'social',  binding = 'TOGGLESOCIAL',      label = SOCIAL_LABEL or SOCIAL_BUTTON,    info = true },
     { key = 'char',    binding = 'TOGGLECHARACTER0',  label = CHARACTER_BUTTON },
-    -- Single combined button: PlayerSpellsMicroButton opens the merged
-    -- Spec / Talents / Spellbook (and professions) frame.
-    { key = 'spell',   binding = 'TOGGLESPELLBOOK',   label = 'Spec / Talents / Spellbook', special = true },
+    -- 5.4.8 port: the spellbook and the talents are two buttons.
+    { key = 'spell',   binding = 'TOGGLESPELLBOOK',   label = SPELLBOOK or 'Spellbook', special = true },
+    { key = 'talent',  binding = 'TOGGLETALENTS',     label = TALENTS or 'Talents', onWhenUnset = true },
     { key = 'ach',     binding = 'TOGGLEACHIEVEMENT', label = ACHIEVEMENTS },
     { key = 'quest',   binding = 'TOGGLEQUESTLOG',    label = QUEST_LOG },
-    { key = 'lfg',     binding = 'TOGGLEGROUPFINDER', label = DUNGEONS_BUTTON },
+    { key = 'lfg',     binding = 'TOGGLELFGPARENT',   label = DUNGEONS_BUTTON or 'Group Finder' },
     { key = 'pvp',     binding = 'TOGGLECHARACTER4',  label = PLAYER_V_PLAYER or PVP_OPTIONS or 'PvP', special = true },
-    { key = 'housing', binding = 'TOGGLEHOUSINGDASHBOARD', label = HOUSING_MICRO_BUTTON or 'Housing' },
-    { key = 'journal', binding = 'TOGGLEENCOUNTERJOURNAL', label = ADVENTURE_JOURNAL,            special = true },
-    { key = 'pet',     binding = 'TOGGLECOLLECTIONS', label = COLLECTIONS },
-    { key = 'shop',    binding = false,               label = BLIZZARD_STORE },
+    { key = 'journal', binding = 'TOGGLEENCOUNTERJOURNAL', label = ENCOUNTER_JOURNAL or ADVENTURE_JOURNAL or 'Dungeon Journal', special = true },
+    { key = 'pet',     binding = 'TOGGLEPETJOURNAL',  label = MOUNTS_AND_PETS or COLLECTIONS or 'Mounts & Pets' },
+    { key = 'shop',    binding = false,               label = BLIZZARD_STORE or 'Shop' },
     { key = 'help',    binding = false,               label = HELP_BUTTON },
 }
 local mmButtonOrder = {}
@@ -90,54 +100,39 @@ end
 -- button -- addon-Lua opening taints the frame, and SetCooldown then rejects secrets inside Blizzard_SpellBookItem.
 local MM_MICRO_BUTTON_NAMES = {
     guild   = "GuildMicroButton",
-    social  = "QuickJoinToastButton",
+    social  = "FriendsMicroButton",
     char    = "CharacterMicroButton",
-    spell   = { "PlayerSpellsMicroButton", "SpellbookMicroButton" },
+    spell   = "SpellbookMicroButton",
+    talent  = "TalentMicroButton",
     journal = { "EJMicroButton" },
     ach     = "AchievementMicroButton",
     quest   = "QuestLogMicroButton",
     lfg     = "LFDMicroButton",
     housing = "HousingMicroButton",
-    pet     = "CollectionsMicroButton",
+    pet     = { "CompanionsMicroButton", "CollectionsMicroButton" },
     shop    = "StoreMicroButton",
     help    = "HelpMicroButton",
 }
 
 -- Native art is copied onto our textures; Blizzard's buttons are never modified.
-local MM_BLIZZARD_ATLAS = {
-    menu = "GameMenu", guild = "GuildCommunities", spell = "SpecTalents",
-    talent = "SpecTalents", ach = "Achievements", quest = "Questlog",
-    lfg = "Groupfinder", housing = "Housing", journal = "AdventureGuide",
-    pet = "Collections", shop = "Shop", help = "GameMenu",
-    profession = "Professions", legacy = "Legacy",
+-- 5.4.8 port: the 5.4.8 micro buttons draw UI-MicroButton-<Name>-Up files
+-- (32x64, the emblem in the lower part) instead of retail atlases, so the
+-- trim below works on that file layout.
+local MM_ART_FILE = {
+    menu = "MainMenu", guild = "Socials", social = "Socials", spell = "Spellbook",
+    talent = "Talents", ach = "Achievement", quest = "Quest", lfg = "LFG",
+    journal = "EJ", pet = "Mounts", shop = "BStore", help = "Help",
 }
--- WoW Forever's group finder emblem is a round eye, held small by the art's
--- narrow width: it gets a square crop (this fraction of the art's width)
--- instead of the shared trim, so it fills the slot's full height.
-local MM_SQUARE_CROP = EllesmereUI.IS_FOREVER and { lfg = 0.66 } or {}
+local MM_ART_ASPECT = 27 / 34
 
-local function FitBlizzardMicroIcon(icon, key)
-    -- Native micro art has padding around its emblem. Trim that padding to
-    -- match the portrait's visual weight without enlarging the slot or counters.
-    -- Work inside the current sheet UV rectangle so packed sheets stay intact.
-    local ulx, uly, llx, lly, urx, ury, lrx, lry = icon:GetTexCoord()
-    local cx = (ulx + llx + urx + lrx) / 4
-    local cy = (uly + lly + ury + lry) / 4
-    local sx, sy = 2 / 3, 2 / 3
-    local square, aspect = MM_SQUARE_CROP[key], icon._edbAspect
-    if square and aspect then
-        -- Equal pixels both ways: the height share shrinks by the art's aspect.
-        sx, sy = square, square * aspect
-        icon._edbAspect = nil
-    end
-    icon:SetTexCoord(
-        cx + (ulx - cx) * sx, cy + (uly - cy) * sy,
-        cx + (llx - cx) * sx, cy + (lly - cy) * sy,
-        cx + (urx - cx) * sx, cy + (ury - cy) * sy,
-        cx + (lrx - cx) * sx, cy + (lry - cy) * sy)
+local function FitBlizzardMicroIcon(icon)
+    -- The emblem of a 5.4.8 micro button file: the lower 34 of its 64 rows,
+    -- 27 of its 32 columns (the rest is the button's frame and empty space).
+    icon:SetTexCoord(0.08, 0.92, 0.42, 0.95)
+    icon._edbAspect = MM_ART_ASPECT
 end
 -- Art-only sources: these keys click a different Blizzard button than they copy art from.
-local MM_ART_BUTTON = { menu = "MainMenuMicroButton", pvp = "PVPMicroButton", social = "SocialsMicroButton" }
+local MM_ART_BUTTON = { menu = "MainMenuMicroButton", pvp = "PVPMicroButton" }
 
 -- First existing global among a name or list of names.
 local function FindMicroButton(names)
@@ -147,73 +142,35 @@ local function FindMicroButton(names)
     end
 end
 
--- Draws an atlas from its sheet file with the sheet coords. An atlas-mode
--- texture does not take sheet coords in SetTexCoord, so the trim above only
--- works on art painted this way.
-local function SetAtlasArt(icon, atlas)
-    local info = C_Texture.GetAtlasInfo(atlas)
-    local file = info and (info.file or info.filename)
-    if not file then return false end
-    icon:SetTexture(file)
-    icon:SetTexCoord(info.leftTexCoord, info.rightTexCoord, info.topTexCoord, info.bottomTexCoord)
-    -- Native shape (retail micro art is 32x40); PaintIcon fits it in the slot.
-    if info.width > 0 and info.height > 0 then icon._edbAspect = info.width / info.height end
-    return true
-end
-
--- Blizzard's guild button: in a guild with a tabard, the banner tinted with the
--- tabard's background colour (the block draws the emblem over it); otherwise
--- the plain guild icon. The tint rides icon._edbTint for IconColor.
-local function SetGuildArt(icon)
-    local tabard = select(10, GetGuildLogoInfo()) and C_GuildInfo.GetGuildTabardInfo("player")
-    if tabard and tabard.backgroundColor
-        and SetAtlasArt(icon, "UI-HUD-MicroMenu-GuildCommunities-GuildColor-Up") then
-        icon._edbTint = tabard.backgroundColor
-        return "micro"
-    end
-    return SetAtlasArt(icon, "UI-HUD-MicroMenu-GuildCommunities-Up") and "micro" or false
-end
-
--- Copies Blizzard's art for key onto icon: "micro" for padded art (micro
--- buttons) that gets trimmed, "plain" for art that fills its texture (the PvP
+-- Copies Blizzard's art for key onto icon: "micro" for padded micro button
+-- art that gets trimmed, "plain" for art that fills its texture (the PvP
 -- faction crest, the Battle.net portrait), false when none exists.
 local function SetBlizzardArt(icon, key)
-    if key == "guild" then return SetGuildArt(icon) end
-    local source = FindMicroButton(MM_ART_BUTTON[key] or MM_MICRO_BUTTON_NAMES[key])
-    local normal = source and source.GetNormalTexture and source:GetNormalTexture()
-    local atlas = normal and normal:GetAtlas()
-    if atlas then
-        if SetAtlasArt(icon, atlas) then return "micro" end
-    else
-        local texture = normal and normal:GetTexture()
-        if texture then
-            icon:SetTexture(texture)
-            icon:SetTexCoord(normal:GetTexCoord())
-            -- The shape Blizzard draws it at; an unresolved size stays square.
-            local w, h = normal:GetSize()
-            if not (issecretvalue(w) or issecretvalue(h)) and w > 0 and h > 0 then
-                icon._edbAspect = w / h
-            end
-            return "micro"
-        end
-    end
-    local stem = MM_BLIZZARD_ATLAS[key]
-    if stem and SetAtlasArt(icon, "UI-HUD-MicroMenu-" .. stem .. "-Up") then return "micro" end
     if key == "social" then
-        -- No friends micro button exists: the Friends window's own portrait.
+        -- The chat frame's friends button carries no micro art: the Friends
+        -- window's own portrait.
         icon:SetTexture("Interface\\FriendsFrame\\Battlenet-Portrait")
         icon:SetTexCoord(0, 1, 0, 1)
         return "plain"
-    elseif key == "pvp" then
-        -- No PvP micro button exists: the faction crest the player frame shows
-        -- while flagged (the UI-PVP file keeps its emblem in one corner).
+    end
+    local source = FindMicroButton(MM_ART_BUTTON[key] or MM_MICRO_BUTTON_NAMES[key])
+    local normal = source and source.GetNormalTexture and source:GetNormalTexture()
+    local texture = normal and normal:GetTexture()
+    if type(texture) == "string" and texture:find("MicroButton") then
+        icon:SetTexture(texture)
+        return "micro"
+    end
+    local stem = MM_ART_FILE[key]
+    if stem then
+        icon:SetTexture("Interface\\Buttons\\UI-MicroButton-" .. stem .. "-Up")
+        return "micro"
+    end
+    if key == "pvp" then
+        -- The faction crest the player frame shows while flagged (the UI-PVP
+        -- file keeps its emblem in one corner).
         local faction = UnitFactionGroup("player") == "Horde" and "Horde" or "Alliance"
-        if SetAtlasArt(icon, "UI-HUD-UnitFrame-Player-PVP-" .. faction .. "Icon")
-            or SetAtlasArt(icon, "UI-HUD-UnitFrame-SmallCircle-" .. faction) then
-            return "plain"
-        end
         icon:SetTexture("Interface\\TargetingFrame\\UI-PVP-" .. faction)
-        icon:SetTexCoord(0, 1, 0, 1)
+        icon:SetTexCoord(0, 0.625, 0, 0.625)
         return "plain"
     end
     return false
@@ -237,7 +194,7 @@ local function ApplyMicroIcon(icon, key, blizzard, force)
         FitBlizzardMicroIcon(icon, key)
     elseif not art then
         local def = mmButtonDefsByKey[key]
-        icon:SetTexture(def.icon or (MM_MEDIA .. (MM_ICON_FILE[key] or key) .. ".png"))
+        icon:SetTexture(def.icon or (MM_MEDIA .. (MM_ICON_FILE[key] or key) .. ".tga"))
         icon:SetTexCoord(0, 1, 0, 1)
     end
     return true
@@ -263,59 +220,6 @@ local function OnlineCount(key)
     end
 end
 
--- WoW Forever splits the spellbook and the talents into two micro buttons. Its
--- PlayerSpellsMicroButton still exists but opens the frame on whichever tab was last
--- shown, so there the spell entry clicks the spellbook's own button and a Talents entry follows it.
-if EllesmereUI.IS_FOREVER then
-    MM_MICRO_BUTTON_NAMES.spell  = "SpellbookMicroButton"
-    MM_MICRO_BUTTON_NAMES.talent = "TalentMicroButton"
-    for i, def in ipairs(mmButtonDefs) do
-        if def.key == 'spell' then
-            def.label = SPELLBOOK or 'Spellbook'
-            -- Full icon path: the shared micromenu art holds glyphs this strip's own set lacks,
-            -- so Talents does not repeat the Achievements glyph right beside it.
-            local talent = { key = 'talent', binding = 'TOGGLETALENTS', label = TALENTS or 'Talents', onWhenUnset = true,
-                icon = MM_MEDIA .. "menu-vault.png" }
-            tinsert(mmButtonDefs, i + 1, talent)
-            tinsert(mmButtonOrder, i + 1, 'talent')
-            mmButtonDefsByKey.talent = talent
-            break
-        end
-    end
-    -- Forever-only micro buttons, placed after the Talents entry. Default
-    -- off (opt-in via Menu Elements). Professions uses the shared
-    -- menu-professions art; in the Blizzard icon style both copy their own
-    -- micro button's art like every other button.
-    MM_MICRO_BUTTON_NAMES.profession = "ProfessionMicroButton"
-    MM_MICRO_BUTTON_NAMES.legacy     = "LegacyMicroButton"
-    MM_ICON_FILE.legacy = "menu-legacy"
-    local extras = {
-        { key = 'profession', binding = 'TOGGLEPROFESSIONBOOK', label = PROFESSIONS_BUTTON or 'Professions',
-          icon = MM_MEDIA .. "menu-professions.png" },
-        { key = 'legacy', binding = 'TOGGLELEGACYSYSTEM', label = LEGACY_BUTTON or 'Legacy' },
-    }
-    for i, def in ipairs(mmButtonDefs) do
-        if def.key == 'talent' then
-            for j, extra in ipairs(extras) do
-                tinsert(mmButtonDefs, i + j, extra)
-                tinsert(mmButtonOrder, i + j, extra.key)
-                mmButtonDefsByKey[extra.key] = extra
-            end
-            break
-        end
-    end
-    -- Achievements, PvP, Housing, Adventure Guide and Shop stay out of the
-    -- Forever strip and options checklist. Saved settings keep their keys.
-    local FOREVER_OFF = { ach = true, pvp = true, housing = true, journal = true, shop = true }
-    for i = #mmButtonDefs, 1, -1 do
-        local key = mmButtonDefs[i].key
-        if FOREVER_OFF[key] then
-            tremove(mmButtonDefs, i)
-            tremove(mmButtonOrder, i)
-            mmButtonDefsByKey[key] = nil
-        end
-    end
-end
 
 -- Whether a block shows one button. A button added after blocks were saved
 -- (onWhenUnset) reads a missing setting as on, as the options checklist does.
@@ -380,7 +284,7 @@ mmClickFunctions.menu = function(_, button)
         if not InCombatLockdown() then ToggleFrame(GameMenuFrame) end
     elseif button == "RightButton" then
         if IsShiftKeyDown() then EllesmereUI.RequestReload(EllesmereUI.L("Reload UI"), EllesmereUI.L("Reload the UI now?"))
-        elseif not InCombatLockdown() then ToggleFrame(AddonList) end
+        elseif not InCombatLockdown() and AddonList then ToggleFrame(AddonList) end -- 5.4.8: no in-game add-on list
     end
 end
 local function MMBlockedInCombat(button)
@@ -481,9 +385,15 @@ function ns.RefreshMicroMenuHider(force)
     ns.DeferUntilOOC("edb_mm_blizz", function()
         -- Build the target list without array holes (any of these globals may be absent on a given client).
         local targets = {}
-        if _G.MicroMenuContainer then targets[#targets + 1] = _G.MicroMenuContainer end
-        if _G.MainMenuBarMicroButtons then targets[#targets + 1] = _G.MainMenuBarMicroButtons end
-        if _G.MicroButtonAndBagsBar then targets[#targets + 1] = _G.MicroButtonAndBagsBar end
+        -- 5.4.8 port: the Action Bars port keeps the micro buttons in its
+        -- EABMicroBar holder; without it each 5.4.8 micro button is a target.
+        if _G.EABMicroBar then
+            targets[#targets + 1] = _G.EABMicroBar
+        else
+            for _, name in ipairs(MICRO_BUTTONS or {}) do
+                if _G[name] then targets[#targets + 1] = _G[name] end
+            end
+        end
         for i = 1, #targets do
             local hider = MMGetHider(targets[i])
             if hider then
@@ -504,14 +414,20 @@ end
 -- can return a secret value under tainted execution (arithmetic on it errors), so drop the line instead.
 local CS_DIM = "|cffaaaaaa"
 
+-- 5.4.8 port: no primary stat per spec in 5.4.8 GetSpecializationInfo; the
+-- spec's role picks it (healers and casters Intellect), else the higher of
+-- Strength and Agility.
 local function MMPrimaryStat()
-    local specIndex = C_SpecializationInfo.GetSpecialization()
-    if not specIndex or specIndex <= 0 then return nil end
-    local _, _, _, _, _, statID = C_SpecializationInfo.GetSpecializationInfo(specIndex)
-    if statID == LE_UNIT_STAT_STRENGTH  then return SPELL_STAT1_NAME or "Strength",  1 end
-    if statID == LE_UNIT_STAT_AGILITY   then return SPELL_STAT2_NAME or "Agility",   2 end
-    if statID == LE_UNIT_STAT_INTELLECT then return SPELL_STAT4_NAME or "Intellect", 4 end
-    return nil
+    local function Eff(i) local _, e = UnitStat("player", i); return e or 0 end
+    local specIndex = GetSpecialization()
+    local role = specIndex and select(6, GetSpecializationInfo(specIndex))
+    local _, class = UnitClass("player")
+    local casterClass = class == "MAGE" or class == "WARLOCK" or class == "PRIEST"
+    if role == "HEALER" or casterClass or (Eff(4) > Eff(1) and Eff(4) > Eff(2)) then
+        return SPELL_STAT4_NAME or "Intellect", 4
+    end
+    if Eff(1) >= Eff(2) then return SPELL_STAT1_NAME or "Strength", 1 end
+    return SPELL_STAT2_NAME or "Agility", 2
 end
 
 local function MMAddCharStats()
@@ -548,29 +464,23 @@ local function MMAddCharStats()
         end
     end
 
-    -- WoW Forever has no Mastery or Versatility.
-    if EllesmereUI.IS_FOREVER then
-        local crit, critCR = EllesmereUI.ForeverCritChance()
-        local haste, hasteCR = EllesmereUI.ForeverHaste()
-        pctRating(STAT_CRITICAL_STRIKE or "Critical Strike", crit,  GetCombatRating(critCR))
-        pctRating(STAT_HASTE or "Haste",                     haste, GetCombatRating(hasteCR))
-        return
+    -- 5.4.8 port: crit and haste of the player's kind of damage (spell for
+    -- Intellect users, ranged for hunters, else melee) with their own
+    -- ratings; Mastery as on retail; no Versatility in 5.4.8.
+    local _, class = UnitClass("player")
+    local crit, critCR, haste, hasteCR
+    if pIdx == 4 then
+        crit = 0
+        for school = 2, 7 do crit = max(crit, GetSpellCritChance(school) or 0) end
+        critCR, haste, hasteCR = CR_CRIT_SPELL, UnitSpellHaste("player"), CR_HASTE_SPELL
+    elseif class == "HUNTER" then
+        crit, critCR, haste, hasteCR = GetRangedCritChance(), CR_CRIT_RANGED, GetRangedHaste(), CR_HASTE_RANGED
+    else
+        crit, critCR, haste, hasteCR = GetCritChance(), CR_CRIT_MELEE, GetMeleeHaste(), CR_HASTE_MELEE
     end
-
-    local crit, critCR = EllesmereUI.PlayerCritChance()
     pctRating(STAT_CRITICAL_STRIKE or "Critical Strike", crit,               GetCombatRating(critCR))
-    pctRating(STAT_HASTE or "Haste",                     GetHaste(),         GetCombatRating(CR_HASTE_MELEE))
+    pctRating(STAT_HASTE or "Haste",                     haste,              GetCombatRating(hasteCR))
     pctRating(STAT_MASTERY or "Mastery",                 GetMasteryEffect(), GetCombatRating(CR_MASTERY))
-
-    -- Versatility: secret-value-safe (see block comment above).
-    local ok, dmg, rating = pcall(function()
-        local d = (GetCombatRatingBonus(CR_VERSATILITY_DAMAGE_DONE) or 0)
-                + (GetVersatilityBonus(CR_VERSATILITY_DAMAGE_DONE)  or 0)
-        return d, GetCombatRating(CR_VERSATILITY_DAMAGE_DONE) or 0
-    end)
-    if ok then
-        pctRating(STAT_VERSATILITY or "Versatility", dmg, rating)
-    end
 end
 
 -- Interactive Social / Guild tooltips (always on): online member lists
@@ -598,7 +508,8 @@ local function MMOpenWhisper(charName, bnetName)
         return
     end
     if bnetName and bnetName ~= "" then
-        local sendBN = (ChatFrameUtil and ChatFrameUtil.SendBNetTell) or ChatFrame_SendBNetTell
+        -- 5.4.8 port: Battle.net whispers go through ChatFrame_SendSmartTell.
+        local sendBN = (ChatFrameUtil and ChatFrameUtil.SendBNetTell) or ChatFrame_SendBNetTell or ChatFrame_SendSmartTell
         if sendBN then sendBN(bnetName, DEFAULT_CHAT_FRAME); return end
     end
     if charName and charName ~= "" then
@@ -654,11 +565,10 @@ local function MMBuildSocialTip()
             local secretFaction = issecretvalue(faction)
             -- Character name in its class colour when the class reads plain, else gold.
             local nameText
-            local classID = ga.classID
-            local ci = displayCharName and classID and not issecretvalue(classID)
-                and C_CreatureInfo.GetClassInfo(classID)
-            if ci and ci.classFile then
-                local cc = EllesmereUI.GetClassColor(ci.classFile)
+            -- 5.4.8 port: the class arrives as a token from the Compat BNet shim.
+            local token = displayCharName and ga.classToken
+            if token then
+                local cc = EllesmereUI.GetClassColor(token)
                 nameText = EllesmereUI.ColorText(displayCharName, cc.r, cc.g, cc.b)
             else
                 nameText = format("|cffecd672%s|r", displayCharName or "?")
@@ -878,10 +788,10 @@ ns.BlockFactories.micromenu = function(blockCfg, slot, content, barCtx)
             portraitEvents = want
             if want then
                 inst.eventFrame:RegisterUnitEvent("UNIT_PORTRAIT_UPDATE", "player")
-                inst.eventFrame:RegisterEvent("PORTRAITS_UPDATED")
+                pcall(inst.eventFrame.RegisterEvent, inst.eventFrame, "PORTRAITS_UPDATED") -- 5.4.8: not an event there
             else
                 inst.eventFrame:UnregisterEvent("UNIT_PORTRAIT_UPDATE")
-                inst.eventFrame:UnregisterEvent("PORTRAITS_UPDATED")
+                pcall(inst.eventFrame.UnregisterEvent, inst.eventFrame, "PORTRAITS_UPDATED")
             end
         end
         want = wow and MMButtonOn(mm, "guild") and icons.guild ~= nil
@@ -932,7 +842,7 @@ ns.BlockFactories.micromenu = function(blockCfg, slot, content, barCtx)
         end
 
         -- Delve Journey and Companion Level rows: WoW Forever has no Delves.
-        if name == 'journal' and not EllesmereUI.IS_FOREVER then
+        if name == 'journal' and not EllesmereUI.IS_FOREVER and C_DelvesUI then -- 5.4.8 port: no Delves
             local hexAccent = format('%02x%02x%02x', floor(r * 255), floor(g * 255), floor(b * 255))
             ns.Tip_AddLine(" ")
             local delveRank, delveMax = 0, '?'
@@ -1046,7 +956,7 @@ ns.BlockFactories.micromenu = function(blockCfg, slot, content, barCtx)
         elseif microBtnName then
             microRef = _G[microBtnName]
         end
-        if (key == 'housing' or key == 'talent' or key == 'profession' or key == 'legacy') and not microRef then
+        if not microRef and not mmClickFunctions[key] then -- 5.4.8 port: any button whose micro button is missing (and has no own action)
             -- Skip optional buttons whose Blizzard micro button does not exist.
             return nil
         end

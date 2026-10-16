@@ -1,1152 +1,960 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
--------------------------------------------------------------------------------
---  EllesmereUI_ProfileSync.lua
---  Profile sync mirror groups, per-module sync exclusions, and the sync
---  popup anchored to the sidebar. Loads after EllesmereUI_Fonts.lua.
--------------------------------------------------------------------------------
-local EllesmereUI = _G.EllesmereUI
--- Private namespace shared with EllesmereUI.lua (sidebar buttons).
-local _, EUI_NS = ...
-EUI_NS = EUI_NS.__euiCoreNS or EUI_NS  -- standalone builds: the core's own table (EllesmereUI.lua)
+-- Profile Sync (retail EllesmereUI_ProfileSync.lua): mirror groups,
+-- per-module sync exclusions and the sync popup by the sidebar.
+--
+-- A module's sync group is a set of profiles that keep that module's
+-- settings the same: EllesmereUIDB.syncedModules = { [folder] = {
+-- [profileName] = true } } (retail key). The ACTIVE profile, when it is a
+-- member, pushes its settings to the other members: when the profile is
+-- stored (switch, import) and at logout / reload (PLAYER_LOGOUT, before the
+-- SavedVariables are written). A profile outside a group never pushes in.
+--
+-- Exclusions: paths in the module SavedVariables that never sync (frame
+-- positions and unlock sizes, private data), so every profile keeps its own
+-- layout. Path segments are joined by "."; "*" stands for any key
+-- ("profile.bars.*.growDirection"). Retail paths are relative to the retail
+-- profile blob; here they are relative to the module SavedVariables (often
+-- one level down, "profile.").
+--
+-- Mists differences: the active profile is the live SavedVariables, so a
+-- sync that changes the active profile (a group started from another
+-- profile's settings) writes the live table and asks to reload the UI.
 
--------------------------------------------------------------------------------
---  Profile Sync System (mirror groups)
---  A module's sync set is a MEMBERSHIP group (popup adds the configuring profile too).
---  Two-way: active member pushes a selective copy to others on sync click, logout, and
---  profile switch; outside profiles never push in. Storage: EllesmereUIDB.syncedModules
---  = { [folder] = { [profileName] = true } }. Exclusions: EllesmereUI._syncExclusions
---  [folder] = { key = true }; dot-wildcard "bars.*.growDirection" skips that key in any sub-table of bars.
--------------------------------------------------------------------------------
-do
-    -- Modules that should NOT get a sync icon (no per-profile settings; Loadout
-    -- Manager keeps a per-character store of its own)
-    local SYNC_EXEMPT = { EllesmereUIPartyMode = true, EllesmereUILoadoutManager = true }
-    EllesmereUI._syncExempt = SYNC_EXEMPT
+local ns = EllesmereUI
+local Kit = ns.PopupKit
 
-    -- Modules with a sync icon but no per-profile data (always "synced"). BlizzardSkin hosts
-    -- Dragon Riding's per-profile DB; its sync icon routes to EllesmereUIDragonRiding via syncFolder.
-    local SYNC_GLOBAL_ONLY = { EllesmereUIForeverEssentials = true }
-    EllesmereUI._syncGlobalOnly = SYNC_GLOBAL_ONLY
+local DeepCopy = ns.ProfileDeepCopy
+local floor, min = math.floor, math.min
 
-    -- Exclusion registry: keys NOT copied during sync (flat or dot-wildcard, see banner)
-    local syncExclusions = {}
-    EllesmereUI._syncExclusions = syncExclusions
-
-    function EllesmereUI.RegisterSyncExclusions(folder, keys)
-        if not syncExclusions[folder] then syncExclusions[folder] = {} end
-        local ex = syncExclusions[folder]
-        for _, k in ipairs(keys) do
-            ex[k] = true
-        end
-    end
-
-    -- Merged exclusions for ONE src->dst copy: static registry plus every setting EITHER
-    -- profile holds a spec/conditional OVERRIDE entry for (override-owned keys never sync --
-    -- the override system owns them; a pushed blob would drift from the dest's recorded values).
-    -- PURE READ of profile tables only (no override store creation/harvest/apply/capture).
-    -- Returns staticEx unchanged (zero alloc) when neither profile has override data, else a
-    -- fresh table (shared registry never mutated); callers pcall and fall back to staticEx on error.
-    -- fkey = folder.."\31"..path, segments joined by "\30" (mirrors SplitFKey in
-    -- EllesmereUI_SpecOverrides.lua); matcher walks the tree dot-joined so gsub("\30",".") is exact.
-    EllesmereUI._SyncExclusionsWithOverrides = function(folder, staticEx, srcProf, dstProf)
-        local merged
-        local function ensure()
-            if not merged then
-                merged = {}
-                if staticEx then for k in pairs(staticEx) do merged[k] = true end end
-            end
-        end
-        local function addStore(store)
-            if type(store) ~= "table" then return end
-            for _, entry in ipairs(store) do
-                local vals = type(entry) == "table" and entry.values
-                if type(vals) == "table" then
-                    for _, m in pairs(vals) do  -- default map + every spec/gid map
-                        if type(m) == "table" then
-                            for fkey in pairs(m) do
-                                if type(fkey) == "string" then
-                                    local f, path = fkey:match("^([^\31]+)\31(.*)$")
-                                    if f == folder and path and path ~= "" then
-                                        ensure()
-                                        merged[path:gsub("\30", ".")] = true
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        local function addProf(prof)
-            if type(prof) ~= "table" then return end
-            addStore(prof.specOverrides)
-            addStore(prof.condOverrides)
-            if folder == "EllesmereUIRaidFrames" then
-                -- BM forks are layer-shaped, not fkey-shaped: the fork system writes
-                -- bmIndicators/bmSimple/bmDisplayMode/bmIconZoom straight into the live RF blob,
-                -- so if EITHER profile carries ANY BM layer, those keys are fork territory and
-                -- must not sync (emptiness check mirrors the BM harvest's zero-cost gate).
-                local s, c = prof.specBmOverrides, prof.condBmOverrides
-                if (type(s) == "table" and (s.active or s.baselineLayout
-                        or (type(s.layouts) == "table" and next(s.layouts))))
-                   or (type(c) == "table" and type(c.layouts) == "table"
-                        and next(c.layouts)) then
-                    ensure()
-                    merged.bmIndicators  = true
-                    merged.bmSimple      = true
-                    merged.bmDisplayMode = true
-                    merged.bmIconZoom    = true
-                    merged.bm2           = true   -- v2 payload rides BM layers
-                end
-                -- Debuff Manager forks own the dmDebuff subtree the same way.
-                local ds, dc = prof.specDmOverrides, prof.condDmOverrides
-                if (type(ds) == "table" and (ds.active or ds.baselineLayout
-                        or (type(ds.layouts) == "table" and next(ds.layouts))))
-                   or (type(dc) == "table" and type(dc.layouts) == "table"
-                        and next(dc.layouts)) then
-                    ensure()
-                    merged.dmDebuff = true
-                end
-            end
-        end
-        addProf(srcProf)
-        addProf(dstProf)
-        return merged or staticEx
-    end
-
-    -- Selective deep-copy: src minus excluded keys (flat "barPositions" or wildcard
-    -- "bars.*.growDirection" = skip that key in any sub-table of "bars").
-    local function SelectiveCopy(src, exclusions, parentPath)
-        if type(src) ~= "table" then return src end
-        local copy = {}
-        for k, v in pairs(src) do
-            local keyStr = tostring(k)
-            local fullKey = parentPath and (parentPath .. "." .. keyStr) or keyStr
-            if not exclusions[fullKey] then
-                if type(v) == "table" then
-                    -- Wildcard parent check (e.g. "bars" in "bars.*.X")
-                    local isWildcardParent = false
-                    local childExclusions = nil
-                    for exKey in pairs(exclusions) do
-                        local prefix, childKey = exKey:match("^(.-)%.%*%.(.+)$")
-                        -- Full-path match only (a bare-name collision is not a wildcard parent)
-                        if prefix and fullKey == prefix then
-                            isWildcardParent = true
-                            if not childExclusions then childExclusions = {} end
-                            childExclusions[childKey] = true
-                        end
-                    end
-                    if isWildcardParent and childExclusions then
-                        -- Copy the container but apply child exclusions to each sub-table
-                        local containerCopy = {}
-                        for ck, cv in pairs(v) do
-                            if type(cv) == "table" then
-                                local subCopy = {}
-                                for sk, sv in pairs(cv) do
-                                    if not childExclusions[tostring(sk)] then
-                                        if type(sv) == "table" then
-                                            subCopy[sk] = SelectiveCopy(sv, {})
-                                        else
-                                            subCopy[sk] = sv
-                                        end
-                                    end
-                                end
-                                containerCopy[ck] = subCopy
-                            else
-                                containerCopy[ck] = cv
-                            end
-                        end
-                        copy[k] = containerCopy
-                    else
-                        copy[k] = SelectiveCopy(v, exclusions, fullKey)
-                    end
-                else
-                    copy[k] = v
-                end
-            end
-        end
-        return copy
-    end
-    EllesmereUI._SelectiveCopy = SelectiveCopy
-
-    -- Exclusion-aware deep overlay for destinations with existing data: writes src into dst
-    -- leaf-by-leaf wherever an exclusion path (flat/dotted/wildcard) touches the subtree, so
-    -- excluded keys keep dest values (replacing a parent whole would delete them).
-    function EllesmereUI._SelectiveOverlay(src, dst, exclusions, deepCopy, parentPath)
-        for k, v in pairs(src) do
-            local keyStr = tostring(k)
-            local fullKey = parentPath and (parentPath .. "." .. keyStr) or keyStr
-            if not exclusions[fullKey] then
-                if type(v) == "table" then
-                    -- Wildcard parent and/or dotted exclusions deeper in this subtree
-                    local childExclusions = nil
-                    local hasNested = false
-                    for exKey in pairs(exclusions) do
-                        local prefix, childKey = exKey:match("^(.-)%.%*%.(.+)$")
-                        -- Full-path match only (same rule as SelectiveCopy)
-                        if prefix and fullKey == prefix then
-                            if not childExclusions then childExclusions = {} end
-                            childExclusions[childKey] = true
-                        elseif exKey:sub(1, #fullKey + 1) == (fullKey .. ".") then
-                            hasNested = true
-                        end
-                    end
-                    if childExclusions then
-                        -- Merge each sub-table, preserving excluded child keys
-                        if type(dst[k]) ~= "table" then dst[k] = {} end
-                        local dstContainer = dst[k]
-                        for ck, cv in pairs(v) do
-                            if type(cv) == "table" then
-                                if type(dstContainer[ck]) ~= "table" then dstContainer[ck] = {} end
-                                local dstSub = dstContainer[ck]
-                                for sk, sv in pairs(cv) do
-                                    if not childExclusions[tostring(sk)] then
-                                        dstSub[sk] = type(sv) == "table" and deepCopy(sv) or sv
-                                    end
-                                end
-                            else
-                                dstContainer[ck] = cv
-                            end
-                        end
-                    elseif hasNested then
-                        if type(dst[k]) ~= "table" then dst[k] = {} end
-                        EllesmereUI._SelectiveOverlay(v, dst[k], exclusions, deepCopy, fullKey)
-                    else
-                        dst[k] = deepCopy(v)
-                    end
-                else
-                    dst[k] = v
-                end
-            end
-        end
-    end
-
-    function EllesmereUI.IsProfileSynced(folder, profileName)
-        if not EllesmereUIDB then return false end
-        local sm = EllesmereUIDB.syncedModules
-        if not sm or not sm[folder] then return false end
-        local targets = sm[folder]
-        return type(targets) == "table" and targets[profileName] == true
-    end
-
-    function EllesmereUI.GetSyncedProfiles(folder)
-        if not EllesmereUIDB or not EllesmereUIDB.syncedModules then return {} end
-        local targets = EllesmereUIDB.syncedModules[folder]
-        if type(targets) == "table" then return targets end
-        return {}
-    end
-
-    -- Check if ANY profile is synced for a module (for icon state)
-    function EllesmereUI.IsModuleSynced(folder)
-        if not EllesmereUIDB or not EllesmereUIDB.syncedModules then return false end
-        local targets = EllesmereUIDB.syncedModules[folder]
-        if type(targets) ~= "table" then return false end
-        for _, v in pairs(targets) do if v then return true end end
-        return false
-    end
-
-    -- Sync one module from active profile to specific target profiles
-    function EllesmereUI.SyncModuleToProfiles(folder, targetProfiles)
-        if not EllesmereUIDB or not EllesmereUIDB.profiles then return end
-        local active = EllesmereUIDB.activeProfile or "Default"
-        local src = EllesmereUIDB.profiles[active]
-        if not src or not src.addons or not src.addons[folder] then return end
-        local DeepCopy = EllesmereUI.Lite and EllesmereUI.Lite.DeepCopy
-        if not DeepCopy then return end
-
-        local staticEx = syncExclusions[folder]
-        local exFn = EllesmereUI._SyncExclusionsWithOverrides
-        for profName in pairs(targetProfiles) do
-            if profName ~= active then
-                local prof = EllesmereUIDB.profiles[profName]
-                if prof then
-                    if not prof.addons then prof.addons = {} end
-                    -- Merge both profiles' override-entry paths into the static set
-                    -- (fail-open: any derive error keeps static-only behavior).
-                    local exclusions = staticEx
-                    if exFn then
-                        local ok, m = pcall(exFn, folder, staticEx, src, prof)
-                        if ok and m then exclusions = m end
-                    end
-                    if exclusions and next(exclusions) then
-                        local dst = prof.addons[folder]
-                        if not dst then
-                            -- First sync to this profile: no dest values to preserve
-                            prof.addons[folder] = SelectiveCopy(src.addons[folder], exclusions)
-                        else
-                            -- Overlay leaf-by-leaf so excluded keys keep dest values
-                            EllesmereUI._SelectiveOverlay(src.addons[folder], dst, exclusions, DeepCopy)
-                        end
-                    else
-                        -- Full blob copy (no exclusions)
-                        prof.addons[folder] = DeepCopy(src.addons[folder])
-                    end
-                end
-            end
-        end
-    end
-
-    -- Equalize a module across group members from an explicit source ("seed"). Non-active dests
-    -- get a selective copy; an ACTIVE dest is written IN PLACE (live db.profile refs stay valid),
-    -- defaults re-merged (stored blobs are sparse), then UI refreshed. Excluded (layout) keys keep each dest's values.
-    function EllesmereUI.SyncModuleFromProfile(folder, srcName, targets)
-        if not EllesmereUIDB or not EllesmereUIDB.profiles then return end
-        local active = EllesmereUIDB.activeProfile or "Default"
-        if srcName == active then
-            EllesmereUI.SyncModuleToProfiles(folder, targets)
-            return
-        end
-        local DeepCopy = EllesmereUI.Lite and EllesmereUI.Lite.DeepCopy
-        if not DeepCopy then return end
-        local srcProf = EllesmereUIDB.profiles[srcName]
-        local srcData = srcProf and srcProf.addons and srcProf.addons[folder]
-        if not srcData then return end
-
-        local staticEx = syncExclusions[folder]
-        local exFn = EllesmereUI._SyncExclusionsWithOverrides
-        for profName in pairs(targets) do
-            if profName ~= srcName then
-                local prof = EllesmereUIDB.profiles[profName]
-                if prof then
-                    if not prof.addons then prof.addons = {} end
-                    -- Same override-ownership exclusions as SyncModuleToProfiles.
-                    local exclusions = staticEx
-                    if exFn then
-                        local ok, m = pcall(exFn, folder, staticEx, srcProf, prof)
-                        if ok and m then exclusions = m end
-                    end
-                    local dst = prof.addons[folder]
-                    if profName == active then
-                        -- Live profile: adopt in place, never replace the table
-                        if type(dst) ~= "table" then
-                            dst = {}
-                            prof.addons[folder] = dst
-                        end
-                        if exclusions and next(exclusions) then
-                            EllesmereUI._SelectiveOverlay(srcData, dst, exclusions, DeepCopy)
-                        else
-                            wipe(dst)
-                            for k, v in pairs(srcData) do
-                                dst[k] = type(v) == "table" and DeepCopy(v) or v
-                            end
-                        end
-                    elseif not (exclusions and next(exclusions)) then
-                        prof.addons[folder] = DeepCopy(srcData)
-                    elseif type(dst) == "table" then
-                        EllesmereUI._SelectiveOverlay(srcData, dst, exclusions, DeepCopy)
-                    else
-                        prof.addons[folder] = SelectiveCopy(srcData, exclusions)
-                    end
-                end
-            end
-        end
-
-        if targets[active] then
-            -- Re-merge defaults into the adopted live table, then refresh addons and any open options page
-            local reg = EllesmereUI.Lite._dbRegistry
-            if reg then
-                for _, rdb in ipairs(reg) do
-                    if rdb.folder == folder then
-                        if rdb._profileDefaults and rdb.profile then
-                            EllesmereUI.Lite.DeepMergeDefaults(rdb.profile, rdb._profileDefaults)
-                        end
-                        break
-                    end
-                end
-            end
-            if EllesmereUI.RefreshAllAddons then
-                EllesmereUI.RefreshAllAddons()
-            end
-            if EllesmereUI.RefreshPage then
-                EllesmereUI:RefreshPage()
-            end
-        end
-    end
-
-    -- Pre-logout push to other group members. Only a MEMBER pushes; an outside
-    -- profile must never overwrite member data regardless of what is active.
-    local initFrame = CreateFrame("Frame")
-    initFrame:RegisterEvent("PLAYER_LOGIN")
-    initFrame:SetScript("OnEvent", function(self)
-        self:UnregisterAllEvents()
-        if EllesmereUI.Lite and EllesmereUI.Lite.RegisterPreLogout then
-            EllesmereUI.Lite.RegisterPreLogout(function()
-                if not EllesmereUIDB or not EllesmereUIDB.syncedModules then return end
-                local active = EllesmereUIDB.activeProfile or "Default"
-                for folder, targets in pairs(EllesmereUIDB.syncedModules) do
-                    if type(targets) == "table" and targets[active] then
-                        EllesmereUI.SyncModuleToProfiles(folder, targets)
-                    end
-                end
-            end)
-        end
-    end)
+local function DB()
+	if type(EllesmereUIDB) ~= "table" then
+		EllesmereUIDB = {}
+	end
+	return EllesmereUIDB
 end
 
+local function Groups()
+	local db = DB()
+	if type(db.syncedModules) ~= "table" then
+		db.syncedModules = {}
+	end
+	return db.syncedModules
+end
 
--------------------------------------------------------------------------------
---  Sync Exclusions per Module -- keys listed here are NOT copied when syncing between profiles.
--------------------------------------------------------------------------------
-EllesmereUI.RegisterSyncExclusions("EllesmereUIActionBars", {
-    "barPositions",
-    "bars.*.growDirection",
-    "bars.*.orientation",
-    "bars.*.buttonWidth",
-    "bars.*.buttonHeight",
-    "bars.*.targetWidth",
-    "bars.*.targetHeight",
-    "bars.*.width",
-    "bars.*.height",
-    "bars.*.overrideNumIcons",
-    "bars.*.overrideNumRows",
-    "bars.*.numIcons",
-    "bars.*.numRows",
+---------------------------------------------------------------------------
+-- Exclusions per module (Mists SavedVariables paths)
+---------------------------------------------------------------------------
+local syncExclusions = {}
+ns._syncExclusions = syncExclusions
+
+function ns.RegisterSyncExclusions(folder, keys)
+	syncExclusions[folder] = syncExclusions[folder] or {}
+	for _, k in ipairs(keys) do
+		syncExclusions[folder][k] = true
+	end
+end
+
+ns.RegisterSyncExclusions("EllesmereUIActionBars", {
+	"profile.barPositions",
+	"profile.bars.*.growDirection", "profile.bars.*.orientation",
+	"profile.bars.*.buttonWidth", "profile.bars.*.buttonHeight",
+	"profile.bars.*.targetWidth", "profile.bars.*.targetHeight",
+	"profile.bars.*.width", "profile.bars.*.height",
+	"profile.bars.*.overrideNumIcons", "profile.bars.*.overrideNumRows",
+	"profile.bars.*.numIcons", "profile.bars.*.numRows",
 })
 
-EllesmereUI.RegisterSyncExclusions("EllesmereUIUnitFrames", {
-    "positions",
-    "player.frameWidth", "player.healthHeight",
-    "target.frameWidth", "target.healthHeight",
-    "playerTarget.frameWidth", "playerTarget.healthHeight",
-    "targettarget.frameWidth", "targettarget.healthHeight",
-    "focustarget.frameWidth", "focustarget.healthHeight",
-    "pet.frameWidth", "pet.healthHeight",
-    "focus.frameWidth", "focus.healthHeight",
-    "boss.frameWidth", "boss.healthHeight",
+ns.RegisterSyncExclusions("EllesmereUIUnitFrames", {
+	"positions",
+	"player.frameWidth", "player.healthHeight",
+	"target.frameWidth", "target.healthHeight",
+	"targettarget.frameWidth", "targettarget.healthHeight",
+	"focustarget.frameWidth", "focustarget.healthHeight",
+	"pet.frameWidth", "pet.healthHeight",
+	"focus.frameWidth", "focus.healthHeight",
+	"boss.frameWidth", "boss.healthHeight",
+	"player.playerCastbarWidth", "player.playerCastbarHeight",
+	-- Player Aura Bars
+	"playerAuraBars.buffsPos", "playerAuraBars.debuffsPos",
+	"playerAuraBars.customBuffBars.*.pos", "playerAuraBars.customDebuffBars.*.pos",
+	"playerAuraBars.pabSpecBars.*.buffBars.*.pos", "playerAuraBars.pabSpecBars.*.debuffBars.*.pos",
 })
 
-EllesmereUI.RegisterSyncExclusions("EllesmereUICooldownManager", {
-    "cdmBarPositions",
-    "cdmBars.bars.*.iconSize",
-    "cdmBars.bars.*.numRows",
-    "cdmBars.bars.*.anchorFirstRow",
-    "cdmBars.bars.*.rowGrowDirection",
-    "cdmBars.bars.*.spacing",
-    "cdmBars.bars.*.verticalOrientation",
-    "cdmBars.bars.*.anchorTo",
-    "cdmBars.bars.*.anchorPosition",
-    "cdmBars.bars.*.anchorOffsetX",
-    "cdmBars.bars.*.anchorOffsetY",
-    "cdmBars.bars.*.keybindOffsetX",
-    "cdmBars.bars.*.keybindOffsetY",
-    "cdmBars.bars.*.keybindAnchor",
-    -- Rotation Assist Icon: unlock position, size and keybind placement
-    "rotationAssistIcon.position",
-    "rotationAssistIcon.iconSize",
-    "rotationAssistIcon.keybindAnchor",
-    "rotationAssistIcon.keybindOffsetX",
-    "rotationAssistIcon.keybindOffsetY",
+ns.RegisterSyncExclusions("EllesmereUICooldownManager", {
+	"profile.cdmBarPositions",
+	"profile.cdmBars.bars.*.iconSize",
+	"profile.cdmBars.bars.*.numRows",
+	"profile.cdmBars.bars.*.anchorFirstRow",
+	"profile.cdmBars.bars.*.rowGrowDirection",
+	"profile.cdmBars.bars.*.spacing",
+	"profile.cdmBars.bars.*.verticalOrientation",
+	"profile.cdmBars.bars.*.anchorTo",
+	"profile.cdmBars.bars.*.anchorPosition",
+	"profile.cdmBars.bars.*.anchorOffsetX",
+	"profile.cdmBars.bars.*.anchorOffsetY",
+	"specProfiles.*.tbbPositions", -- Tracking Bars
 })
 
-EllesmereUI.RegisterSyncExclusions("EllesmereUIResourceBars", {
-    "health.width", "health.height", "health.offsetX", "health.offsetY", "health.orientation",
-    "primary.width", "primary.height", "primary.offsetX", "primary.offsetY", "primary.orientation",
-    "secondary.pipWidth", "secondary.pipHeight", "secondary.pipSpacing", "secondary.pipOrientation",
-    "secondary.offsetX", "secondary.offsetY",
-    "castBar.width", "castBar.height", "castBar.anchorX", "castBar.anchorY", "castBar.unlockPos",
-    "totemBar.iconSize", "totemBar.spacing", "totemBar.unlockPos",
-    "callTotemBar.iconSize", "callTotemBar.spacing", "callTotemBar.unlockPos",
-    "general.anchorX", "general.anchorY", "general.orientation",
+ns.RegisterSyncExclusions("EllesmereUIResourceBars", {
+	"profile.health.unlockPos", "profile.health.width", "profile.health.height",
+	"profile.health.offsetX", "profile.health.offsetY", "profile.health.orientation",
+	"profile.primary.unlockPos", "profile.primary.width", "profile.primary.height",
+	"profile.primary.offsetX", "profile.primary.offsetY", "profile.primary.orientation",
+	"profile.secondary.unlockPos", "profile.secondary.pipWidth", "profile.secondary.pipHeight",
+	"profile.secondary.pipOrientation", "profile.secondary.offsetX", "profile.secondary.offsetY",
+	"profile.castBar.unlockPos", "profile.castBar.width", "profile.castBar.height",
+	"profile.castBar.anchorX", "profile.castBar.anchorY",
+	"profile.gcdBar.unlockPos", "profile.gcdBar.width", "profile.gcdBar.height",
+	"profile.gcdBar.anchorX", "profile.gcdBar.anchorY", "profile.gcdBar.orientation",
+	"profile.totemBar.unlockPos", "profile.totemBar.orientation",
+	"profile.general.anchorX", "profile.general.anchorY", "profile.general.orientation",
 })
 
-EllesmereUI.RegisterSyncExclusions("EllesmereUIAuraBuffReminders", {
-    "unlockPos",
-    "display.xOffset", "display.yOffset",
+ns.RegisterSyncExclusions("EllesmereUIAuraBuffReminders", {
+	"profile.unlockPos",
+	"profile.display.xOffset", "profile.display.yOffset",
 })
 
-EllesmereUI.RegisterSyncExclusions("EllesmereUIRaidFrames", {
-    "unlockPos",
+ns.RegisterSyncExclusions("EllesmereUIRaidFrames", {
+	"profile.unlockPos", "profile.partyUnlockPos",
+	"profile.healerMana.unlockPos",
+	"profile.friendlyBoss.freePos", "profile.friendlyBoss.freeRect",
+	"profile.extraFrames.freePos", "profile.extraFrames.freeRect",
+	"profile.petFrames.freePos", "profile.petFrames.freeRect",
+	"profile.petFrames.party_freePos", "profile.petFrames.party_freeRect",
+	"profile.petFrames.raid_freePos", "profile.petFrames.raid_freeRect",
 })
 
-EllesmereUI.RegisterSyncExclusions("EllesmereUIMythicTimer", {
-    "standalonePos",
-    "scale",
-    "frameWidth",
+ns.RegisterSyncExclusions("EllesmereUIMythicTimer", {
+	"standalonePos", "scale", "frameWidth",
+	"tsb.pos", "tsb.width", "tsb.height",
+	"tfb.*.pos", "tfb.*.width", "tfb.*.height",
+	"runSummary.position",
 })
 
--- Dragon Riding HUD position (unlockPos) stays per-profile on sync, like every module.
-EllesmereUI.RegisterSyncExclusions("EllesmereUIDragonRiding", {
-    "unlockPos",
+-- QoL positions (Secondary Stats, FPS, cursor slice, alerts) stay per profile.
+ns.RegisterSyncExclusions("EllesmereUIQoL", {
+	"secondaryStatsPos", "fpsPos",
+	"cursor.gcd.pos", "cursor.castCircle.pos",
+	"battleRes.pos", "bloodlust.pos",
+	"movementAlert.pos", "movementAlert.tsPos",
+	"raidTools.pos", "raidTools.compactWidth", "raidTools.compactHeight",
+	"selfCombatText.pos",
 })
 
--- QoL Secondary Stats/FPS positions, the cursor slice (GCD ring, cast circle, at
--- profile.cursor) and the Battle Res and Bloodlust positions stay per-profile on
--- sync: exported intact, never push-overwritten.
-EllesmereUI.RegisterSyncExclusions("EllesmereUIQoL", {
-    "secondaryStatsPos",
-    "fpsPos",
-    "cursor.gcd.pos",
-    "cursor.castCircle.pos",
-    "battleRes.pos",
-    "bloodlust.pos",
+ns.RegisterSyncExclusions("EllesmereUIMinimap", {
+	"profile.minimap.position",     -- unlock-element drag position
+	"profile.minimap.btnPositions", -- per-button shift-drag offsets
 })
 
--- Minimap settings nest under profile.minimap.
-EllesmereUI.RegisterSyncExclusions("EllesmereUIMinimap", {
-    "minimap.position",      -- unlock-element drag position
-    "minimap.btnPositions",  -- per-button shift-drag offsets
+ns.RegisterSyncExclusions("EllesmereUIChat", {
+	"profile.chatPos",              -- unlock drag position
+	"profile.chat.iconPositions",   -- per-sidebar-icon shift-drag offsets
 })
 
--- Chat settings nest under profile.chat.
-EllesmereUI.RegisterSyncExclusions("EllesmereUIChat", {
-    "chat.chatPosition",   -- unlock drag position
-    "chat.chatWidth",      -- unlock resize-handle width
-    "chat.chatHeight",     -- unlock resize-handle height
-    "chat.toastPosition",  -- BNet toast unlock position
-    "chat.iconPositions",  -- per-sidebar-icon shift-drag offsets
+ns.RegisterSyncExclusions("EllesmereUIDamageMeters", {
+	"dm.standaloneTimerPos",
+	"dm.windows.*.position", "dm.windows.*.width", "dm.windows.*.height",
+	"spellHistory.iconPos", "spellHistory.barPos", "spellHistory.barWidth",
 })
 
--- Damage Meters settings nest under profile.dm.
-EllesmereUI.RegisterSyncExclusions("EllesmereUIDamageMeters", {
-    "dm.standaloneTimerPos",  -- drag-written standalone timer position
-    "dm.windows.*.position",  -- per-window drag position
-    "dm.windows.*.width",     -- per-window drag-resize width
-    "dm.windows.*.height",    -- per-window drag-resize height
+ns.RegisterSyncExclusions("EllesmereUIDataBars", {
+	"profile.bars.*.savedPos",
+	"profile.bars.*.length",
+	"profile.bars.*.thickness",
+	"profile.bars.*.snapEdge",
 })
 
--- DataBars per-bar geometry lives in the top-level bars array (wildcard shape as ActionBars).
-EllesmereUI.RegisterSyncExclusions("EllesmereUIDataBars", {
-    "bars.*.savedPos",   -- unlock drag position
-    "bars.*.length",     -- unlock resize owned
-    "bars.*.thickness",  -- unlock resize owned
-    "bars.*.snapEdge",   -- mutated by the drag save itself
+ns.RegisterSyncExclusions("EllesmereUIBags", {
+	"profile.bagsPosition", "profile.bankPosition",
 })
 
--- Bags is the one auto-synced module: without this the bank position mirrors across profiles.
-EllesmereUI.RegisterSyncExclusions("EllesmereUIBags", {
-    "bankPosition",  -- bank window drag position
+ns.RegisterSyncExclusions("EllesmereUIBlizzardSkin", { "tooltipFixedPos" })
+
+ns.RegisterSyncExclusions("EllesmereUITopBar", {
+	"pos",
+	"qol.coTank.point", "qol.coTank.x", "qol.coTank.y", "qol.coTank.width", "qol.coTank.height",
+	"qol.stealth.point", "qol.stealth.x", "qol.stealth.y", "qol.stealth.width", "qol.stealth.height",
+	"qol.stealth.stancePoint", "qol.stealth.stanceX", "qol.stealth.stanceY",
+	"qol.stealth.stanceWidth", "qol.stealth.stanceHeight",
 })
 
--------------------------------------------------------------------------------
---  Sync Popup -- anchored flush to sidebar's right edge, centered on clicked sync icon,
---  clamped to the EUI window bottom.
--------------------------------------------------------------------------------
-do
-    local _syncPopup = nil
+ns.RegisterSyncExclusions("EllesmereUIInterruptTracker", { "point", "width" })
+ns.RegisterSyncExclusions("EllesmereUIQuestTracker", { "pos" })
+ns.RegisterSyncExclusions("EllesmereUIReforge", {
+	"windowX", "windowY", "windowWidth", "windowHeight", "methodWindowX", "methodWindowY",
+})
 
-    function EllesmereUI.CloseSyncPopup()
-        if _syncPopup then _syncPopup:Hide() end
-        if EllesmereUI._syncConfirmFrame then EllesmereUI._syncConfirmFrame:Hide() end
-    end
+-- Modules whose Mists SavedVariables keep the retail profile blob under
+-- "profile" (retail override paths need that prefix here).
+local PROFILE_ROOT = {
+	EllesmereUIActionBars = true, EllesmereUIRaidFrames = true, EllesmereUINameplates = true,
+	EllesmereUIResourceBars = true, EllesmereUIBags = true, EllesmereUIDataBars = true,
+	EllesmereUIChat = true, EllesmereUIMinimap = true, EllesmereUIAuraBuffReminders = true,
+	EllesmereUICooldownManager = true,
+}
 
-    -- Seed-picker confirm for create/update: user picks which member's settings the
-    -- group starts from; after that first equalization the group is a mirror.
-    function EllesmereUI._ShowSyncSeedConfirm(opts)
-        local fontPath = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath()) or "Fonts\\FRIZQT__.TTF"
-        local PP = EllesmereUI.PanelPP or EllesmereUI.PP
-        local W, PAD = 360, 18
+-- Retail _SyncExclusionsWithOverrides: settings a spec / condition override
+-- owns never sync (either profile's override store). Store entries:
+-- { values = { [anyKey] = { [fkey] = value } } }, fkey = folder .. "\31" ..
+-- path with "\30" between segments (retail). Stores are read from the
+-- stored profile (prof.specOverrides / prof.condOverrides) or, when the
+-- Spec Overrides port provides it, ns.SyncOverrideStores(profileName).
+local function OverrideStores(profileName)
+	if ns.SyncOverrideStores then
+		local ok, list = pcall(ns.SyncOverrideStores, profileName)
+		if ok and type(list) == "table" then
+			return list
+		end
+	end
+	local prof = type(DB().profiles) == "table" and DB().profiles[profileName]
+	if type(prof) ~= "table" then
+		return {}
+	end
+	return { prof.specOverrides, prof.condOverrides }
+end
 
-        if not EllesmereUI._syncConfirmFrame then
-            -- Controller cursor: screen-level overlays hang off the overlay
-            -- parent, which is UIParent unless a controller cursor is loaded.
-            local overlayParent = EllesmereUI.OverlayParent()
-            local nf = CreateFrame("Frame", nil, overlayParent)
-            nf:SetFrameStrata("FULLSCREEN_DIALOG")
-            -- Below 200: the shared dropdown menu (hardcoded level 200) must render above
-            nf:SetFrameLevel(150)
-            nf:EnableMouse(true)
-            local bg = nf:CreateTexture(nil, "BACKGROUND")
-            bg:SetAllPoints(); bg:SetColorTexture(17/255, 15/255, 12/255, 1)
-            nf._bg = bg
-            -- Fullscreen dimmer: darkens and click-blocks everything behind
-            local dim = CreateFrame("Frame", nil, overlayParent)
-            dim:SetFrameStrata("FULLSCREEN_DIALOG")
-            dim:SetFrameLevel(140)
-            dim:SetAllPoints(UIParent)
-            dim:EnableMouse(true)
-            dim:Hide()
-            local dimTex = dim:CreateTexture(nil, "BACKGROUND")
-            dimTex:SetAllPoints(); dimTex:SetColorTexture(0, 0, 0, 0.55)
-            nf._dimmer = dim
-            nf:SetScript("OnHide", function(self) self._dimmer:Hide() end)
-            EllesmereUI._syncConfirmFrame = nf
-            -- Controller cursor: the dimmer and the panel block what is under
-            -- them without being stops.
-            EllesmereUI.TrackOverlay(nf)
-            EllesmereUI.TrackOverlay(dim)
-            EllesmereUI.PadHint(nf, "nodepass")
-            EllesmereUI.PadHint(dim, "nodepass")
-        end
-        local f = EllesmereUI._syncConfirmFrame
+local function OverridePaths(folder, profileName, out)
+	for _, store in pairs(OverrideStores(profileName)) do
+		if type(store) == "table" then
+			for _, entry in pairs(store) do
+				local vals = type(entry) == "table" and entry.values
+				if type(vals) == "table" then
+					for _, m in pairs(vals) do
+						if type(m) == "table" then
+							for fkey in pairs(m) do
+								if type(fkey) == "string" then
+									local f, path = fkey:match("^([^\31]+)\31(.*)$")
+									if f == folder and path and path ~= "" then
+										path = path:gsub("\30", ".")
+										if PROFILE_ROOT[folder] and path:sub(1, 8) ~= "profile." then
+											path = "profile." .. path
+										end
+										out[path] = true
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+end
 
-        local function MakeFont(parent, size, r, g, b, a)
-            local fs = parent:CreateFontString(nil, "OVERLAY")
-            if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(fs, true) end
-            fs:SetFont(fontPath, size, "")
-            fs:SetTextColor(r or 1, g or 1, b or 1, a or 1)
-            return fs
-        end
+-- Exclusion patterns for one copy: static list + private data + override
+-- paths of both profiles. Returns a list of segment lists.
+local function Patterns(folder, srcName, dstName)
+	local set = {}
+	for k in pairs(syncExclusions[folder] or {}) do
+		set[k] = true
+	end
+	for _, k in ipairs(ns.PROFILE_PRIVATE and ns.PROFILE_PRIVATE[folder] or {}) do
+		set[k] = true
+	end
+	pcall(OverridePaths, folder, srcName, set)
+	pcall(OverridePaths, folder, dstName, set)
+	local list = {}
+	for path in pairs(set) do
+		local segs = {}
+		for seg in path:gmatch("[^%.]+") do
+			segs[#segs + 1] = seg
+		end
+		list[#list + 1] = segs
+	end
+	return list
+end
+ns._SyncPatterns = Patterns
 
-        local function MakeBtn(label, r, g, b, a, hr, hg, hb)
-            local btn = CreateFrame("Button", nil, f)
-            btn:SetSize(120, 26)
-            btn:SetFrameLevel(f:GetFrameLevel() + 1)
-            local bgT = btn:CreateTexture(nil, "BACKGROUND")
-            bgT:SetAllPoints(); bgT:SetColorTexture(r, g, b, a)
-            local lbl = btn:CreateFontString(nil, "OVERLAY")
-            if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(lbl, false) end
-            lbl:SetFont(fontPath, 10, "")
-            lbl:SetTextColor(1, 1, 1, 1); lbl:SetPoint("CENTER"); lbl:SetText(label)
-            btn:SetScript("OnEnter", function() bgT:SetColorTexture(hr, hg, hb, 1) end)
-            btn:SetScript("OnLeave", function() bgT:SetColorTexture(r, g, b, a) end)
-            -- Back to rest (each show starts un-hovered), in the font path given.
-            btn._reset = function(fp)
-                bgT:SetColorTexture(r, g, b, a)
-                lbl:SetFont(fp, 10, "")
-            end
-            return btn
-        end
+-- Makes dst equal to src except at excluded paths, which keep dst's values
+-- (also when src lacks the key). Writes dst in place.
+local function Mirror(src, dst, patterns)
+	local function Split(k)
+		local excluded, rest = false, nil
+		local ks = tostring(k)
+		for _, p in ipairs(patterns) do
+			if p[1] == "*" or p[1] == ks then
+				if #p == 1 then
+					excluded = true
+				else
+					rest = rest or {}
+					local sub = {}
+					for i = 2, #p do
+						sub[#sub + 1] = p[i]
+					end
+					rest[#rest + 1] = sub
+				end
+			end
+		end
+		return excluded, rest
+	end
+	for k, v in pairs(src) do
+		local excluded, rest = Split(k)
+		if not excluded then
+			if type(v) == "table" and rest then
+				if type(dst[k]) ~= "table" then
+					dst[k] = {}
+				end
+				Mirror(v, dst[k], rest)
+			else
+				dst[k] = DeepCopy(v)
+			end
+		end
+	end
+	local gone = {}
+	for k in pairs(dst) do
+		if src[k] == nil then
+			gone[#gone + 1] = k
+		end
+	end
+	for _, k in ipairs(gone) do
+		local excluded, rest = Split(k)
+		if not excluded then
+			if rest and type(dst[k]) == "table" then
+				Mirror({}, dst[k], rest)
+				if next(dst[k]) == nil then
+					dst[k] = nil
+				end
+			else
+				dst[k] = nil
+			end
+		end
+	end
+end
+ns._SyncMirror = Mirror
 
-        local DD_W = 190
-        local DD_SCALE = 0.85
-        local ddVisW = math.floor(DD_W * DD_SCALE + 0.5)
-        local ddVisH = math.floor(30 * DD_SCALE + 0.5)
+---------------------------------------------------------------------------
+-- Groups
+---------------------------------------------------------------------------
+function ns.GetSyncedProfiles(folder)
+	local g = Groups()[folder]
+	return type(g) == "table" and g or {}
+end
 
-        -- The dropdown lists this call's members. Its values and order tables are the
-        -- same ones every call, so the built control keeps reading them.
-        local ui = f._ui
-        local ddValues = ui and ui.ddValues or { _noLoc = true }  -- profile names: never translate
-        local ddOrder = ui and ui.ddOrder or {}
-        local members = opts.memberOrder
-        local sameMembers = ui and #ddOrder == #members
-        if sameMembers then
-            for i = 1, #members do
-                if ddOrder[i] ~= members[i] then sameMembers = false; break end
-            end
-        end
-        if not sameMembers then
-            wipe(ddValues); wipe(ddOrder)
-            ddValues._noLoc = true
-            for i, name in ipairs(members) do
-                ddOrder[i] = name
-                ddValues[name] = name
-            end
-        end
+function ns.IsProfileSynced(folder, profileName)
+	return ns.GetSyncedProfiles(folder)[profileName] == true
+end
 
-        -- Built once on the recycled frame; every call re-applies the font, texts,
-        -- positions and the buttons' actions.
-        if not ui then
-            ui = { ddValues = ddValues, ddOrder = ddOrder }
-            f._ui = ui
-            if PP then EllesmereUI.MakeBorder(f, 1, 1, 1, 0.15, PP) end
-            ui.title = MakeFont(f, 14, 1, 1, 1, 0.9)
-            ui.msg = MakeFont(f, 11, 1, 1, 1, 0.6)
-            ui.msg:SetWidth(W - PAD * 2)
-            ui.msg:SetJustifyH("CENTER")
-            ui.ddLabel = MakeFont(f, 11, 1, 1, 1, 0.5)
+function ns.IsModuleSynced(folder)
+	return next(ns.GetSyncedProfiles(folder)) ~= nil
+end
 
-            ui.seedChoice = opts.defaultSeed
-            local ddHolder = CreateFrame("Frame", nil, f)
-            ddHolder:SetSize(ddVisW, ddVisH)
-            ddHolder:SetFrameLevel(f:GetFrameLevel() + 1)
-            local ddBtn = EllesmereUI.BuildDropdownControl(ddHolder, DD_W, ddHolder:GetFrameLevel() + 1,
-                ddValues, ddOrder,
-                function() return ui.seedChoice end,
-                function(v) ui.seedChoice = v end)
-            ddBtn:SetScale(DD_SCALE)
-            ddBtn:SetPoint("TOPLEFT", ddHolder, "TOPLEFT", 0, 0)
-            -- Menu is created lazily at UIParent scale; match it to the scaled button once it exists
-            ddBtn:HookScript("OnClick", function(self)
-                if self._ddMenu and self._ddMenu:GetScale() ~= DD_SCALE then
-                    self._ddMenu:SetScale(DD_SCALE)
-                end
-            end)
-            ui.ddHolder, ui.ddBtn = ddHolder, ddBtn
+local function StoredBlob(name, folder, create)
+	local profiles = DB().profiles
+	local prof = type(profiles) == "table" and profiles[name]
+	if type(prof) ~= "table" or prof.live then
+		return nil
+	end
+	if type(prof.addons) ~= "table" then
+		if not create then
+			return nil
+		end
+		prof.addons = {}
+	end
+	if type(prof.addons[folder]) ~= "table" and create then
+		prof.addons[folder] = {}
+	end
+	return prof.addons[folder]
+end
 
-            ui.warn = MakeFont(f, 10, 0.92, 0.3, 0.3, 1)
-            ui.warn:SetWidth(W - PAD * 2)
-            ui.warn:SetJustifyH("CENTER")
-            ui.warn:SetText(EllesmereUI.L("Position and size settings are not synced and keep each profile's own values."))
+-- Copies src (a module's settings) into every other member's stored profile.
+local function PushTo(folder, src, srcName, targets)
+	for name in pairs(targets) do
+		if name ~= srcName then
+			local dst = StoredBlob(name, folder, true)
+			if dst then
+				Mirror(src, dst, Patterns(folder, srcName, name))
+			end
+		end
+	end
+end
 
-            ui.cancelBtn = MakeBtn(EllesmereUI.L("Cancel"), 0.172, 0.164, 0.156, 0.9, 0.231, 0.222, 0.215)
-            ui.confirmBtn = MakeBtn(EllesmereUI.L("Sync"), 0.05, 0.52, 0.39, 0.8, 0.07, 0.62, 0.49)
-        else
-            ui.seedChoice = opts.defaultSeed
-            if sameMembers then
-                ui.ddBtn._refreshLabel()
-            else
-                -- The member list changed: the next click builds the menu from it.
-                ui.ddBtn._invalidateMenu()
-            end
-        end
+-- The live settings of a loaded module (without private data).
+local function LiveBlob(folder)
+	local entry = ns.ProfileAddonEntry(folder)
+	if not entry or not ns.IsProfileAddonLoaded(folder) or type(_G[entry.svName]) ~= "table" then
+		return nil
+	end
+	local copy = DeepCopy(_G[entry.svName])
+	local patterns = {}
+	for _, path in ipairs(ns.PROFILE_PRIVATE[folder] or {}) do
+		local segs = {}
+		for seg in path:gmatch("[^%.]+") do
+			segs[#segs + 1] = seg
+		end
+		patterns[#patterns + 1] = segs
+	end
+	if #patterns > 0 then
+		-- Mirror into an empty table drops the private paths.
+		local clean = {}
+		Mirror(copy, clean, patterns)
+		return clean
+	end
+	return copy
+end
 
-        f:ClearAllPoints()
-        f:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
+-- Pushes every group the profile is a member of. The source is the live
+-- settings for the active profile, else the stored ones.
+function ns.SyncPushFrom(srcName)
+	local active = ns.GetActiveProfileName()
+	for folder, targets in pairs(Groups()) do
+		if type(targets) == "table" and targets[srcName] then
+			local src
+			if srcName == active then
+				src = LiveBlob(folder)
+			else
+				src = StoredBlob(srcName, folder, false)
+			end
+			if type(src) == "table" then
+				PushTo(folder, src, srcName, targets)
+			end
+		end
+	end
+end
 
-        local cy = -PAD
+-- Equalizes a module across a group from one member ("seed"). Returns true
+-- when the live (active) settings changed: a reload is needed.
+function ns.SyncModuleFromProfile(folder, srcName, targets)
+	local active = ns.GetActiveProfileName()
+	local src
+	if srcName == active then
+		src = LiveBlob(folder)
+	else
+		src = StoredBlob(srcName, folder, false)
+	end
+	if type(src) ~= "table" then
+		return false
+	end
+	src = DeepCopy(src)
+	PushTo(folder, src, srcName, targets)
+	if srcName ~= active and targets[active] then
+		local entry = ns.ProfileAddonEntry(folder)
+		local live = entry and ns.IsProfileAddonLoaded(folder) and _G[entry.svName]
+		if type(live) == "table" then
+			-- In place: the module keeps its table until the reload.
+			Mirror(src, live, Patterns(folder, srcName, active))
+			return true
+		end
+	end
+	return false
+end
 
-        local title = ui.title
-        title:SetFont(fontPath, 14, "")
-        title:ClearAllPoints()
-        title:SetPoint("TOP", f, "TOP", 0, cy)
-        title:SetText(EllesmereUI.L(opts.hadGroup and "Update Sync Group" or "Create Sync Group"))
-        cy = cy - 22 - 8
+---------------------------------------------------------------------------
+-- Profile follow-up: rename / delete keep the groups right; the outgoing
+-- profile pushes before a switch; the active one at logout / reload.
+---------------------------------------------------------------------------
+local refreshFns = {}
+local function RefreshIcons()
+	for _, fn in ipairs(refreshFns) do
+		fn()
+	end
+end
+ns.RefreshSyncIcons = RefreshIcons
 
-        local msg = ui.msg
-        msg:SetFont(fontPath, 11, "")
-        msg:ClearAllPoints()
-        msg:SetPoint("TOP", f, "TOP", 0, cy)
-        msg:SetText(EllesmereUI.Lf("All selected profiles will keep their %1$s settings in sync: changes made on any of them carry over to the others. Choose which profile's settings the group starts from.", EllesmereUI.L(opts.displayName)))
-        cy = cy - (msg:GetStringHeight() or 42) - 14
+if ns.RegisterProfileHook then
+	ns.RegisterProfileHook("rename", function(oldName, newName)
+		for _, targets in pairs(Groups()) do
+			if type(targets) == "table" and targets[oldName] then
+				targets[oldName] = nil
+				targets[newName] = true
+			end
+		end
+	end)
+	ns.RegisterProfileHook("delete", function(name)
+		for folder, targets in pairs(Groups()) do
+			if type(targets) == "table" then
+				targets[name] = nil
+				-- A group of one is no group.
+				local n = 0
+				for _ in pairs(targets) do
+					n = n + 1
+				end
+				if n < 2 then
+					Groups()[folder] = nil
+				end
+			end
+		end
+	end)
+	ns.RegisterProfileHook("leave", function(name)
+		ns.SyncPushFrom(name)
+	end)
+	ns.RegisterProfileHook("change", RefreshIcons)
+end
 
-        local ddLabel = ui.ddLabel
-        ddLabel:SetFont(fontPath, 11, "")
-        ddLabel:ClearAllPoints()
-        ddLabel:SetPoint("TOP", f, "TOP", 0, cy)
-        ddLabel:SetText(EllesmereUI.L("Sync settings from:"))
-        cy = cy - 16 - 6
+local logout = CreateFrame("Frame")
+logout:RegisterEvent("PLAYER_LOGOUT")
+logout:SetScript("OnEvent", function()
+	if type(EllesmereUIDB) == "table" and type(EllesmereUIDB.syncedModules) == "table" then
+		ns.SyncPushFrom(ns.GetActiveProfileName())
+	end
+end)
 
-        ui.ddHolder:ClearAllPoints()
-        ui.ddHolder:SetPoint("TOP", f, "TOP", 0, cy)
-        cy = cy - ddVisH - 14
+---------------------------------------------------------------------------
+-- Sync popup: flush right of the sidebar, centered on the clicked sync
+-- icon. One toggle row per profile; the button creates, updates or
+-- disbands the group. New members: a confirm asks which profile the group
+-- starts from (retail seed picker).
+---------------------------------------------------------------------------
+local SYNC_ICON = ns.MEDIA .. "icons\\sync"
+local SYNC_ON = { 0x32 / 255, 0xbc / 255, 0x53 / 255 }
 
-        local warn = ui.warn
-        if opts.hasWarning then
-            warn:SetFont(fontPath, 10, "")
-            warn:ClearAllPoints()
-            warn:SetPoint("TOP", f, "TOP", 0, cy)
-            warn:Show()
-            cy = cy - (warn:GetStringHeight() or 26) - 14
-        else
-            warn:Hide()
-        end
+local syncPopup, seedFrame
 
-        local cancelBtn, confirmBtn = ui.cancelBtn, ui.confirmBtn
-        cancelBtn._reset(fontPath)
-        confirmBtn._reset(fontPath)
-        cancelBtn:ClearAllPoints()
-        cancelBtn:SetPoint("TOPRIGHT", f, "TOP", -6, cy)
-        confirmBtn:ClearAllPoints()
-        confirmBtn:SetPoint("TOPLEFT", f, "TOP", 6, cy)
-        cy = cy - 26
+local function MakeToggle(parent, get, set)
+	local tg = CreateFrame("Button", nil, parent)
+	tg:SetSize(30, 15)
+	local track = Kit.Solid(tg, "BACKGROUND", 1, 1, 1, 0.12)
+	track:SetAllPoints()
+	local knob = Kit.Solid(tg, "ARTWORK", 1, 1, 1, 0.9)
+	knob:SetSize(11, 11)
+	function tg:Snap(on)
+		knob:ClearAllPoints()
+		if on then
+			local r, g, b = Kit.Accent()
+			track:SetTexture(r, g, b, 0.75)
+			knob:SetPoint("RIGHT", tg, "RIGHT", -2, 0)
+		else
+			track:SetTexture(1, 1, 1, 0.12)
+			knob:SetPoint("LEFT", tg, "LEFT", 2, 0)
+		end
+	end
+	tg:SetScript("OnClick", function(self)
+		set(not get())
+		self:Snap(get())
+	end)
+	tg:Snap(get())
+	return tg
+end
 
-        f:SetSize(W, -cy + PAD)
+-- Fresh content frame on a recycled shell (5.4.8 cannot unparent regions
+-- reliably, so the content frame is replaced instead).
+local function NewContent(shell)
+	if shell.content then
+		shell.content:Hide()
+	end
+	local c = CreateFrame("Frame", nil, shell)
+	c:SetAllPoints()
+	shell.content = c
+	return c
+end
 
-        confirmBtn:SetScript("OnClick", function()
-            f:Hide()
-            if not EllesmereUIDB.syncedModules then EllesmereUIDB.syncedModules = {} end
-            EllesmereUIDB.syncedModules[opts.folder] = opts.targets
-            local seedChoice = ui.seedChoice
-            if seedChoice then
-                EllesmereUI.SyncModuleFromProfile(opts.folder, seedChoice, opts.targets)
-            end
-            if opts.onDone then opts.onDone() end
-        end)
-        cancelBtn:SetScript("OnClick", function()
-            f:Hide()
-            if opts.onCancel then opts.onCancel() end
-        end)
-        -- Controller cursor: its cancel press backs out through Cancel.
-        if EllesmereUI.PadCP() then f.CloseButton = cancelBtn end
+local function ShowSeedConfirm(opts)
+	if not seedFrame then
+		local dimmer, box = Kit.Dimmer(nil, 40)
+		box:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
+		seedFrame = dimmer
+	end
+	local dimmer, box = seedFrame, seedFrame.box
+	local W, PAD = 360, 18
+	local c = NewContent(box)
+	local cy = -PAD
 
-        f._dimmer:Show()
-        f:Show()
-        -- Controller cursor: start on the safe button.
-        EllesmereUI.PadFocus(cancelBtn)
-    end
+	local title = Kit.Text(c, 14, 1, 1, 1, 0.9)
+	title:SetPoint("TOP", c, "TOP", 0, cy)
+	title:SetText(opts.hadGroup and "Update Sync Group" or "Create Sync Group")
+	cy = cy - 30
 
-    function EllesmereUI.OpenSyncPopup(folder, displayName, anchorBtn)
-        if EllesmereUI._syncConfirmFrame then EllesmereUI._syncConfirmFrame:Hide() end
-        -- Toggle off if already open for this module
-        if _syncPopup and _syncPopup:IsShown() and _syncPopup._folder == folder then
-            _syncPopup:Hide()
-            return
-        end
+	local msg = Kit.Text(c, 11, 1, 1, 1, 0.6)
+	msg:SetPoint("TOP", c, "TOP", 0, cy)
+	msg:SetWidth(W - PAD * 2)
+	msg:SetJustifyH("CENTER")
+	msg:SetText(format("All selected profiles will keep their %s settings in sync: changes made on any of them carry over to the others. Choose which profile's settings the group starts from.", opts.displayName))
+	cy = cy - (msg:GetStringHeight() or 42) - 14
 
-        if not EllesmereUIDB or not EllesmereUIDB.profiles then return end
-        local active = EllesmereUIDB.activeProfile or "Default"
-        local profileOrder = EllesmereUIDB.profileOrder or {}
+	local ddLabel = Kit.Text(c, 11, 1, 1, 1, 0.5)
+	ddLabel:SetPoint("TOP", c, "TOP", 0, cy)
+	ddLabel:SetText("Sync settings from:")
+	cy = cy - 22
 
-        -- Full profile list, profileOrder first then stragglers (active included: groups are explicit membership)
-        local allProfiles = {}
-        for _, name in ipairs(profileOrder) do
-            if EllesmereUIDB.profiles[name] then
-                allProfiles[#allProfiles + 1] = name
-            end
-        end
-        for name in pairs(EllesmereUIDB.profiles) do
-            local found = false
-            for _, n in ipairs(allProfiles) do if n == name then found = true; break end end
-            if not found then allProfiles[#allProfiles + 1] = name end
-        end
+	-- "Dropdown": the chosen profile; a click opens the member list.
+	local seed = opts.defaultSeed
+	local dd = Kit.Button(c, 190, 26, "", false, 12)
+	dd:SetPoint("TOP", c, "TOP", 0, cy)
+	local arrow = Kit.Text(dd, 12, 1, 1, 1, 0.5)
+	arrow:SetPoint("RIGHT", dd, "RIGHT", -8, 0)
+	arrow:SetText("v")
+	local function Label()
+		dd.label:SetText(seed or "")
+	end
+	Label()
+	local list = CreateFrame("Frame", nil, c)
+	list:SetFrameLevel(dd:GetFrameLevel() + 10)
+	list:SetPoint("TOP", dd, "BOTTOM", 0, -2)
+	list:SetSize(190, #opts.memberOrder * 22 + 4)
+	Kit.Solid(list, "BACKGROUND", 0.103, 0.095, 0.088, 0.98):SetAllPoints()
+	Kit.Border(list, 1, 1, 1, 0.20)
+	list:EnableMouse(true)
+	list:Hide()
+	for i, name in ipairs(opts.memberOrder) do
+		local item = CreateFrame("Button", nil, list)
+		item:SetSize(188, 22)
+		item:SetPoint("TOPLEFT", list, "TOPLEFT", 1, -2 - (i - 1) * 22)
+		local hl = Kit.Solid(item, "ARTWORK", 1, 1, 1, 0)
+		hl:SetAllPoints()
+		local lbl = Kit.Text(item, 12, 0.55, 0.60, 0.65, 1)
+		lbl:SetPoint("LEFT", item, "LEFT", 10, 0)
+		lbl:SetText(name)
+		item:SetScript("OnEnter", function() hl:SetTexture(1, 1, 1, 0.08); lbl:SetTextColor(1, 1, 1, 1) end)
+		item:SetScript("OnLeave", function() hl:SetTexture(1, 1, 1, 0); lbl:SetTextColor(0.55, 0.60, 0.65, 1) end)
+		item:SetScript("OnClick", function()
+			seed = name
+			Label()
+			list:Hide()
+		end)
+	end
+	dd:SetScript("OnClick", function()
+		list:SetShown(not list:IsShown())
+	end)
+	cy = cy - 26 - 14
 
-        if #allProfiles <= 1 then
-            if EllesmereUI.ShowWidgetTooltip then
-                EllesmereUI.ShowWidgetTooltip(anchorBtn, "No other profiles to sync to")
-                C_Timer.After(1.5, function() EllesmereUI.HideWidgetTooltip() end)
-            end
-            return
-        end
+	if opts.hasWarning then
+		local warn = Kit.Text(c, 10, 0.92, 0.3, 0.3, 1)
+		warn:SetPoint("TOP", c, "TOP", 0, cy)
+		warn:SetWidth(W - PAD * 2)
+		warn:SetJustifyH("CENTER")
+		warn:SetText("Position and size settings are not synced and keep each profile's own values.")
+		cy = cy - (warn:GetStringHeight() or 26) - 14
+	end
+	if opts.reloads then
+		local note = Kit.Text(c, 10, 1, 1, 1, 0.45)
+		note:SetPoint("TOP", c, "TOP", 0, cy)
+		note:SetWidth(W - PAD * 2)
+		note:SetJustifyH("CENTER")
+		note:SetText("Starting from another profile changes your active profile: your UI reloads.")
+		cy = cy - (note:GetStringHeight() or 26) - 14
+	end
 
-        local MEDIA_PATH = "Interface\\AddOns\\EllesmereUI\\media\\"
-        local fontPath = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath()) or "Fonts\\FRIZQT__.TTF"
-        local accentColor = EllesmereUI.ACCENT_COLOR or EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.82, b = 0.62 }
-        local PP = EllesmereUI.PanelPP or EllesmereUI.PP
+	local cancel = Kit.Button(c, 120, 26, "Cancel", false, 10)
+	cancel:SetPoint("TOPRIGHT", c, "TOP", -6, cy)
+	local confirm = Kit.Button(c, 120, 26, "Sync", true, 10)
+	confirm:SetPoint("TOPLEFT", c, "TOP", 6, cy)
+	cy = cy - 26
 
-        local POPUP_W = 300
-        local PAD = 16
-        local ROW_H = 30
-        local ROW_GAP = 2
-        local HEADER_H = 26
-        local WARN_MODULES = {
-            EllesmereUIActionBars = true,
-            EllesmereUIUnitFrames = true,
-            EllesmereUICooldownManager = true,
-            EllesmereUIResourceBars = true,
-            EllesmereUIMythicTimer = true,
-            EllesmereUIRaidFrames = true,
-        }
-        local hasWarning = WARN_MODULES[folder]
-        local SUBTITLE_H = 30
-        local popupH = PAD + HEADER_H + 7 + SUBTITLE_H + 14
-            + #allProfiles * (ROW_H + ROW_GAP) - ROW_GAP + 16 + 30 + PAD
+	box:SetSize(W, -cy + PAD)
 
-        if not _syncPopup then
-            -- Controller cursor: overlay parent (UIParent unless a controller cursor is loaded).
-            _syncPopup = CreateFrame("Frame", nil, EllesmereUI.OverlayParent())
-            _syncPopup:SetFrameStrata("FULLSCREEN_DIALOG")
-            _syncPopup:SetFrameLevel(200)
-            _syncPopup:EnableMouse(true)
-            local bg = _syncPopup:CreateTexture(nil, "BACKGROUND")
-            bg:SetAllPoints(); bg:SetColorTexture(17/255, 15/255, 12/255, 1)
-            _syncPopup._bg = bg
-            -- Born hidden, so the Show below runs its OnShow (the click-away)
-            -- on the first open too.
-            _syncPopup:Hide()
-            EllesmereUI.TrackOverlay(_syncPopup)
-            EllesmereUI.PadHint(_syncPopup, "nodepass")
-        end
-        local popup = _syncPopup
-        popup._folder = folder
-        popup:SetFrameLevel(200)
+	dimmer.onClose = opts.onCancel
+	cancel:SetScript("OnClick", function()
+		dimmer.Dismiss()
+	end)
+	confirm:SetScript("OnClick", function()
+		dimmer:Hide()
+		Groups()[opts.folder] = opts.targets
+		local reload = seed and ns.SyncModuleFromProfile(opts.folder, seed, opts.targets)
+		if opts.onDone then
+			opts.onDone()
+		end
+		if reload and ns.ShowConfirmPopup then
+			ns.ShowConfirmPopup({
+				title = "Reload Required",
+				message = format("Your active profile now has the %s settings of \"%s\". A UI reload is needed to apply them.", opts.displayName, seed),
+				confirmText = "Reload Now",
+				cancelText = "Later",
+				reload = true,
+			})
+		end
+	end)
+	dimmer:Show()
+end
 
-        popup:SetSize(POPUP_W, popupH)
-        -- The popup's border, header, profile rows (pooled by position) and action
-        -- button are built once; every open re-applies their fonts, texts, colours,
-        -- positions and actions.
-        local ui = popup._ui
-        if not ui then
-            ui = { rows = {} }
-            popup._ui = ui
-            if PP then
-                EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, PP)
-            end
-        end
+function ns.CloseSyncPopup()
+	if syncPopup then
+		syncPopup:Hide()
+	end
+	if seedFrame then
+		seedFrame:Hide()
+	end
+end
 
-        -- Position: flush right of sidebar, centered on the sync icon, clamped
-        local sidebar = EllesmereUI._sidebar
-        local root = EllesmereUI._mainFrame
-        if sidebar and anchorBtn then
-            local btnMidY = select(2, anchorBtn:GetCenter()) or 0
-            local sidebarMidY = select(2, sidebar:GetCenter()) or 0
-            local offsetY = btnMidY - sidebarMidY
-            -- Clamp to EUI window bottom
-            if root then
-                local rootBot = root:GetBottom() or 0
-                local popupBot = btnMidY - popupH / 2
-                if popupBot < rootBot then offsetY = offsetY + (rootBot - popupBot) end
-            end
-            popup:ClearAllPoints()
-            popup:SetPoint("LEFT", sidebar, "RIGHT", 0, offsetY)
-        else
-            popup:ClearAllPoints()
-            popup:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-        end
+function ns.OpenSyncPopup(folder, displayName, anchorBtn)
+	if seedFrame then
+		seedFrame:Hide()
+	end
+	if syncPopup and syncPopup:IsShown() and syncPopup.folder == folder then
+		syncPopup:Hide()
+		return
+	end
+	local active = ns.GetActiveProfileName()
+	local allProfiles = ns.GetProfileNames()
+	if #allProfiles <= 1 then
+		Kit.ShowTip(anchorBtn, "No other profiles to sync to")
+		return
+	end
 
-        local function MakeFont(parent, size, r, g, b, a)
-            local fs = parent:CreateFontString(nil, "OVERLAY")
-            if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(fs, true) end
-            fs:SetFont(fontPath, size, "")
-            fs:SetTextColor(r or 1, g or 1, b or 1, a or 1)
-            return fs
-        end
+	local POPUP_W, PAD, ROW_H, ROW_GAP, HEADER_H, SUBTITLE_H = 300, 16, 30, 2, 26, 30
+	local popupH = PAD + HEADER_H + 7 + SUBTITLE_H + 14 + #allProfiles * (ROW_H + ROW_GAP) - ROW_GAP + 16 + 30 + PAD
 
-        local cy = -PAD
+	if not syncPopup then
+		syncPopup = CreateFrame("Frame", nil, UIParent)
+		syncPopup:SetFrameStrata("FULLSCREEN_DIALOG")
+		syncPopup:SetFrameLevel(20)
+		syncPopup:EnableMouse(true)
+		Kit.Solid(syncPopup, "BACKGROUND", 17 / 255, 15 / 255, 12 / 255, 1):SetAllPoints()
+		Kit.Border(syncPopup, 1, 1, 1, 0.15)
+		syncPopup:Hide()
+		-- Click away closes (retail OnUpdate poll).
+		syncPopup:SetScript("OnUpdate", function(self)
+			if IsMouseButtonDown("LeftButton") and not self:IsMouseOver()
+				and not (self.anchor and self.anchor:IsMouseOver())
+				and not (seedFrame and seedFrame:IsShown()) then
+				self:Hide()
+			end
+		end)
+	end
+	local popup = syncPopup
+	popup.folder = folder
+	popup.anchor = anchorBtn
+	popup:SetSize(POPUP_W, popupH)
+	popup:ClearAllPoints()
+	-- The sidebar row spans the sidebar: its right edge is the sidebar's.
+	local row = anchorBtn and anchorBtn:GetParent()
+	if row then
+		popup:SetPoint("LEFT", row, "RIGHT", 0, 0)
+	else
+		popup:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+	end
+	popup:SetClampedToScreen(true)
+	local c = NewContent(popup)
+	local r, g, b = Kit.Accent()
 
-        -- Header: sync icon (left), title (centered), close X (right)
-        if not ui.iconTex then
-            local iconTex = popup:CreateTexture(nil, "ARTWORK")
-            iconTex:SetSize(19, 19)
-            iconTex:SetTexture(MEDIA_PATH .. "icons\\linked.png")
-            ui.iconTex = iconTex
-            ui.title = MakeFont(popup, 14, 1, 1, 1, 0.9)
-            local subtitle = MakeFont(popup, 10, 1, 1, 1, 0.45)
-            subtitle:SetWidth(POPUP_W - PAD * 2)
-            subtitle:SetJustifyH("CENTER")
-            subtitle:SetText(EllesmereUI.L("Syncing allows you to auto update all profiles whenever you change settings. This can be enabled per module."))
-            ui.subtitle = subtitle
-        end
-        local iconTex = ui.iconTex
-        iconTex:ClearAllPoints()
-        iconTex:SetPoint("TOPLEFT", popup, "TOPLEFT", PAD - 1, cy + 1)
-        -- Accent when this module has an active sync group, gray otherwise
-        if EllesmereUI.IsModuleSynced(folder) then
-            iconTex:SetVertexColor(accentColor.r, accentColor.g, accentColor.b, 1)
-        else
-            iconTex:SetVertexColor(0.55, 0.55, 0.55, 1)
-        end
+	local cy = -PAD
+	local icon = c:CreateTexture(nil, "ARTWORK")
+	icon:SetSize(19, 19)
+	icon:SetPoint("TOPLEFT", c, "TOPLEFT", PAD - 1, cy + 1)
+	icon:SetTexture(SYNC_ICON)
+	if ns.IsModuleSynced(folder) then
+		icon:SetVertexColor(r, g, b, 1)
+	else
+		icon:SetVertexColor(0.55, 0.55, 0.55, 1)
+	end
+	local title = Kit.Text(c, 14, 1, 1, 1, 0.9)
+	title:SetPoint("TOP", c, "TOP", 0, cy - 1)
+	title:SetText(format("%s Sync", displayName))
+	cy = cy - HEADER_H - 7
 
-        local title = ui.title
-        title:SetFont(fontPath, 14, "")
-        title:ClearAllPoints()
-        title:SetPoint("TOP", popup, "TOP", 0, cy - 1)
-        title:SetText(EllesmereUI.Lf("%1$s Sync", EllesmereUI.L(displayName)))
-        cy = cy - HEADER_H - 7
+	local subtitle = Kit.Text(c, 10, 1, 1, 1, 0.45)
+	subtitle:SetPoint("TOP", c, "TOP", 0, cy)
+	subtitle:SetWidth(POPUP_W - PAD * 2)
+	subtitle:SetJustifyH("CENTER")
+	subtitle:SetText("Syncing allows you to auto update all profiles whenever you change settings. This can be enabled per module.")
+	cy = cy - SUBTITLE_H - 14
 
-        local subtitle = ui.subtitle
-        subtitle:SetFont(fontPath, 10, "")
-        subtitle:ClearAllPoints()
-        subtitle:SetPoint("TOP", popup, "TOP", 0, cy)
-        cy = cy - SUBTITLE_H - 14
+	local currentSynced = ns.GetSyncedProfiles(folder)
+	local hadGroup = next(currentSynced) ~= nil
+	local toggleState = {}
+	local RefreshButton
+	local accentHex = format("%02x%02x%02x", floor(r * 255 + 0.5), floor(g * 255 + 0.5), floor(b * 255 + 0.5))
 
-        -- Toggle rows for every profile (the active one included)
-        local currentSynced = EllesmereUI.GetSyncedProfiles(folder)
-        local toggleState = {}
-        local hadGroup = next(currentSynced) ~= nil
-        local refreshSyncBtnLabel  -- defined with the button below
-        -- The pooled rows' toggles and clicks read and write this open's state.
-        popup._toggleState = toggleState
-        popup._refreshLabel = nil
+	for _, name in ipairs(allProfiles) do
+		local rowBtn = CreateFrame("Button", nil, c)
+		rowBtn:SetSize(POPUP_W - PAD * 2, ROW_H)
+		rowBtn:SetPoint("TOPLEFT", c, "TOPLEFT", PAD, cy)
+		local rowBg = Kit.Solid(rowBtn, "BACKGROUND", 1, 1, 1, 0.05)
+		rowBg:SetAllPoints()
+		toggleState[name] = currentSynced[name] == true
+		local tg = MakeToggle(rowBtn,
+			function() return toggleState[name] end,
+			function(v)
+				toggleState[name] = v
+				RefreshButton()
+			end)
+		tg:SetPoint("RIGHT", rowBtn, "RIGHT", -10, 0)
+		rowBtn:SetScript("OnClick", function()
+			toggleState[name] = not toggleState[name]
+			tg:Snap(toggleState[name])
+			RefreshButton()
+		end)
+		rowBtn:SetScript("OnEnter", function() rowBg:SetTexture(1, 1, 1, 0.08) end)
+		rowBtn:SetScript("OnLeave", function() rowBg:SetTexture(1, 1, 1, 0.05) end)
+		local lbl = Kit.Text(rowBtn, 12, 1, 1, 1, 0.85)
+		lbl:SetPoint("LEFT", rowBtn, "LEFT", 10, 0)
+		lbl:SetText(name == active and (name .. " |cff" .. accentHex .. "(active)|r") or name)
+		cy = cy - ROW_H - ROW_GAP
+	end
+	cy = cy - (16 - ROW_GAP)
 
-        local accentHex = string.format("%02x%02x%02x",
-            math.floor(accentColor.r * 255 + 0.5),
-            math.floor(accentColor.g * 255 + 0.5),
-            math.floor(accentColor.b * 255 + 0.5))
+	local syncBtn = CreateFrame("Button", nil, c)
+	syncBtn:SetSize(POPUP_W - PAD * 2, 30)
+	syncBtn:SetPoint("TOP", c, "TOP", 0, cy)
+	local sBg = Kit.Solid(syncBtn, "BACKGROUND", 1, 1, 1, 0.03)
+	sBg:SetAllPoints()
+	local sBrd = Kit.Border(syncBtn, r, g, b, 0.7)
+	local sLbl = Kit.Text(syncBtn, 11, 1, 1, 1, 1)
+	sLbl:SetPoint("CENTER")
 
-        local BuildToggleControl = EllesmereUI.BuildToggleControl
-        local rows = ui.rows
-        for i, profName in ipairs(allProfiles) do
-            local isSynced = currentSynced[profName] == true
-            toggleState[profName] = isSynced
+	local function ApplyBtnState(dirty)
+		syncBtn.dirty = dirty
+		if dirty then
+			sBg:SetTexture(r, g, b, 0.08)
+			sBrd:SetColor(r, g, b, 0.7)
+			sLbl:SetTextColor(r, g, b, 1)
+		else
+			sBg:SetTexture(1, 1, 1, 0.03)
+			sBrd:SetColor(1, 1, 1, 0.15)
+			sLbl:SetTextColor(1, 1, 1, 0.35)
+		end
+	end
+	syncBtn:SetScript("OnEnter", function()
+		if syncBtn.dirty then
+			sBg:SetTexture(r, g, b, 0.18)
+		end
+	end)
+	syncBtn:SetScript("OnLeave", function()
+		ApplyBtnState(syncBtn.dirty)
+		Kit.HideTip()
+	end)
+	RefreshButton = function()
+		local count, dirty = 0, false
+		for name, v in pairs(toggleState) do
+			if v then
+				count = count + 1
+			end
+			if v ~= (currentSynced[name] == true) then
+				dirty = true
+			end
+		end
+		if hadGroup and count == 0 then
+			sLbl:SetText("Disband Sync Group")
+		elseif hadGroup then
+			sLbl:SetText("Update Sync Group")
+		else
+			sLbl:SetText("Create Sync Group")
+		end
+		ApplyBtnState(dirty)
+	end
+	RefreshButton()
 
-            -- Card-style row: label left, toggle right, whole row clickable
-            local row = rows[i]
-            if not row then
-                row = CreateFrame("Button", nil, popup)
-                row:SetFrameLevel(popup:GetFrameLevel() + 1)
-                local rowBg = row:CreateTexture(nil, "BACKGROUND")
-                rowBg:SetAllPoints()
-                rowBg:SetColorTexture(1, 1, 1, 0.05)
-                row._bg = rowBg
-                row._profName = profName
+	syncBtn:SetScript("OnClick", function()
+		if not syncBtn.dirty then
+			return
+		end
+		local targets, count, anyNew = {}, 0, false
+		for name, on in pairs(toggleState) do
+			if on then
+				targets[name] = true
+				count = count + 1
+				if not currentSynced[name] then
+					anyNew = true
+				end
+			end
+		end
+		if count == 0 then
+			Groups()[folder] = nil
+			popup:Hide()
+			RefreshIcons()
+			return
+		end
+		if count == 1 then
+			Kit.ShowTip(syncBtn, "A sync group needs at least two profiles")
+			return
+		end
+		if not anyNew then
+			-- Only removals: nothing is overwritten, no confirm.
+			Groups()[folder] = targets
+			popup:Hide()
+			RefreshIcons()
+			return
+		end
+		local memberOrder = {}
+		for _, name in ipairs(allProfiles) do
+			if targets[name] then
+				memberOrder[#memberOrder + 1] = name
+			end
+		end
+		local defaultSeed
+		if hadGroup then
+			for _, name in ipairs(memberOrder) do
+				if currentSynced[name] then
+					defaultSeed = name
+					break
+				end
+			end
+		end
+		defaultSeed = defaultSeed or (targets[active] and active) or memberOrder[1]
+		ShowSeedConfirm({
+			folder = folder,
+			displayName = displayName,
+			targets = targets,
+			memberOrder = memberOrder,
+			defaultSeed = defaultSeed,
+			hadGroup = hadGroup,
+			hasWarning = next(syncExclusions[folder] or {}) ~= nil,
+			reloads = targets[active] and true or false,
+			onDone = function()
+				popup:Hide()
+				RefreshIcons()
+			end,
+			onCancel = function()
+				popup:Hide()
+			end,
+		})
+	end)
+	popup:Show()
+end
 
-                local tg, _, tgSnap = BuildToggleControl(row, row:GetFrameLevel() + 1,
-                    function() return popup._toggleState[row._profName] end,
-                    function(v)
-                        popup._toggleState[row._profName] = v
-                        if popup._refreshLabel then popup._refreshLabel() end
-                    end,
-                    { sizeRatio = 0.75 })
-                tg:SetPoint("RIGHT", row, "RIGHT", -10, 0)
-                row._tg, row._tgSnap = tg, tgSnap
+---------------------------------------------------------------------------
+-- Sidebar sync icon (EllesmereUIOptions CreateModuleRow calls this for every
+-- module row). Green: the active profile is in this module's group; dim
+-- white otherwise. Hidden when the module is not loaded or there is only
+-- one profile.
+---------------------------------------------------------------------------
+local KEY_FOLDERS = {
+	actionBars = "EllesmereUIActionBars", nameplates = "EllesmereUINameplates",
+	unitFrames = "EllesmereUIUnitFrames", raidFrames = "EllesmereUIRaidFrames",
+	resourceBars = "EllesmereUIResourceBars", qol = "EllesmereUIQoL",
+	bags = "EllesmereUIBags", questTracker = "EllesmereUIQuestTracker",
+	minimap = "EllesmereUIMinimap", damageMeters = "EllesmereUIDamageMeters",
+	chat = "EllesmereUIChat", dataBars = "EllesmereUIDataBars",
+	blizzardSkins = "EllesmereUIBlizzardSkin", topBar = "EllesmereUITopBar",
+	interrupts = "EllesmereUIInterruptTracker", reforge = "EllesmereUIReforge",
+	cdm = "EllesmereUICooldownManager", auraBuff = "EllesmereUIAuraBuffReminders",
+	friends = "EllesmereUIFriends", EllesmereUIMythicTimer = "EllesmereUIMythicTimer",
+	quickdraw = "EllesmereUIQuickdraw",
+}
 
-                row:SetScript("OnClick", function(self)
-                    local state = popup._toggleState
-                    state[self._profName] = not state[self._profName]
-                    self._tgSnap()
-                    if popup._refreshLabel then popup._refreshLabel() end
-                end)
-                row:SetScript("OnEnter", function() rowBg:SetColorTexture(1, 1, 1, 0.08) end)
-                row:SetScript("OnLeave", function() rowBg:SetColorTexture(1, 1, 1, 0.05) end)
-                -- Toggle hover fires the row's OnLeave (child frame); keep the card lit
-                tg:HookScript("OnEnter", function() rowBg:SetColorTexture(1, 1, 1, 0.08) end)
-                tg:HookScript("OnLeave", function() rowBg:SetColorTexture(1, 1, 1, 0.05) end)
-
-                local lblText = MakeFont(row, 12, 1, 1, 1, 0.85)
-                lblText:SetPoint("LEFT", row, "LEFT", 10, 0)
-                row._lbl = lblText
-                rows[i] = row
-            end
-            row._profName = profName
-            row:SetSize(POPUP_W - PAD * 2, ROW_H)
-            row:ClearAllPoints()
-            row:SetPoint("TOPLEFT", popup, "TOPLEFT", PAD, cy)
-            row:SetFrameLevel(popup:GetFrameLevel() + 1)
-            row._tg:SetFrameLevel(row:GetFrameLevel() + 1)
-            row._bg:SetColorTexture(1, 1, 1, 0.05)
-            row._tgSnap()
-            row:Show()
-
-            local lblText = row._lbl
-            lblText:SetFont(fontPath, 12, "")
-            if profName == active then
-                lblText:SetText(profName .. " |cff" .. accentHex .. "(active)|r")
-            else
-                lblText:SetText(profName)
-            end
-
-            cy = cy - ROW_H - ROW_GAP
-        end
-        for i = #allProfiles + 1, #rows do rows[i]:Hide() end
-
-        cy = cy - (16 - ROW_GAP)
-
-        -- Action button: full-width accent outline; label tracks the toggle state
-        if not ui.syncBtn then
-            local syncBtn = CreateFrame("Button", nil, popup)
-            syncBtn:SetFrameLevel(popup:GetFrameLevel() + 1)
-            local sBg = syncBtn:CreateTexture(nil, "BACKGROUND")
-            sBg:SetAllPoints()
-            local sBrd
-            if PP then
-                sBrd = EllesmereUI.MakeBorder(syncBtn, accentColor.r, accentColor.g, accentColor.b, 0.7, PP)
-            end
-            local sLbl = syncBtn:CreateFontString(nil, "OVERLAY")
-            if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(sLbl, false) end
-            sLbl:SetPoint("CENTER")
-            ui.syncBtn, ui.sBg, ui.sBrd, ui.sLbl = syncBtn, sBg, sBrd, sLbl
-        end
-        local syncBtn, sBg, sBrd, sLbl = ui.syncBtn, ui.sBg, ui.sBrd, ui.sLbl
-        syncBtn:SetSize(POPUP_W - PAD * 2, 30)
-        syncBtn:ClearAllPoints()
-        syncBtn:SetPoint("TOP", popup, "TOP", 0, cy)
-        syncBtn:SetFrameLevel(popup:GetFrameLevel() + 1)
-        sLbl:SetFont(fontPath, 11, "")
-
-        -- Grayed out until the toggles actually differ from the saved group
-        local function ApplyBtnState(dirty)
-            syncBtn._dirty = dirty
-            if dirty then
-                sBg:SetColorTexture(accentColor.r, accentColor.g, accentColor.b, 0.08)
-                if sBrd then sBrd:SetColor(accentColor.r, accentColor.g, accentColor.b, 0.7) end
-                sLbl:SetTextColor(accentColor.r, accentColor.g, accentColor.b, 1)
-            else
-                sBg:SetColorTexture(1, 1, 1, 0.03)
-                if sBrd then sBrd:SetColor(1, 1, 1, 0.15) end
-                sLbl:SetTextColor(1, 1, 1, 0.35)
-            end
-        end
-        syncBtn:SetScript("OnEnter", function()
-            if not syncBtn._dirty then return end
-            sBg:SetColorTexture(accentColor.r, accentColor.g, accentColor.b, 0.18)
-        end)
-        syncBtn:SetScript("OnLeave", function()
-            ApplyBtnState(syncBtn._dirty)
-        end)
-
-        refreshSyncBtnLabel = function()
-            local count = 0
-            local dirty = false
-            for profName, v in pairs(toggleState) do
-                if v then count = count + 1 end
-                if v ~= (currentSynced[profName] == true) then dirty = true end
-            end
-            if hadGroup and count == 0 then
-                sLbl:SetText(EllesmereUI.L("Disband Sync Group"))
-            elseif hadGroup then
-                sLbl:SetText(EllesmereUI.L("Update Sync Group"))
-            else
-                sLbl:SetText(EllesmereUI.L("Create Sync Group"))
-            end
-            ApplyBtnState(dirty)
-        end
-        popup._refreshLabel = refreshSyncBtnLabel
-        refreshSyncBtnLabel()
-
-        local function RefreshSidebarSyncIcon()
-            local sidebarBtns = EUI_NS.sidebarButtons
-            if sidebarBtns and sidebarBtns[folder] and sidebarBtns[folder]._syncBtn then
-                local sb = sidebarBtns[folder]._syncBtn
-                if sb._refreshAlpha then sb._refreshAlpha() end
-            end
-        end
-
-        syncBtn:SetScript("OnClick", function()
-            if not syncBtn._dirty then return end
-            -- The group is exactly the toggled-on profiles
-            local targets = {}
-            local count = 0
-            local anyNew = false
-            for profName, checked in pairs(toggleState) do
-                if checked then
-                    targets[profName] = true
-                    count = count + 1
-                    if not currentSynced[profName] then anyNew = true end
-                end
-            end
-
-            if count == 0 then
-                -- Disband (or nothing was ever configured)
-                if not EllesmereUIDB.syncedModules then EllesmereUIDB.syncedModules = {} end
-                EllesmereUIDB.syncedModules[folder] = {}
-                popup:Hide()
-                RefreshSidebarSyncIcon()
-                return
-            end
-
-            if count == 1 then
-                if EllesmereUI.ShowWidgetTooltip then
-                    EllesmereUI.ShowWidgetTooltip(syncBtn, "A sync group needs at least two profiles")
-                    C_Timer.After(1.5, function() EllesmereUI.HideWidgetTooltip() end)
-                end
-                return
-            end
-
-            if not anyNew then
-                -- Pure removal / no change: nothing overwritten, save without confirmation
-                if not EllesmereUIDB.syncedModules then EllesmereUIDB.syncedModules = {} end
-                EllesmereUIDB.syncedModules[folder] = targets
-                popup:Hide()
-                RefreshSidebarSyncIcon()
-                return
-            end
-
-            -- New members joining: confirm with a seed picker; default = an existing member
-            -- on update (newcomers adopt group settings), active on create.
-            local memberOrder = {}
-            for _, name in ipairs(allProfiles) do
-                if targets[name] then memberOrder[#memberOrder + 1] = name end
-            end
-            local defaultSeed
-            if hadGroup then
-                for _, name in ipairs(memberOrder) do
-                    if currentSynced[name] then defaultSeed = name; break end
-                end
-            end
-            if not defaultSeed then
-                defaultSeed = targets[active] and active or memberOrder[1]
-            end
-
-            popup:SetFrameLevel(90)
-            popup:SetScript("OnUpdate", nil)
-            EllesmereUI._ShowSyncSeedConfirm({
-                folder = folder,
-                displayName = displayName,
-                targets = targets,
-                memberOrder = memberOrder,
-                defaultSeed = defaultSeed,
-                hadGroup = hadGroup,
-                hasWarning = hasWarning,
-                active = active,
-                onDone = function()
-                    popup:Hide()
-                    RefreshSidebarSyncIcon()
-                end,
-                onCancel = function()
-                    popup:Hide()
-                end,
-            })
-        end)
-
-        -- Click-off to close (OnUpdate poll like CC popups)
-        popup:SetScript("OnShow", function(self)
-            self:SetScript("OnUpdate", function(self2)
-                if IsMouseButtonDown("LeftButton") then
-                    if not self2:IsMouseOver() and not (anchorBtn and anchorBtn:IsMouseOver()) then
-                        self2:Hide()
-                    end
-                end
-            end)
-        end)
-        popup:SetScript("OnHide", function(self)
-            self:SetScript("OnUpdate", nil)
-        end)
-
-        -- Controller cursor: its cancel press clicks the sync icon, which
-        -- toggles this popup off.
-        if EllesmereUI.PadCP() then popup.CloseButton = anchorBtn end
-        popup:Show()
-        -- Controller cursor: move it into the popup (its first row).
-        EllesmereUI.PadFocus(popup)
-    end
+function ns.AttachSidebarSync(row, def)
+	local folder = def and (def.syncFolder or KEY_FOLDERS[def.key])
+	local entry = folder and ns.ProfileAddonEntry(folder)
+	if not entry then
+		return
+	end
+	local display = entry.display
+	local btn = CreateFrame("Button", nil, row)
+	btn:SetSize(15, 15)
+	btn:SetPoint("RIGHT", row, "RIGHT", -20, 0)
+	btn:SetFrameLevel(row:GetFrameLevel() + 5)
+	local tex = btn:CreateTexture(nil, "ARTWORK")
+	tex:SetAllPoints()
+	tex:SetTexture(SYNC_ICON)
+	local function Refresh()
+		if not ns.IsProfileAddonLoaded(folder) or #ns.GetProfileNames() <= 1 then
+			btn:Hide()
+			return
+		end
+		btn:Show()
+		if ns.IsProfileSynced(folder, ns.GetActiveProfileName()) then
+			tex:SetVertexColor(SYNC_ON[1], SYNC_ON[2], SYNC_ON[3], 1)
+		else
+			tex:SetVertexColor(1, 1, 1, 0.5)
+		end
+	end
+	btn:SetScript("OnEnter", function(self)
+		local synced = ns.IsProfileSynced(folder, ns.GetActiveProfileName())
+		if synced then
+			tex:SetVertexColor(min(1, SYNC_ON[1] * 1.25), min(1, SYNC_ON[2] * 1.25), min(1, SYNC_ON[3] * 1.25), 1)
+		else
+			tex:SetVertexColor(1, 1, 1, 1)
+		end
+		Kit.ShowTip(self, synced and "Profile Synced" or ("Sync " .. display))
+	end)
+	btn:SetScript("OnLeave", function()
+		Refresh()
+		Kit.HideTip()
+	end)
+	btn:SetScript("OnClick", function(self)
+		Kit.HideTip()
+		ns.OpenSyncPopup(folder, display, self)
+	end)
+	row:HookScript("OnShow", Refresh)
+	refreshFns[#refreshFns + 1] = Refresh
+	Refresh()
+	return btn
 end

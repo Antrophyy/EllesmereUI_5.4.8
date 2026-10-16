@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, EllesmereUI._unlockEnv) -- 5.4.8 port: retail APIs from EUI_UnlockMode_Compat.lua
 -------------------------------------------------------------------------------
 --  EUI_UnlockMode_Session.lua
 --  Unlock Mode session: top banner HUD, save / revert, spec overrides,
@@ -27,13 +27,13 @@ local SortMoverFrameLevels, ShowBlizzOwnedOverlays, HideBlizzOwnedOverlays, Crea
 --  pixel-perfect at native resolution, flush with top of screen. Grid + magnet
 --  toggle icons overlaid on top. Slides down during the SHACKLE animation phase.
 -------------------------------------------------------------------------------
-local GRID_ICON       = "Interface\\AddOns\\EllesmereUI\\media\\icons\\grid.png"
-local MAGNET_ICON     = "Interface\\AddOns\\EllesmereUI\\media\\icons\\magnet.png"
-local FLASHLIGHT_ICON = "Interface\\AddOns\\EllesmereUI\\media\\icons\\flashlight.png"
-local HOVER_ICON      = "Interface\\AddOns\\EllesmereUI\\media\\icons\\hover.png"
-local DARK_OVERLAY_ICON = "Interface\\AddOns\\EllesmereUI\\media\\icons\\dark-overlay.png"
-local COORD_ICON      = "Interface\\AddOns\\EllesmereUI\\media\\icons\\coordinates.png"
-local BANNER_TEX      = "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-banner-2.png"
+local GRID_ICON       = "Interface\\AddOns\\EllesmereUI\\media\\icons\\grid"
+local MAGNET_ICON     = "Interface\\AddOns\\EllesmereUI\\media\\icons\\magnet"
+local FLASHLIGHT_ICON = "Interface\\AddOns\\EllesmereUI\\media\\icons\\flashlight"
+local HOVER_ICON      = "Interface\\AddOns\\EllesmereUI\\media\\icons\\hover"
+local DARK_OVERLAY_ICON = "Interface\\AddOns\\EllesmereUI\\media\\icons\\dark-overlay"
+local COORD_ICON      = "Interface\\AddOns\\EllesmereUI\\media\\icons\\coordinates"
+local BANNER_TEX      = "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-banner-2"
 
 local HUD_ON_ALPHA  = 0.60
 local HUD_OFF_ALPHA = 0.30
@@ -75,7 +75,7 @@ local function CreateHUD(parent)
 
     UM.hudFrame = CreateFrame("Frame", nil, parent)
     UM.hudFrame:SetFrameStrata("TOOLTIP")
-    UM.hudFrame:SetFrameLevel(900)
+    UM.hudFrame:SetFrameLevel(50) -- 5.4.8: frame levels stop at 128 (retail 900)
     UM.hudFrame:SetSize(BANNER_PX_W, BANNER_PX_H)
     UM.hudFrame:SetScale(uiScale)
     UM.hudFrame:EnableMouse(false)  -- background only, clicks pass through
@@ -125,7 +125,7 @@ local function CreateHUD(parent)
     gridBtn._tex = gridTex
 
     local gridLabel = gridBtn:CreateFontString(nil, "OVERLAY")
-    gridLabel:SetFont(FONT_PATH, 10, "OUTLINE, SLUG")
+    gridLabel:SetFont(FONT_PATH, 10, "OUTLINE")
     gridLabel:SetJustifyH("RIGHT")
     gridLabel:SetPoint("RIGHT", gridTex, "LEFT", -5, 0)
     gridLabel:SetTextColor(1, 1, 1, GridHudAlpha())
@@ -178,7 +178,7 @@ local function CreateHUD(parent)
     darkOverlayBtn._tex = darkOverlayTex
 
     local darkOverlayLabel = darkOverlayBtn:CreateFontString(nil, "OVERLAY")
-    darkOverlayLabel:SetFont(FONT_PATH, 10, "OUTLINE, SLUG")
+    darkOverlayLabel:SetFont(FONT_PATH, 10, "OUTLINE")
     darkOverlayLabel:SetJustifyH("RIGHT")
     darkOverlayLabel:SetPoint("RIGHT", darkOverlayTex, "LEFT", -5, 0)
     darkOverlayLabel:SetTextColor(1, 1, 1, UM.darkOverlaysEnabled and HUD_ON_ALPHA or HUD_OFF_ALPHA)
@@ -213,7 +213,7 @@ local function CreateHUD(parent)
     flashBtn._tex = flashTex
 
     local flashLabel = flashBtn:CreateFontString(nil, "OVERLAY")
-    flashLabel:SetFont(FONT_PATH, 10, "OUTLINE, SLUG")
+    flashLabel:SetFont(FONT_PATH, 10, "OUTLINE")
     flashLabel:SetJustifyH("RIGHT")
     flashLabel:SetPoint("RIGHT", flashTex, "LEFT", -5, 0)
     flashLabel:SetTextColor(1, 1, 1, UM.flashlightEnabled and HUD_ON_ALPHA or HUD_OFF_ALPHA)
@@ -247,7 +247,7 @@ local function CreateHUD(parent)
     magnetBtn._tex = magnetTex
 
     local magnetLabel = magnetBtn:CreateFontString(nil, "OVERLAY")
-    magnetLabel:SetFont(FONT_PATH, 10, "OUTLINE, SLUG")
+    magnetLabel:SetFont(FONT_PATH, 10, "OUTLINE")
     magnetLabel:SetJustifyH("LEFT")
     magnetLabel:SetPoint("LEFT", magnetTex, "RIGHT", 5, 0)
     magnetLabel:SetTextColor(1, 1, 1, UM.snapEnabled and HUD_ON_ALPHA or HUD_OFF_ALPHA)
@@ -286,7 +286,7 @@ local function CreateHUD(parent)
     coordBtn._tex = coordTex
 
     local coordLabel = coordBtn:CreateFontString(nil, "OVERLAY")
-    coordLabel:SetFont(FONT_PATH, 10, "OUTLINE, SLUG")
+    coordLabel:SetFont(FONT_PATH, 10, "OUTLINE")
     coordLabel:SetJustifyH("LEFT")
     coordLabel:SetPoint("LEFT", coordTex, "RIGHT", 1, 0)
     coordLabel:SetTextColor(1, 1, 1, UM.coordsEnabled and HUD_ON_ALPHA or HUD_OFF_ALPHA)
@@ -333,7 +333,7 @@ local function CreateHUD(parent)
     hoverBtn._tex = hoverTex
 
     local hoverLabel = hoverBtn:CreateFontString(nil, "OVERLAY")
-    hoverLabel:SetFont(FONT_PATH, 10, "OUTLINE, SLUG")
+    hoverLabel:SetFont(FONT_PATH, 10, "OUTLINE")
     hoverLabel:SetJustifyH("LEFT")
     hoverLabel:SetPoint("LEFT", hoverTex, "RIGHT", 5, 0)
     hoverLabel:SetTextColor(1, 1, 1, hoverBarEnabled and HUD_ON_ALPHA or HUD_OFF_ALPHA)
@@ -395,10 +395,10 @@ local function CreateHUD(parent)
         EllesmereUI.MakeBorder(btn, eg.r, eg.g, eg.b, 0.7)
         local bg = btn:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
-        bg:SetColorTexture(0.077, 0.068, 0.058, 0.92)
+        bg:SetTexture(0.077, 0.068, 0.058, 0.92)
 
         local lbl = btn:CreateFontString(nil, "OVERLAY")
-        lbl:SetFont(FONT_PATH, BTN_FONT, "OUTLINE, SLUG")
+        lbl:SetFont(FONT_PATH, BTN_FONT, "OUTLINE")
         lbl:SetPoint("CENTER")
         lbl:SetText(EllesmereUI.L("Save & Exit"))
         lbl:SetTextColor(eg.r, eg.g, eg.b, 0.7)
@@ -828,10 +828,10 @@ do
             specOvBanner:SetPoint("TOP", UM.unlockFrame, "TOP", 0, -64)
             local bg = specOvBanner:CreateTexture(nil, "BACKGROUND")
             bg:SetAllPoints()
-            bg:SetColorTexture(0.16, 0.12, 0.04, 0.92)
+            bg:SetTexture(0.16, 0.12, 0.04, 0.92)
             EllesmereUI.MakeBorder(specOvBanner, 199/255, 166/255, 90/255, 0.7)
             local fs = specOvBanner:CreateFontString(nil, "OVERLAY")
-            fs:SetFont(FONT_PATH, 12, "OUTLINE, SLUG")
+            fs:SetFont(FONT_PATH, 12, "OUTLINE")
             fs:SetPoint("CENTER")
             fs:SetTextColor(1, 0.88, 0.55, 1)
             specOvBanner._text = fs
@@ -1061,8 +1061,6 @@ local function RevertPositions()
                 fallback = info.fallback and CopyTable(info.fallback) or nil,
             }
         end
-        -- The restored links may hold a pet-target fallback again.
-        EllesmereUI._EnsureFallbackWatchers()
     end
 
     -- 3) Restore element sizes
@@ -1238,11 +1236,11 @@ local function DoClose(closeAction)
     for _, name in ipairs(UF_FRAME_NAMES) do
         local f = _G[name]
         if f then
-            if f.Buffs and f.Buffs._unlockWasShown then
+            if type(f.Buffs) == "table" and f.Buffs._unlockWasShown then
                 f.Buffs:Show()
                 f.Buffs._unlockWasShown = nil
             end
-            if f.Debuffs and f.Debuffs._unlockWasShown then
+            if type(f.Debuffs) == "table" and f.Debuffs._unlockWasShown then
                 f.Debuffs:Show()
                 f.Debuffs._unlockWasShown = nil
             end
@@ -1405,7 +1403,7 @@ function ns.RequestClose(save, afterFn)
         return
     end
     -- Has unsaved changes -> show confirm popup
-    EllesmereUI:ShowConfirmPopup({
+    EllesmereUI.ShowConfirmPopup({
         title = "Unsaved Changes",
         message = "You have unsaved position changes.\nWhat would you like to do?",
         cancelText  = "Exit Without Saving",
@@ -1474,7 +1472,7 @@ local function CreateUnlockFrame()
     overlayFrame:SetAllPoints(UIParent)
     local overlay = overlayFrame:CreateTexture(nil, "BACKGROUND")
     overlay:SetAllPoints()
-    overlay:SetColorTexture(0.030, 0.023, 0.018, 0.20)
+    overlay:SetTexture(0.030, 0.023, 0.018, 0.20)
     UM.unlockFrame._overlay = overlay
     UM.unlockFrame._overlayMaxAlpha = 0.20
 
@@ -1490,7 +1488,7 @@ local function CreateUnlockFrame()
 
     local function GetAnchorLine(idx)
         if anchorLinePool[idx] then return anchorLinePool[idx] end
-        local line = anchorLineFrame:CreateLine(nil, "ARTWORK", nil, 1)
+        local line = EllesmereUI.NewLine(anchorLineFrame, "ARTWORK", 1) -- 5.4.8: no Line objects
         line:SetThickness(3)
         line:SetSnapToPixelGrid(false)
         line:SetTexelSnappingBias(0)
@@ -1501,11 +1499,11 @@ local function CreateUnlockFrame()
 
     local function GetAnchorPulse(idx)
         if anchorPulsePool[idx] then return anchorPulsePool[idx] end
-        local line = anchorLineFrame:CreateLine(nil, "ARTWORK", nil, 2)
+        local line = EllesmereUI.NewLine(anchorLineFrame, "ARTWORK", 2) -- 5.4.8: no Line objects
         line:SetThickness(3)
         line:SetSnapToPixelGrid(false)
         line:SetTexelSnappingBias(0)
-        line:SetTexture("Interface\\AnimaChannelingDevice\\AnimaChannelingDeviceLineVerticalMask")
+        line:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\textures\\soft-line") -- 5.4.8: no anima line art
         anchorPulsePool[idx] = line
         return line
     end
@@ -1769,17 +1767,18 @@ local function CreateOpenAnimFrame(parent)
     sweepClip:SetSize(CONTAINER_SZ * 0.75, CONTAINER_SZ * 0.75)
     sweepClip:SetPoint("CENTER", container, "CENTER", 0, 0)
     sweepClip:SetFrameLevel(container:GetFrameLevel() + 5)
-    sweepClip:SetClipsChildren(true)
+    if sweepClip.SetClipsChildren then sweepClip:SetClipsChildren(true) end
     UM.openAnimFrame._sweepClip = sweepClip
 
     local sweep = sweepClip:CreateTexture(nil, "OVERLAY", nil, 7)
-    sweep:SetColorTexture(1, 1, 1, 0.30)
+    sweep:SetTexture(1, 1, 1, 0.30)
     sweep:SetSize(12, 120)
     sweep:SetRotation(math.rad(20))
     sweep:ClearAllPoints()
     sweep:SetPoint("CENTER", sweepClip, "LEFT", -20, 0)
     sweep:Hide()
-    UM.openAnimFrame._sweep = sweep
+    -- 5.4.8 cannot clip children: the sweep would show outside the logo, so it is left out.
+    UM.openAnimFrame._sweep = sweepClip.SetClipsChildren and sweep or nil
 
     UM.openAnimFrame:Hide()
     return UM.openAnimFrame
@@ -1795,26 +1794,106 @@ function ns.ShowUnlockTip()
     if UM.unlockTipFrame and UM.unlockTipFrame:IsShown() then return end
 
     if not UM.unlockTipFrame then
-        -- The shared tip callout, its arrow pointing up at the banner
-        local tip = EllesmereUI.BuildTipCallout(UIParent, {
-            width = 450, height = 175, pp = EllesmereUI.PP,
-            strata = "TOOLTIP", level = 900, bgAlpha = 0.95,
-            font = FONT_PATH, fontFlags = "OUTLINE, SLUG",
-            text = EllesmereUI.L("This is where you can control the settings of Unlock Mode.\n\nElements can be repositioned by dragging or arrow keys (+shift)\nAnchor, Height Match, or Width match any element.\nSnapping is based on closest element, but you can snap only to\n a specific element via right click or the settings icon."),
-            btnW = 80, btnH = 24, btnBottom = 15, btnFontSize = 10,
-            onOkay = function()
-                if EllesmereUIDB then EllesmereUIDB.unlockTipSeen = true end
-            end,
-        })
-        -- Pixel-perfect scale (match banner), 100px from the top of the screen
+        local TIP_W, TIP_H = 450, 175
+        local ar, ag, ab = GetAccent()
+
+        local tip = CreateFrame("Frame", nil, UIParent)
+        tip:SetFrameStrata("TOOLTIP")
+        tip:SetFrameLevel(60) -- 5.4.8: frame levels stop at 128 (retail 900)
+        tip:SetSize(TIP_W, TIP_H)
+        tip:EnableMouse(true)
+
+        -- Pixel-perfect scale (match banner)
         local physW = (GetPhysicalScreenSize())
         local ppScale = GetScreenWidth() / physW
         tip:SetScale(ppScale)
+
+        -- Position 100px from the top of the screen
         tip:SetPoint("TOP", UIParent, "TOP", 0, -100 / ppScale)
+
+        local bg = tip:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        bg:SetTexture(0.077, 0.068, 0.058, 0.95)
+
+        EllesmereUI.MakeBorder(tip, ar, ag, ab, 0.25)
+
+        -- Smooth arrow pointing up: rotated squares for clean diagonal edges, using
+        -- SetClipsChildren to show only the top half of the diamond. No mask needed.
+        local ARROW_SZ = 16  -- diamond size
+        -- Clip frame: sits above the popup top edge, clips to show only top half
+        -- Shifted up 2px so the arrow appears 2px higher
+        local arrowClip = CreateFrame("Frame", nil, tip)
+        arrowClip:SetFrameStrata("TOOLTIP")
+        arrowClip:SetFrameLevel(tip:GetFrameLevel() + 10)
+        -- 5.4.8 can neither clip nor rotate a solid quad (SetRotation only turns
+        -- texture coordinates): no arrow there.
+        if not arrowClip.SetClipsChildren then arrowClip:Hide() end
+        if arrowClip.SetClipsChildren then arrowClip:SetClipsChildren(true) end
+        -- Clip region: tall enough for the top half of the diamond
+        local clipH = ARROW_SZ
+        arrowClip:SetSize(ARROW_SZ * 2, clipH)
+        arrowClip:SetPoint("BOTTOM", tip, "TOP", 0, -1)
+
+        -- The actual diamond frame inside the clip, positioned so its center
+        -- (widest point) is exactly at the clip's bottom edge
+        local arrowFrame = CreateFrame("Frame", nil, arrowClip)
+        arrowFrame:SetFrameLevel(arrowClip:GetFrameLevel() + 1)
+        arrowFrame:SetSize(ARROW_SZ + 4, ARROW_SZ + 4)
+        arrowFrame:SetPoint("CENTER", arrowClip, "BOTTOM", 0, 0)
+
+        -- Border diamond (accent, slightly larger for 1px border effect)
+        -- Alpha slightly lower than popup border (0.25) to compensate for
+        -- anti-aliased rotated edges appearing brighter than crisp 1px lines
+        local arrowBorder = arrowFrame:CreateTexture(nil, "ARTWORK", nil, 7)
+        arrowBorder:SetSize(ARROW_SZ + 2, ARROW_SZ + 2)
+        arrowBorder:SetPoint("CENTER")
+        arrowBorder:SetTexture(ar, ag, ab, 0.18)
+        arrowBorder:SetRotation(math.rad(45))
+        if arrowBorder.SetSnapToPixelGrid then arrowBorder:SetSnapToPixelGrid(false); arrowBorder:SetTexelSnappingBias(0) end
+
+        -- Fill diamond (same bg as popup: 0.077, 0.068, 0.058, 0.95)
+        local arrowFill = arrowFrame:CreateTexture(nil, "OVERLAY", nil, 6)
+        arrowFill:SetSize(ARROW_SZ, ARROW_SZ)
+        arrowFill:SetPoint("CENTER")
+        arrowFill:SetTexture(0.077, 0.068, 0.058, 0.95)
+        arrowFill:SetRotation(math.rad(45))
+        if arrowFill.SetSnapToPixelGrid then arrowFill:SetSnapToPixelGrid(false); arrowFill:SetTexelSnappingBias(0) end
+
+        local msg = tip:CreateFontString(nil, "OVERLAY")
+        msg:SetFont(FONT_PATH, 12, "OUTLINE")
+        msg:SetTextColor(1, 1, 1, 0.85)
+        msg:SetPoint("TOP", tip, "TOP", 0, -17)
+        msg:SetWidth(TIP_W - 30)
+        msg:SetJustifyH("CENTER")
+        msg:SetSpacing(6)
+        msg:SetText(EllesmereUI.L("This is where you can control the settings of Unlock Mode.\n\nElements can be repositioned by dragging or arrow keys (+shift)\nAnchor, Height Match, or Width match any element.\nSnapping is based on closest element, but you can snap only to\n a specific element via right click or the settings icon."))
+
+        local okBtn = CreateFrame("Button", nil, tip)
+        okBtn:SetSize(80, 24)
+        okBtn:SetPoint("BOTTOM", tip, "BOTTOM", 0, 15)
+        EllesmereUI.MakeStyledButton(okBtn, "Okay", 10,
+            EllesmereUI.RB_COLOURS, function()
+                tip:Hide()
+                if EllesmereUIDB then EllesmereUIDB.unlockTipSeen = true end
+            end)
+
         UM.unlockTipFrame = tip
     end
 
-    EllesmereUI.ShowTipCallout(UM.unlockTipFrame)
+    UM.unlockTipFrame:SetAlpha(0)
+    UM.unlockTipFrame:Show()
+
+    -- Fade in over 0.3s
+    local fadeIn = 0
+    UM.unlockTipFrame:SetScript("OnUpdate", function(self, dt)
+        fadeIn = fadeIn + dt
+        if fadeIn >= 0.3 then
+            self:SetAlpha(1)
+            self:SetScript("OnUpdate", nil)
+            return
+        end
+        self:SetAlpha(fadeIn / 0.3)
+    end)
 end
 
 function ns.OpenUnlockMode()
@@ -1905,11 +1984,11 @@ function ns.OpenUnlockMode()
     for _, name in ipairs(UF_FRAME_NAMES) do
         local f = _G[name]
         if f then
-            if f.Buffs and f.Buffs:IsShown() then
+            if type(f.Buffs) == "table" and f.Buffs:IsShown() then
                 f.Buffs._unlockWasShown = true
                 f.Buffs:Hide()
             end
-            if f.Debuffs and f.Debuffs:IsShown() then
+            if type(f.Debuffs) == "table" and f.Debuffs:IsShown() then
                 f.Debuffs._unlockWasShown = true
                 f.Debuffs:Hide()
             end
@@ -2004,20 +2083,20 @@ function ns.OpenUnlockMode()
         local ov = EllesmereUI._specialUnlockGroup and "-override" or ""
         if UM.hudFrame and UM.hudFrame._bannerTex then
             UM.hudFrame._bannerTex:SetTexture(
-                "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-banner-2" .. ov .. ".png")
+                "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-banner-2" .. ov .. "")
         end
         if UM.openAnimFrame then
             if UM.openAnimFrame._outer then
                 UM.openAnimFrame._outer:SetTexture(
-                    "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-outer-2" .. ov .. ".png")
+                    "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-outer-2" .. ov .. "")
             end
             if UM.openAnimFrame._inner then
                 UM.openAnimFrame._inner:SetTexture(
-                    "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-inner-2" .. ov .. ".png")
+                    "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-inner-2" .. ov .. "")
             end
             if UM.openAnimFrame._top then
                 UM.openAnimFrame._top:SetTexture(
-                    "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-top-2" .. ov .. ".png")
+                    "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-top-2" .. ov .. "")
             end
         end
     end
@@ -2090,7 +2169,7 @@ function ns.OpenUnlockMode()
 
     -- Start overlay at 0 alpha, will fade in during animation
     if UM.unlockFrame._overlay then
-        UM.unlockFrame._overlay:SetColorTexture(0.030, 0.023, 0.018, 0)
+        UM.unlockFrame._overlay:SetTexture(0.030, 0.023, 0.018, 0)
     end
 
     -- Phase timings
@@ -2161,7 +2240,7 @@ function ns.OpenUnlockMode()
         local OVERLAY_FADE_DUR = 0.75
         if UM.unlockFrame._overlay then
             local oa = min(1, elapsed / OVERLAY_FADE_DUR) * (UM.unlockFrame._overlayMaxAlpha or 0.20)
-            UM.unlockFrame._overlay:SetColorTexture(0.030, 0.023, 0.018, oa)
+            UM.unlockFrame._overlay:SetTexture(0.030, 0.023, 0.018, oa)
         end
 
         ---------------------------------------------------------------
@@ -2522,6 +2601,12 @@ function ns.OpenUnlockMode()
         end
         if UM.unlockFrame._anchorLineFrame then
             UM.unlockFrame._anchorLineFrame:Show()
+        end
+
+        -- ReapplyAllAnchors during open sets hasChanges; reset ONLY if
+        -- the user hasn't already interacted (e.g. dragged during animation).
+        if not next(pendingPositions) then
+            UM.hasChanges = false
         end
 
         -- Auto-select a mover if requested (e.g. from cog popup link)

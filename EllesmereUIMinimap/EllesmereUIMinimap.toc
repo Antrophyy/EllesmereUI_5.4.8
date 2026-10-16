@@ -1,15 +1,15 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Minimap
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
-## Notes: A new age minimap with clean styling and square layout options.
-## Author: Ellesmere
-## Version: 9.5.5
+## Notes: A new age minimap with clean styling and square layout options (EllesmereUI Minimap, 5.4.8 port).
+## Author: EllesmereUI port
+## Version: 3.6.0
 ## Dependencies: EllesmereUI
+## OptionalDeps: ElvUI
 ## SavedVariables: EllesmereUIMinimapDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
-# Main Luas
+# Defaults, saved settings, shared helpers (timers, borders, tooltips, visibility)
 EllesmereUIMinimap.lua
-
-# Options
+# Addon button group (flyout), free move, element row, extra buttons and their tooltips
+EUI_Minimap_Buttons.lua
+# The map: shape, border, Blizzard parts, text, visibility, micro menu, Unlock Mode
+EUI_Minimap_Map.lua

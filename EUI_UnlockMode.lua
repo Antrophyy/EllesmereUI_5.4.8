@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, EllesmereUI._unlockEnv) -- 5.4.8 port: retail APIs from EUI_UnlockMode_Compat.lua
 -------------------------------------------------------------------------------
 --  EUI_UnlockMode.lua
 --  Unlock Mode: animated transition, grid overlay, draggable movers, snap
@@ -7,7 +7,9 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
 ns = ns.__euiCoreNS or ns  -- standalone builds: the core's own table (EllesmereUI.lua)
-local EAB = ns.EAB  -- may be nil if loaded by a non-ActionBars addon
+-- 5.4.8 port: the MoP action bars register as normal unlock elements, so the
+-- retail action-bar-only paths (ns.EAB) stay off.
+local EAB = nil
 
 -------------------------------------------------------------------------------
 --  Registration API -- on the EllesmereUI global so ALL addons share one
@@ -389,7 +391,17 @@ end
 
 -- Blank or restore a bar frame's alpha around a resize. Action Bars tracks the
 -- alpha of the bars it fades instead of reading it back, so it is told.
+-- 5.4.8 port: no retail frame data says what alpha a faded bar had, so the
+-- alpha before the blank is kept here and put back afterwards.
+-- (on EllesmereUI, not a local: this deferred body is near Lua 5.1's local cap)
+EllesmereUI._preBlankAlpha = setmetatable({}, { __mode = "k" })
 function EllesmereUI._UnlockSetBarAlpha(frame, a)
+    if a == 0 then
+        if EllesmereUI._preBlankAlpha[frame] == nil then EllesmereUI._preBlankAlpha[frame] = frame:GetAlpha() end
+    elseif EllesmereUI._preBlankAlpha[frame] ~= nil then
+        a = EllesmereUI._preBlankAlpha[frame]
+        EllesmereUI._preBlankAlpha[frame] = nil
+    end
     frame:SetAlpha(a)
     local note = EllesmereUI._EABNoteAlpha
     if note then note(frame, a) end
@@ -440,9 +452,9 @@ local FONT_PATH   = (EllesmereUI.GetFontPath("extras"))
 -- At very low UI scale the overlays/top bar are hard to read, so they're nudged up.
 -- The `UIParent:GetEffectiveScale() < 0.6` test is inlined at each use site (not a
 -- helper) because overlay builders are already at Lua 5.1's 60-upvalue limit.
-local LOCK_INNER  = "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-inner-2.png"
-local LOCK_OUTER  = "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-outer-2.png"
-local LOCK_TOP    = "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-top-2.png"
+local LOCK_INNER  = "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-inner-2"
+local LOCK_OUTER  = "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-outer-2"
+local LOCK_TOP    = "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-top-2"
 local GRID_SPACING = 32          -- pixels between grid lines
 local SNAP_THRESH  = 6            -- px distance to trigger snap-to-element
 local MOVER_ALPHA  = 0.55        -- resting alpha for mover overlays
@@ -507,7 +519,6 @@ local snapshotGrowDirs = {}   -- original growth directions captured when unlock
 -- banking is a wholesale harvest at CommitPositions.
 UM.hasChanges = false         -- true if user dragged anything this session
 local combatSuspended = false  -- true if unlock mode was auto-closed by combat
-local preCombatChanges = false -- the session's change mark when combat hid it
 UM.objTrackerWasVisible = false     -- track objective tracker state for restore
 
 -- Grid mode helpers
@@ -635,12 +646,8 @@ EllesmereUI._ELEMENT_SETTINGS_MAP = {
     ["EUI_SecondaryStats"] = { module = "EllesmereUIQoL", page = "QoL", sectionName = "EXTRAS", highlightText = "Secondary Stat Display" },
 
     -- Battle Res + Bloodlust (bottom of the Quality of Life page)
-    ["EUI_CombatAlert"]    = { module = "EllesmereUIQoL",             page = "QoL",   sectionName = "ALERTS",            highlightText = "Combat Alert" },
     ["EUI_BattleRes"]      = { module = "EllesmereUIQoL",             page = "QoL",   sectionName = "BATTLE RES",        highlightText = "Enable BattleRes Icon" },
     ["EUI_Bloodlust"]      = { module = "EllesmereUIQoL",             page = "QoL",   sectionName = "BLOODLUST TRACKER", highlightText = "Enable Bloodlust Icon" },
-
-    -- Forever Essentials (WoW Forever only): Junk Items sits on the General page
-    ["EUI_JunkList"]       = { module = "EllesmereUIForeverEssentials", page = "General", sectionName = "JUNK ITEMS", highlightText = "Enable Junk Items Window" },
 
     -- Mythic+ Tools
     ["EMT_MythicTimer"]    = { module = "EllesmereUIMythicTimer",     page = "Mythic+ Timer",     sectionName = "DISPLAY",           highlightText = "Scale" },
@@ -672,6 +679,16 @@ EllesmereUI._ELEMENT_SETTINGS_MAP = {
     -- at the top of the tab (deliberately undifferentiated).
     ["CDM_"]               = { module = "EllesmereUICooldownManager", page = "CDM Bars" },
     ["TBB_"]               = { module = "EllesmereUICooldownManager", page = "Tracking Bars" },
+
+    -- 5.4.8 port: elements only this port has.
+    ["Bar9"]      = { module = "EllesmereUIActionBars", page = "Bar Display", sectionName = "LAYOUT", preSelectFn = SelectActionBar("Bar9"),  highlightText = "Icon Size" },
+    ["Bar10"]     = { module = "EllesmereUIActionBars", page = "Bar Display", sectionName = "LAYOUT", preSelectFn = SelectActionBar("Bar10"), highlightText = "Icon Size" },
+    ["ExtraActionButton"]    = { module = "EllesmereUIActionBars",       page = "Menu, Bags & Rep Bars" },
+    ["ERB_GCDBar"]           = { module = "EllesmereUIResourceBars",     page = "GCD Bar" },
+    ["ERB_TotemBar"]         = { module = "EllesmereUIResourceBars",     page = "Totem Bar" },
+    ["ECHAT_MainChat"]       = { module = "EllesmereUIChat",             page = "Chat" },
+    ["EDM_BarHistory"]       = { module = "EllesmereUIDamageMeters",     page = "Spell History" },
+    ["EUI_InterruptTracker"] = { module = "EllesmereUIInterruptTracker", page = "General" },
 }
 if EllesmereUI._elemMapPre then
     for k, v in pairs(EllesmereUI._elemMapPre) do
@@ -743,9 +760,11 @@ ns.CloseUnlockMode = ns.CloseUnlockMode
 -- Expose on the global EllesmereUI so SelectPage can intercept "Unlock Mode"
 if EllesmereUI then
     EllesmereUI._openUnlockMode = ns.OpenUnlockMode
-    function EllesmereUI:OpenUnlockMode()
+    -- 5.4.8 port: ns IS EllesmereUI here, so this would replace ns.OpenUnlockMode
+    -- with a call to itself; only add it when they differ.
+    if ns ~= EllesmereUI then function EllesmereUI:OpenUnlockMode()
         ns.OpenUnlockMode()
-    end
+    end end
 end
 
 -- Toggle helper + active flag alias used by options pages
@@ -784,7 +803,6 @@ end
 local function SuspendForCombat()
     if not UM.isUnlocked then return end
     combatSuspended = true
-    preCombatChanges = UM.hasChanges and true or false
     if EllesmereUI._HideFallbackGhosts then EllesmereUI._HideFallbackGhosts() end
     if EllesmereUI._HideOverrideGhosts then EllesmereUI._HideOverrideGhosts() end
 
@@ -850,11 +868,6 @@ local function ResumeAfterCombat()
     if not combatSuspended then return end
     combatSuspended = false
     if InCombatLockdown() then return end  -- safety check
-
-    -- Nothing can be edited while the session is hidden: whatever moved during
-    -- the fight (bars rebuilding, anchored elements following them) is not a
-    -- change of the user's, so the session keeps the mark it had before.
-    UM.hasChanges = preCombatChanges
 
     -- Re-enter unlock mode but skip snapshot/reset since we preserved state
     UM.isUnlocked = true

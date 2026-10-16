@@ -1,11 +1,11 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIBags_Compat.lua
 -------------------------------------------------------------------------------
 --  EllesmereUIBags_List.lua
 --  List bag display (bagDisplayMode = "list"): one row per bag slot, grouped by category
 --  with optional subtype sub-sections, and a column header bar on the bag
 --  frame (click = sort, drag = reorder, right-click = add/remove columns).
---  Mode is latched per session (EUI_Bags.IsListMode): in the Grid and Compact
---  displays nothing here is ever built. The bank's List View (bankListView) reuses the row,
+--  Mode is latched per session (EUI_Bags.IsListMode): in grid mode nothing
+--  here is ever built. The bank's List View (bankListView) reuses the row,
 --  column and header bar pieces via ns.
 -------------------------------------------------------------------------------
 local ns = select(2, ...)
@@ -24,8 +24,8 @@ local COLHDR_H = 20
 local SECTION_H, SUBSECTION_H = 22, 18
 local ROUND_MASK = "Interface\\CHARACTERFRAME\\TempPortraitAlphaMask"
 local ROUND_ZOOM = 0.12
-local ARROW_TEX = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-left.png"
-local BAG_GLYPH_TEX = "Interface\\AddOns\\EllesmereUI\\media\\micromenu\\menu-bags.png"
+local ARROW_TEX = "Interface\\AddOns\\EllesmereUIBags\\Media\\eui-arrow-left"
+local BAG_GLYPH_TEX = "Interface\\AddOns\\EllesmereUIBags\\Media\\menu-bags"
 
 -- Column definitions. width nil = flexible (takes the leftover row width).
 -- field = the per-item sort value stamped in StampItem (nil = not
@@ -134,7 +134,8 @@ local function StampItem(d)
         _bindLoc:SetBagAndSlot(d.bag, d.slot)
         if C_Item.IsBoundToAccountUntilEquip(_bindLoc) then bindType = IB.ToBnetAccountUntilEquipped end
     end
-    if info.isBound and BIND_SOULBOUND[bindType] then
+    -- (5.4.8: isBound is a tooltip read, so it is asked only where it matters)
+    if BIND_SOULBOUND[bindType] and info.isBound then
         d._lvBind = L("SB")
     else
         d._lvBind = bindType and BIND_ABBR[bindType] and L(BIND_ABBR[bindType]) or ""
@@ -165,14 +166,9 @@ local function SlotCompare(a, b)
 end
 
 local function SubCompare(a, b)
-    -- Unsplit items ("") first, then equip slots in slot order (Group Gear by
-    -- Slot), then subtypes alphabetically
+    -- Unsplit items ("") first, then subtypes alphabetically
     if a.label == "" then return b.label ~= "" end
     if b.label == "" then return false end
-    if a.order or b.order then
-        if not (a.order and b.order) then return a.order ~= nil end
-        if a.order ~= b.order then return a.order < b.order end
-    end
     return a.label < b.label
 end
 
@@ -181,6 +177,7 @@ end
 -------------------------------------------------------------------------------
 local _rows, _sections, _hdrBars = {}, {}, {}
 local _rowsUsed, _sectionsUsed = 0, 0
+local _warn
 
 local function SkinRow(btn)
     -- Methods only on template sub-objects (property writes taint)
@@ -193,9 +190,9 @@ local function SkinRow(btn)
     if btn.icon then btn.icon:SetAlpha(0) end
     if btn.Count then btn.Count:SetAlpha(0) end
     local ht = btn:GetHighlightTexture()
-    if ht then ht:SetTexture(nil); ht:SetColorTexture(1, 1, 1, 0.08); ht:ClearAllPoints(); ht:SetAllPoints(btn) end
+    if ht then ht:SetTexture(nil); ht:SetTexture(1, 1, 1, 0.08); ht:ClearAllPoints(); ht:SetAllPoints(btn) end
     local pt = btn:GetPushedTexture()
-    if pt then pt:SetAtlas(nil); pt:SetTexture(nil); pt:SetColorTexture(1, 1, 1, 0.04); pt:ClearAllPoints(); pt:SetAllPoints(btn) end
+    if pt then SetAtlas(pt, nil); pt:SetTexture(nil); pt:SetTexture(1, 1, 1, 0.04); pt:ClearAllPoints(); pt:SetAllPoints(btn) end
 end
 
 -- Bare secure container row (no click hooks) parented under host. Returns
@@ -213,7 +210,7 @@ function ns.CreateListRow(host)
 
     btn._stripe = btn:CreateTexture(nil, "BACKGROUND")
     btn._stripe:SetAllPoints()
-    btn._stripe:SetColorTexture(1, 1, 1, 0.03)
+    btn._stripe:SetTexture(1, 1, 1, 0.03)
 
     btn._lvIcon = btn:CreateTexture(nil, "ARTWORK")
     btn._lvIcon:SetSize(ICON_SIZE, ICON_SIZE)
@@ -282,21 +279,10 @@ local function GetCell(btn, id)
     return fs
 end
 
+-- 5.4.8 has no mask textures: a round icon is drawn with SetPortraitToTexture
+-- (RenderRow), which makes a circle from the icon file itself.
 local function SetRoundIcon(btn, round)
-    if (btn._lvRound or false) == round then return end
     btn._lvRound = round
-    if round then
-        if not btn._lvMask then
-            btn._lvMask = btn:CreateMaskTexture()
-            btn._lvMask:SetTexture(ROUND_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-            btn._lvMask:SetAllPoints(btn._lvIcon)
-        end
-        btn._lvIcon:AddMaskTexture(btn._lvMask)
-        if btn.Cooldown then btn.Cooldown:SetSwipeTexture(ROUND_MASK) end
-    else
-        btn._lvIcon:RemoveMaskTexture(btn._lvMask)
-        if btn.Cooldown then btn.Cooldown:SetSwipeTexture("Interface\\Buttons\\WHITE8X8") end
-    end
 end
 
 -- Collapsed sections, keyed by category _defaultName, "junk", or
@@ -335,7 +321,7 @@ local function GetOrCreateSection(idx)
     f._line:SetHeight(EUI.PP.mult)
     f._line:SetPoint("LEFT", f._count, "RIGHT", 6, 0)
     f._line:SetPoint("RIGHT", f, "RIGHT", 0, 0)
-    f._line:SetColorTexture(0.7, 0.7, 0.7, 0.2)
+    f._line:SetTexture(0.7, 0.7, 0.7, 0.2)
     f:SetScript("OnClick", ToggleCollapsed)
     f:SetScript("OnEnter", function(self) self._label:SetAlpha(1); self._arrow:SetAlpha(1) end)
     f:SetScript("OnLeave", function(self) self._label:SetAlpha(0.8); self._arrow:SetAlpha(0.6) end)
@@ -602,7 +588,7 @@ local function GetOrCreateHeaderBtn(bar, id)
         local line = g:CreateTexture(nil, "HIGHLIGHT")
         line:SetWidth(EUI.PP.mult)
         line:SetPoint("TOP"); line:SetPoint("BOTTOM")
-        line:SetColorTexture(1, 1, 1, 0.6)
+        line:SetTexture(1, 1, 1, 0.6)
         g:SetScript("OnMouseDown", SizerOnMouseDown)
         g:SetScript("OnMouseUp", SizerStop)
         g:SetScript("OnHide", SizerStop)
@@ -634,7 +620,7 @@ function ns.UpdateListHeaderBar(host, cols, leftX, topY, startX, noSort)
         local line = bar:CreateTexture(nil, "ARTWORK")
         line:SetHeight(EUI.PP.mult)
         line:SetPoint("BOTTOMLEFT"); line:SetPoint("BOTTOMRIGHT")
-        line:SetColorTexture(0.7, 0.7, 0.7, 0.2)
+        line:SetTexture(0.7, 0.7, 0.7, 0.2)
         _hdrBars[host] = bar
     end
     -- Kept for live reflow while a column is resized
@@ -727,27 +713,29 @@ local function RenderRow(btn, data, cols, rowW, x, y, stripe)
             icon:SetSize(isz, isz)
             icon:ClearAllPoints()
             icon:SetPoint("LEFT", btn, "LEFT", cx, 0)
-            icon:SetTexture(info.iconFileID)
             local round = BP().bagListRoundIcons == true
             SetRoundIcon(btn, round)
-            -- Round: fixed crop past the icon's baked-in border so the circle edge stays clean
-            local z = round and ROUND_ZOOM or (BP().bagItemIconZoom or 0.08)
-            icon:SetTexCoord(z, 1 - z, z, 1 - z)
-            -- Junk Item Visuals' Desaturate greys grey items and Junk Marker junk
-            icon:SetDesaturated(info.isLocked or (BP().bagDesaturateJunkItems == true
-                and (q == 0 or EUI_CategoryManager:IsJunk(info.itemID, q))) or false)
+            if round then
+                SetPortraitToTexture(icon, info.iconFileID)
+                icon:SetTexCoord(0, 1, 0, 1)
+            else
+                icon:SetTexture(info.iconFileID)
+                local z = BP().bagItemIconZoom or 0.08
+                icon:SetTexCoord(z, 1 - z, z, 1 - z)
+            end
+            icon:SetDesaturated(info.isLocked or (BP().bagDesaturateJunkItems and q == 0) or false)
             if EUI._BagsItemUnusable(data.bag, data.slot, data.itemLink, info.itemID) then
                 icon:SetVertexColor(1, 0.1, 0.1)
             else
                 icon:SetVertexColor(1, 1, 1)
             end
             icon:Show()
-            -- Quality Item Border: square icons only
-            if not round and BP().bagQualityBorder ~= false then
+            if BP().bagListQualityBorder == true and not round then
                 local ov = btn._textOverlay
                 if not ov._brdT then ns.CreateInsetBorder(ov) end
-                local r, g, b = ns.QualityBorderColor(q)
-                ns.SetInsetBorderColor(ov, r, g, b, 1)
+                local c = ITEM_QUALITY_COLORS[q]
+                if c then ns.SetInsetBorderColor(ov, c.r, c.g, c.b, 1)
+                else ns.SetInsetBorderColor(ov, 0.25, 0.25, 0.25, 1) end
             elseif btn._textOverlay._brdT then
                 ns.SetInsetBorderColor(btn._textOverlay, 0, 0, 0, 0)
             end
@@ -800,14 +788,6 @@ local function RenderRow(btn, data, cols, rowW, x, y, stripe)
 end
 ns.RenderListRow = RenderRow
 
--- Mark mode: the row pool it hit-tests, and the one row it toggled
-ns.ListRows = _rows
-function ns.ListPaintJunk(btn, info)
-    local q = info.quality or 1
-    btn._lvIcon:SetDesaturated(info.isLocked or (BP().bagDesaturateJunkItems == true
-        and (q == 0 or EUI_CategoryManager:IsJunk(info.itemID, q))) or false)
-end
-
 -- Empty bag slot row (OneBag / MultiBag); clicking or dropping an item
 -- places it in that slot.
 local function RenderEmptyRow(btn, cols, d, rowW, x, y, stripe)
@@ -847,11 +827,8 @@ local function PlaceSection(key, label, count, x, y, w, sub)
     s:ClearAllPoints()
     s:SetPoint("TOPLEFT", x + (sub and 12 or 0), y)
     s:SetSize(w - (sub and 12 or 0), sub and SUBSECTION_H or SECTION_H)
-    -- Category Title Size (11 by default: 11 / 10)
-    local size = ns.GetCatTitleSize()
-    local small = math.max(8, size - 1)
-    SetListFont(s._label, sub and small or size)
-    SetListFont(s._count, small)
+    SetListFont(s._label, sub and 10 or 11)
+    SetListFont(s._count, 10)
     s._label:SetTextColor(sub and 0.55 or 0.7, sub and 0.55 or 0.7, sub and 0.55 or 0.7)
     s._label:SetText(label)
     s._count:SetText(count)
@@ -872,9 +849,8 @@ end
 -- allItems (All Items view: honour Hide in All Items), pinned (pinned set:
 -- duplicate pinned items into a Pinned section at the top), slotView ("one" =
 -- OneBag, "multi" = MultiBag: bag sections in slot order like the grid),
--- recent (recent itemID set: Recent section in slot views), recentOnly (the
--- Recent Items tab: every item in that one section, newest first), emptySlots
--- (slot views: empty slots as rows; nil while searching).
+-- recent (recent itemID set: Recent section in slot views), emptySlots (slot
+-- views: empty slots as rows; nil while searching).
 function ns.RenderListView(items, opts)
     local child = EUI_Bags._scrollChild
     local cats = EUI_CategoryManager:GetCategories()
@@ -884,15 +860,7 @@ function ns.RenderListView(items, opts)
     -- Bucket: section key (category index, "pinned" or "junk") -> sub label -> items.
     -- Slot views key sections by bag ID (0-5), or "main" for OneBag's bags 0-4.
     local slotView = opts.slotView
-    -- One Junk section: the Junk category (under its own name) while the Junk
-    -- Marker is on, else every grey item
-    local junkOn = EUI_CategoryManager:IsJunkMarkerEnabled()
     local junkLabel = L("Junk")
-    if junkOn then
-        for _, c in ipairs(cats) do
-            if c.isJunk then junkLabel = c.name; break end
-        end
-    end
     local buckets, order = {}, {}
     local function GetBucket(key)
         local b = buckets[key]
@@ -903,12 +871,11 @@ function ns.RenderListView(items, opts)
         end
         return b
     end
-    -- subOrder: the sub-section's sort key (equip slots), nil sorts by label
-    local function Add(key, sub, d, subOrder)
+    local function Add(key, sub, d)
         local b = GetBucket(key)
         local sl = b.subs[sub]
         if not sl then
-            sl = { label = sub, order = subOrder }
+            sl = { label = sub }
             b.subs[sub] = sl
             b.subList[#b.subList + 1] = sl
         end
@@ -924,10 +891,9 @@ function ns.RenderListView(items, opts)
         return bag
     end
     local pinnedSet, recentSet = opts.pinned, opts.recent
-    if not slotView then items = ns.MergeDuplicates(items) end
-    -- Group Gear by Slot: the gear categories' sub-sections are equip slots,
-    -- in place of Split by Type
-    local gearSlots = not slotView and ns.ArmorySlotGroupingEnabled()
+    if not slotView and BP().bagListMergeDuplicates == true then
+        items = ns.MergeDuplicates(items, true)
+    end
     for _, d in ipairs(items) do
         local ci = d.categoryIndex
         local cat = ci and cats[ci]
@@ -936,24 +902,14 @@ function ns.RenderListView(items, opts)
             if pinnedSet and ns.IsItemPinned(pinnedSet, d.itemLink, d.info.itemID) then
                 Add("pinned", "", d)
             end
-            if recentSet and recentSet[d.info.itemID] and not d._pinnedOnly then
+            if recentSet and recentSet[d.info.itemID] then
                 Add("recent", "", d)
             end
-            if opts.recentOnly then
-                Add("recent", "", d)
-            elseif slotView then
+            if slotView then
                 Add(BagKey(d.bag), "", d)
-            elseif cat and not (opts.allItems and d._pinnedOnly)
-                and not hidden[cat._defaultName] and not (cat.groupName and hidden[cat.groupName]) then
-                local key = (junkOn and cat.isJunk or (not junkOn and d._lvQuality == 0)) and "junk" or ci
-                if key == "junk" then
-                    Add(key, "", d)
-                elseif gearSlots and ns.IsArmoryGearCategory(cat) then
-                    local sk, label = ns.GetArmorySlotBucket(d)
-                    Add(key, label, d, sk)
-                else
-                    Add(key, d._lvSub, d)
-                end
+            elseif cat and not hidden[cat._defaultName] and not (cat.groupName and hidden[cat.groupName]) then
+                local key = d._lvQuality == 0 and "junk" or ci
+                Add(key, key == "junk" and "" or d._lvSub, d)
             end
         end
     end
@@ -992,6 +948,23 @@ function ns.RenderListView(items, opts)
     local showValue = BP().bagListSectionValue == true
     local rowH = RowH()
 
+    -- Same warning the OneBag / MultiBag grid shows
+    local warn = slotView and not BP().bagHideOneBagWarning
+    if warn then
+        if not _warn then
+            _warn = child:CreateFontString(nil, "OVERLAY")
+            ns.SetBagFont(_warn, 9)
+            _warn:SetTextColor(0.5, 0.5, 0.5, 0.9)
+            _warn:SetJustifyH("CENTER")
+        end
+        _warn:ClearAllPoints()
+        _warn:SetPoint("TOP", child, "TOP", 0, y - 5)
+        _warn:SetText(slotView == "multi"
+            and L("Changes made in MultiBag will affect the positions of items in default Blizzard bags")
+            or L("Changes made in OneBag will affect the positions of items in default Blizzard bags"))
+        y = y - 24
+    end
+    if _warn then _warn:SetShown(warn) end
     for _, b in ipairs(order) do
         local label, secKey, count
         if b.key == "junk" then label, secKey = junkLabel, "junk"
@@ -1024,8 +997,7 @@ function ns.RenderListView(items, opts)
                 h, subCollapsed = PlaceSection(secKey .. "/" .. sl.label, sl.label, "(" .. #sl .. ")", x, y, rowW, true)
                 y = y - h
             end
-            -- Recent Items: newest pickup first, whatever the column sort
-            if not subCollapsed then table.sort(sl, b.key == "recent" and ns.RecentCompare or rowCompare) end
+            if not subCollapsed then table.sort(sl, rowCompare) end
             for i, d in ipairs(subCollapsed and _emptyP or sl) do
                 local btn = GetOrCreateRow(_rowsUsed + 1)
                 if btn then  -- nil in combat (see GetOrCreateRow)

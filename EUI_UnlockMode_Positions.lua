@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, EllesmereUI._unlockEnv) -- 5.4.8 port: retail APIs from EUI_UnlockMode_Compat.lua
 -------------------------------------------------------------------------------
 --  EUI_UnlockMode_Positions.lua
 --  Ghost overlays, override anchors, saved positions, grow-direction
@@ -135,7 +135,7 @@ local function MakeGhostSet(opts)
     local function CreateGhost(...)
         local g = CreateFrame("Frame", nil, UM.unlockFrame)
         local wr, wg, wb, mr, mg, mb = opts.init(g, ...)
-        g:SetFrameLevel(300)
+        g:SetFrameLevel(110) -- 5.4.8: frame levels stop at 128 (retail 300)
         g:SetClampedToScreen(true)
         g:EnableMouse(true)
         g:SetAlpha(GHOST_ALPHA)
@@ -144,15 +144,15 @@ local function MakeGhostSet(opts)
         local bg = g:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
         if UM.darkOverlaysEnabled then
-            bg:SetColorTexture(0.075 + (mr - 0.075) * 0.10, 0.113 + (mg - 0.113) * 0.10, 0.141 + (mb - 0.141) * 0.10, 0.95)
+            bg:SetTexture(0.075 + (mr - 0.075) * 0.10, 0.113 + (mg - 0.113) * 0.10, 0.141 + (mb - 0.141) * 0.10, 0.95)
         else
-            bg:SetColorTexture(wr, wg, wb, 0.10)
+            bg:SetTexture(wr, wg, wb, 0.10)
         end
         g._brd = EllesmereUI.MakeBorder(g, wr, wg, wb, 0.6)
 
         local labelFrame = CreateFrame("Frame", nil, g)
         labelFrame:SetAllPoints()
-        labelFrame:SetClipsChildren(true)
+        if labelFrame.SetClipsChildren then labelFrame:SetClipsChildren(true) end
         labelFrame:SetFrameLevel(g:GetFrameLevel() + 2)
         local fs = labelFrame:CreateFontString(nil, "OVERLAY")
         EllesmereUI.PrimeFontShadow(fs, true)
@@ -941,7 +941,7 @@ EllesmereUI._ShowScreenEdgeMarker = function(edgeKey, flash)
     if not host then
         host = CreateFrame("Frame", nil, UM.unlockFrame)
         host:SetFrameStrata("TOOLTIP")
-        host:SetFrameLevel(400)
+        host:SetFrameLevel(40) -- 5.4.8: frame levels stop at 128 (retail 400)
         host:SetAllPoints(UIParent)
         store.host = host
     end
@@ -952,7 +952,7 @@ EllesmereUI._ShowScreenEdgeMarker = function(edgeKey, flash)
         local thick = (PP and PP.mult or 1) * 5
         m = host:CreateTexture(nil, "OVERLAY")
         if m.SetSnapToPixelGrid then m:SetSnapToPixelGrid(false); m:SetTexelSnappingBias(0) end
-        m:SetColorTexture(1, 0.7, 0.3, 0.9)
+        m:SetTexture(1, 0.7, 0.3, 0.9)
         if vertical then
             m:SetWidth(thick)
             local corner = (edgeKey == "SCREEN_LEFT") and "LEFT" or "RIGHT"
@@ -1933,9 +1933,7 @@ UM.PropagateAnchorChain = function(parentKey, visited, changedAxis)
                 end
             end
             if not dominated then
-                -- A follower re-placed from its saved link is no edit: the
-                -- drag, nudge or pick that moved its target marks the session.
-                UM.ApplyAnchorPosition(childKey, info.target, info.side, true, nil, true)
+                UM.ApplyAnchorPosition(childKey, info.target, info.side, nil, nil, true)
                 -- Do NOT call Sync() here: ApplyAnchorPosition already positions the mover; Sync() reads stale screen coords before WoW's layout pass, corrupting moverCX/moverCY.
                 UM.PropagateAnchorChain(childKey, visited, changedAxis)
             end
@@ -1990,8 +1988,7 @@ EllesmereUI.ReapplyOwnAnchor = function(key)
     if not anchorDB then return end
     local info = anchorDB[key]
     if info and info.target then
-        -- A rebuild or resize re-placing the element is no edit of the session.
-        UM.ApplyAnchorPosition(key, info.target, info.side, true)
+        UM.ApplyAnchorPosition(key, info.target, info.side)
     end
 end
 
@@ -2030,12 +2027,11 @@ EllesmereUI.ReapplyAllUnlockAnchors = function()
         if info and info.target
            and UM.GetBarFrame(childKey)
            and (UM.GetBarFrame(info.target) or info.fallback ~= nil) then
-            UM.ApplyAnchorPosition(childKey, info.target, info.side, true)
+            UM.ApplyAnchorPosition(childKey, info.target, info.side)
         end
     end
 
-    -- No position persistence here: only Save & Exit (CommitPositions) writes,
-    -- and no session mark: placing elements from their saved links edits nothing.
+    -- No position persistence here: only Save & Exit (CommitPositions) writes.
     wipe(pendingPositions)
 end
 
@@ -2097,7 +2093,7 @@ EllesmereUI.ReapplyAllUnlockAnchorsForced = function()
                     isABGrow = gd and gd ~= "CENTER"
                 end
                 if not isABGrow then
-                    pcall(EllesmereUI.ClearFramePoints, childBar)
+                    pcall(childBar.ClearAllPoints, childBar)
                     UM.ApplyAnchorPosition(childKey, info.target, info.side, true)
                 end
             end
@@ -2638,7 +2634,7 @@ local function ApplySavedPositions()
             -- group on this spec) applies immediately; a present-but-unlaid-out target still retries, so transient load states never trip the fallback.
             if childFrame and ((targetFrame and targetFrame:GetLeft())
                 or (not targetFrame and info.fallback ~= nil)) then
-                UM.ApplyAnchorPosition(childKey, info.target, info.side, true)
+                UM.ApplyAnchorPosition(childKey, info.target, info.side)
             else
                 unresolved[childKey] = info
             end
@@ -2653,7 +2649,7 @@ local function ApplySavedPositions()
                     local target = UM.GetBarFrame(info.target)
                     if childFrame and ((target and target:GetLeft())
                         or (not target and info.fallback ~= nil)) then
-                        UM.ApplyAnchorPosition(childKey, info.target, info.side, true)
+                        UM.ApplyAnchorPosition(childKey, info.target, info.side)
                     else
                         still[childKey] = info
                     end
@@ -2714,7 +2710,7 @@ function EllesmereUI.ReapplyUnlockAnchor(unlockKey)
     local adb = GetAnchorDB()
     local ai = adb and adb[unlockKey]
     if not (ai and ai.target) then return end
-    UM.ApplyAnchorPosition(unlockKey, ai.target, ai.side, true)
+    UM.ApplyAnchorPosition(unlockKey, ai.target, ai.side)
 end
 
 

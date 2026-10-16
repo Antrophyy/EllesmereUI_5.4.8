@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIDataBars_Compat.lua
 -- Blocks\Clock.lua
 -- Clock block factory.
 
@@ -110,11 +110,10 @@ ns.BlockFactories.clock = function(blockCfg, slot, content, barCtx)
     eventText:SetPoint("CENTER", clockText, "TOP", 0, 6)
     eventText:Hide()
 
-    -- Resting indicator: Blizzard's PlayerFrame rest flipbook, replicated verbatim from
-    -- Blizzard_UnitFrame/PlayerFrame.xml. MUST use SetAtlas
-    -- (raw SetTexture slices the sheet's padding into the FlipBook); renders 1.5x
-    -- frame size centered (transparent margins); grid 6x7 = 42 frames, 1.5s
-    -- REPEAT, setToFinalAlpha. No OnUpdate -- animates only while shown.
+    -- Resting indicator: Blizzard's PlayerFrame rest icon, renders 1.5x frame
+    -- size centered (transparent margins). 5.4.8 port: the 5.4.8 player frame
+    -- art (UI-StateIcon, resting quarter) without the retail flipbook, which
+    -- the 5.4.8 animation system cannot play.
     local restFrame = CreateFrame("Frame", nil, content)
     restFrame:SetSize(16, 21)
     restFrame:Hide()
@@ -122,31 +121,15 @@ ns.BlockFactories.clock = function(blockCfg, slot, content, barCtx)
     restIcon:SetDrawLayer("OVERLAY", 7)
     -- Nudged 5px up from center; desaturated so the gold art reads white.
     restIcon:SetPoint("CENTER", restFrame, "CENTER", 0, 5)
-    restIcon:SetAtlas("UI-HUD-UnitFrame-Player-Rest-Flipbook")
+    restIcon:SetTexture("Interface\\CharacterFrame\\UI-StateIcon")
+    restIcon:SetTexCoord(0, 0.5, 0, 0.421875)
     restIcon:SetDesaturated(true)
     restIcon:SetVertexColor(1, 1, 1, 1)
-    do
-        local anim = restFrame:CreateAnimationGroup()
-        anim:SetLooping("REPEAT")
-        if anim.SetToFinalAlpha then anim:SetToFinalAlpha(true) end
-        local flip = anim:CreateAnimation("FlipBook")
-        flip:SetTarget(restIcon)
-        -- 80% of Blizzard's 1.5s pace (user-tuned).
-        flip:SetDuration(1.875)
-        flip:SetOrder(1)
-        if flip.SetSmoothing then flip:SetSmoothing("NONE") end
-        flip:SetFlipBookRows(7)
-        flip:SetFlipBookColumns(6)
-        flip:SetFlipBookFrames(42)
-        flip:SetFlipBookFrameWidth(0)
-        flip:SetFlipBookFrameHeight(0)
-        restFrame:SetScript("OnShow", function() anim:Play() end)
-        restFrame:SetScript("OnHide", function() anim:Stop() end)
-    end
 
     -- Mail indicator: LEFT of the clock while mail waits, gated by showMail.
+    -- 5.4.8 port: the minimap mailbox tracking icon (no mail atlas).
     local mailIcon = clockTextFrame:CreateTexture(nil, "OVERLAY")
-    mailIcon:SetAtlas("Crosshair_mail_64")
+    mailIcon:SetTexture("Interface\\Minimap\\Tracking\\Mailbox")
     mailIcon:Hide()
 
     -- One color authority: text and resting icon move together (accent on hover).
@@ -347,8 +330,14 @@ ns.BlockFactories.clock = function(blockCfg, slot, content, barCtx)
         ns.Tip_Begin(clockTextFrame)
         -- date()'s %A/%B come from the C runtime (English in every client), so use the localized calendar globals; FULLDATE carries locale field order.
         local today = C_DateAndTime.GetCurrentCalendarTime()
-        ns.Tip_AddLine(format(FULLDATE, CALENDAR_WEEKDAY_NAMES[today.weekday],
-            CALENDAR_FULLDATE_MONTH_NAMES[today.month], today.monthDay, today.year), 1, 1, 1)
+        -- 5.4.8: the calendar name tables can be missing until the calendar
+        -- addon loads; fall back to the C runtime names then.
+        if FULLDATE and CALENDAR_WEEKDAY_NAMES and CALENDAR_FULLDATE_MONTH_NAMES then
+            ns.Tip_AddLine(format(FULLDATE, CALENDAR_WEEKDAY_NAMES[today.weekday],
+                CALENDAR_FULLDATE_MONTH_NAMES[today.month], today.monthDay, today.year), 1, 1, 1)
+        else
+            ns.Tip_AddLine(date("%A, %B %d, %Y"), 1, 1, 1)
+        end
         local gh, gm = GetGameTime()
         local _, tipUse24 = ClockUses()
         ns.Tip_AddDouble(L["SERVER_TIME"], FormatClock(floor(gh), floor(gm), tipUse24), 0.6, 0.6, 0.6, 1, 1, 1)

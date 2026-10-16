@@ -1,1487 +1,984 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
-local ADDON_NAME = ...
+-------------------------------------------------------------------------------
+--  EllesmereUIQoL_Cursor.lua (5.4.8 port of the retail Cursor tab)
+--
+--  A ring (or the Ellesmere logo) that follows the mouse, an optional dot
+--  trail and center reticle, a GCD ring and a cast bar ring with a spark.
+--  Settings: EllesmereUIQoLDB.cursor (retail: EllesmereUIQoLDB profile.cursor),
+--  same keys and defaults as retail.
+--
+--  5.4.8 differences:
+--    * Retail draws the GCD / cast progress with a Cooldown swipe using the
+--      ring texture (SetSwipeTexture is not in 5.4.8). Here the ring is two
+--      half-ring textures (Media\ring_<k>_half) turned with an 8-value
+--      SetTexCoord: same look, the ring fills clockwise from 12 o'clock.
+--    * The center reticle uses a round texture (no mask textures in 5.4.8).
+--    * The "Hide in Housing" visibility key has nothing to match in Mists.
+-------------------------------------------------------------------------------
+local addonName = ...
+local ns = EllesmereUI
 
-local ECL = EllesmereUI.Lite.NewAddon("EllesmereUICursor")
+local floor, min, max, abs = math.floor, math.min, math.max, math.abs
+local sin, cos, rad = math.sin, math.cos, math.rad
+local strupper, strsub, strgsub, strmatch = string.upper, string.sub, string.gsub, string.match
+local GetTime, GetCursorPosition = GetTime, GetCursorPosition
 
--- Shared with the Quickdraw hub: the full Ellesmere logo in the parent's
--- media folder.
-local TEX_CUSTOM = "Interface\\AddOns\\EllesmereUI\\media\\logo-full-thin-2.png"
+local MEDIA = "Interface\\AddOns\\EllesmereUIQoL\\Media\\"
+local TEX_CUSTOM = MEDIA .. "logo-full-thin-2"
+local RING_KEYS = { thin = true, light = true, normal = true, heavy = true, thick = true }
+local function RingPath(key) return MEDIA .. "ring_" .. (RING_KEYS[key] and key or "normal") end
+local function HalfPath(key) return MEDIA .. "ring_" .. (RING_KEYS[key] and key or "normal") .. "_half" end
 
-local RING_TEXTURES = {
-    thin   = "Interface\\AddOns\\EllesmereUIQoL\\Media\\ring_thin.tga",
-    light  = "Interface\\AddOns\\EllesmereUIQoL\\Media\\ring_light.tga",
-    normal = "Interface\\AddOns\\EllesmereUIQoL\\Media\\ring_normal.tga",
-    heavy  = "Interface\\AddOns\\EllesmereUIQoL\\Media\\ring_heavy.tga",
-    thick  = "Interface\\AddOns\\EllesmereUIQoL\\Media\\ring_thick.tga",
-}
-
+local GCD_SPELL = 61304  -- the global cooldown spell
 local DEF_BASESIZE = 28
-local DEF_SCALE    = 1
-local DEF_HEX      = "0CD29D"
-local DEF_TEX      = "ring_normal"
-local DEF_INSTANCE_ONLY = false
+local DEF_HEX = "0CD29D"
 
-local floor, tonumber, strupper, strsub, strgsub, strmatch =
-    math.floor, tonumber, string.upper, string.sub, string.gsub, string.match
-local min, max = math.min, math.max
-local sin, cos = _G.sin or math.sin, _G.cos or math.cos  -- WoW globals are degree-based
-local GetTime = GetTime
-local GetCursorPosition = GetCursorPosition
-local GetSpellCooldown = C_Spell.GetSpellCooldown
-local GCD_SPELL = EllesmereUI.GCD_SPELL
-local UnitCastingInfo = UnitCastingInfo
-local UnitChannelInfo = UnitChannelInfo
-
-local f, t, reticle
-local lastX, lastY
-
-local lastScale, lastHex, lastTex, lastAlpha
-local isVisible = true
-local mouselookActive = false  -- true while the hardware cursor is hidden (mouselook)
+local C = {}  -- module table (keeps the local count low)
 
 -------------------------------------------------------------------------------
---  Utility
+--  Settings
 -------------------------------------------------------------------------------
-local function HexToRGB(hex)
-    return tonumber(strsub(hex, 1, 2), 16) / 255,
-           tonumber(strsub(hex, 3, 4), 16) / 255,
-           tonumber(strsub(hex, 5, 6), 16) / 255
+local function Defaults()
+	return {
+		enabled = true,
+		instanceOnly = false,
+		onlyWhenHidden = false,
+		combatOnly = false,
+		useClassColor = true,
+		hex = "0CD29D",
+		texture = "ring_normal",
+		scale = 1,
+		alpha = 100,
+		gcd = {
+			enabled = false, attached = true, radius = 21, ringTex = "light", scale = 100,
+			hex = "FFFFFF", alpha = 80, useClassColor = false, instanceOnly = false, combatOnly = false,
+		},
+		castCircle = {
+			enabled = false, attached = true, radius = 30, ringTex = "normal", scale = 100,
+			hex = "3FA7FF", alpha = 80, sparkEnabled = true, useClassColor = true,
+			instanceOnly = false, combatOnly = false,
+		},
+		trail = false,
+		reticle = false,
+		visibility = "always",
+		visOnlyInstances = false,
+		visHideHousing = false,
+		visHideMounted = false,
+		visHideNoTarget = false,
+		visHideNoEnemy = false,
+	}
+end
+ns.CursorDefaults = Defaults
+
+-- First login: the user's retail values (profile "Naowh").
+local function SeedRetail(t)
+	t.enabled = false
+	t.useAccentColor = true
+	t.useClassColor = false
+	t.texture = "ring_light"
+	t.scale = 0.5
+	t.trail = true
+	t.gcd.useClassColor = false
+	t.castCircle.useClassColor = true
 end
 
+-- Only a cursor table missing at the first look this session gets the
+-- retail values (a later reset gives the plain defaults).
+local firstLook = true
+
+local function P()
+	local q = ns.GetQoLDB and ns.GetQoLDB()
+	if type(q) ~= "table" then return nil end
+	local t = q.cursor
+	if type(t) ~= "table" then
+		t = {}
+		q.cursor = t
+	end
+	if t._seeded ~= 1 then
+		-- (crosshair* keys of the same table belong to EllesmereUIQoL_Extras.lua)
+		local fresh = firstLook and t.enabled == nil and t.texture == nil and t.gcd == nil
+		ns.CopyDefaults(Defaults(), t)
+		if fresh then SeedRetail(t) end
+		t._seeded = 1
+	end
+	firstLook = false
+	if type(t.gcd) ~= "table" then t.gcd = Defaults().gcd end
+	if type(t.castCircle) ~= "table" then t.castCircle = Defaults().castCircle end
+	return t
+end
+ns.GetCursorDB = P
+
+local function GCD_DB() local p = P(); return p and p.gcd or {} end
+local function Cast_DB() local p = P(); return p and p.castCircle or {} end
+
+-------------------------------------------------------------------------------
+--  Colors: accent > class > custom hex (retail ResolveColor)
+-------------------------------------------------------------------------------
 local function ParseHex(raw)
-    if not raw then return 12/255, 210/255, 157/255 end
-    raw = strupper(strgsub(raw, "#", ""))
-    if not strmatch(raw, "^[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]$") then
-        return 1, 1, 1
-    end
-    return HexToRGB(raw)
+	if not raw then return 12 / 255, 210 / 255, 157 / 255 end
+	raw = strupper(strgsub(raw, "#", ""))
+	if not strmatch(raw, "^[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]$") then
+		return 1, 1, 1
+	end
+	return tonumber(strsub(raw, 1, 2), 16) / 255, tonumber(strsub(raw, 3, 4), 16) / 255, tonumber(strsub(raw, 5, 6), 16) / 255
 end
+C.ParseHex = ParseHex
 
--------------------------------------------------------------------------------
---  Color resolution: accent > class > custom hex. Shared by all three
---  cursor modules (Circle, GCD, Cast). Mutually exclusive: useAccentColor
---  wins over useClassColor which wins over the stored hex.
--------------------------------------------------------------------------------
 local function ResolveColor(cfg)
-    if not cfg then return 1, 1, 1 end
-    if cfg.useAccentColor and EllesmereUI.GetAccentColor then
-        return EllesmereUI.GetAccentColor()
-    end
-    if cfg.useClassColor then
-        local _, engClass = UnitClass("player")
-        local cc = engClass and RAID_CLASS_COLORS and RAID_CLASS_COLORS[engClass]
-        if cc then return cc.r, cc.g, cc.b end
-    end
-    return ParseHex(cfg.hex or DEF_HEX)
+	if not cfg then return 1, 1, 1 end
+	if cfg.useAccentColor and ns.ResolveAccent then
+		return ns.ResolveAccent()
+	end
+	if cfg.useClassColor then
+		local _, engClass = UnitClass("player")
+		local cc = engClass and RAID_CLASS_COLORS and RAID_CLASS_COLORS[engClass]
+		if cc then return cc.r, cc.g, cc.b end
+	end
+	return ParseHex(cfg.hex or DEF_HEX)
 end
 
 local function InRealInstancedContent()
-    local _, instanceType, difficultyID = GetInstanceInfo()
-    difficultyID = tonumber(difficultyID) or 0
-    if difficultyID == 0 then return false end
-    if C_Garrison and C_Garrison.IsOnGarrisonMap and C_Garrison.IsOnGarrisonMap() then
-        return false
-    end
-    return instanceType == "party" or instanceType == "raid"
+	local _, instanceType, difficultyID = GetInstanceInfo()
+	if (tonumber(difficultyID) or 0) == 0 then return false end
+	return instanceType == "party" or instanceType == "raid"
+end
+
+local function InCombat()
+	return (InCombatLockdown() or UnitAffectingCombat("player")) and true or false
 end
 
 -------------------------------------------------------------------------------
---  Cursor visibility (forward declaration -- defined after trail/GCD/cast locals)
+--  Timers (no C_Timer in 5.4.8)
 -------------------------------------------------------------------------------
-local UpdateVisibility
+local timerFrame = CreateFrame("Frame")
+local timers = {}
+timerFrame:Hide()
+timerFrame:SetScript("OnUpdate", function(self)
+	local now = GetTime()
+	for key, t in pairs(timers) do
+		if now >= t.at then
+			timers[key] = nil
+			t.fn()
+		end
+	end
+	if not next(timers) then self:Hide() end
+end)
+local function After(key, delay, fn)
+	timers[key] = { at = GetTime() + delay, fn = fn }
+	timerFrame:Show()
+end
 
-local lastUseClassColor
+-------------------------------------------------------------------------------
+--  Progress ring: two half-ring textures, each clipped to its half of the
+--  box by its own region and turned with an 8-value SetTexCoord.
+-------------------------------------------------------------------------------
+-- Texture coords that show the image turned counter-clockwise by deg,
+-- for a region covering x in [x0, x1] (box units, center = 0, -0.5..0.5).
+local function RotatedCoords(tex, deg, x0, x1)
+	local a = rad(deg)
+	local ca, sa = cos(a), sin(a)
+	local function TC(x, y)
+		local ix = x * ca + y * sa
+		local iy = -x * sa + y * ca
+		return 0.5 + ix, 0.5 - iy
+	end
+	local ulx, uly = TC(x0, 0.5)
+	local llx, lly = TC(x0, -0.5)
+	local urx, ury = TC(x1, 0.5)
+	local lrx, lry = TC(x1, -0.5)
+	tex:SetTexCoord(ulx, uly, llx, lly, urx, ury, lrx, lry)
+end
+
+local RingMethods = {}
+
+RingMethods.SetRingColor = function(self, r, g, b, a)
+	self._r, self._g, self._b, self._a = r, g, b, a
+	self._right:SetVertexColor(r, g, b, a)
+	self._left:SetVertexColor(r, g, b, a)
+end
+
+RingMethods.SetRingRadius = function(self, radius)
+	self.radius = radius
+	self:SetSize(radius * 2, radius * 2)
+end
+
+RingMethods.SetRingTexture = function(self, key)
+	local path = HalfPath(key)
+	self._right:SetTexture(path)
+	self._left:SetTexture(path)
+	self:SetProgress(self._pct or 0)
+end
+
+-- pct 0..1: the ring is drawn from 12 o'clock clockwise to pct.
+RingMethods.SetProgress = function(self, pct)
+	if pct < 0 then pct = 0 elseif pct > 1 then pct = 1 end
+	self._pct = pct
+	local theta = pct * 360
+	if theta <= 0 then
+		self._right:Hide()
+		self._left:Hide()
+		return
+	end
+	RotatedCoords(self._right, 180 - min(theta, 180), 0, 0.5)
+	self._right:Show()
+	if theta > 180 then
+		RotatedCoords(self._left, 180 - theta, -0.5, 0)
+		self._left:Show()
+	else
+		self._left:Hide()
+	end
+end
+
+RingMethods.StartRing = function(self, elapsed, maxDur)
+	self.dur = max(elapsed, 0)
+	self.maxDur = maxDur
+	self:SetProgress(maxDur > 0 and self.dur / maxDur or 0)
+	self:Show()
+end
+
+RingMethods.StopRing = function(self)
+	self.dur = 0
+	self.maxDur = 0
+	self:SetProgress(0)
+	self:Hide()
+end
+
+local function CreateRing(parent, radius, ringTex, r, g, b, a)
+	local ring = CreateFrame("Frame", nil, parent)
+	ring:SetSize(radius * 2, radius * 2)
+	ring:SetPoint("CENTER", parent, "CENTER", 0, 0)
+	ring:SetFrameLevel(parent:GetFrameLevel() + 1)
+	ring.radius = radius
+	ring.dur, ring.maxDur = 0, 0
+
+	ring._right = ring:CreateTexture(nil, "ARTWORK")
+	ring._right:SetPoint("TOPLEFT", ring, "TOP")
+	ring._right:SetPoint("BOTTOMRIGHT", ring, "BOTTOMRIGHT")
+	ring._left = ring:CreateTexture(nil, "ARTWORK")
+	ring._left:SetPoint("TOPLEFT", ring, "TOPLEFT")
+	ring._left:SetPoint("BOTTOMRIGHT", ring, "BOTTOM")
+
+	for k, fn in pairs(RingMethods) do ring[k] = fn end
+	ring:SetRingTexture(ringTex)
+	ring:SetRingColor(r, g, b, a)
+
+	ring:SetScript("OnUpdate", function(self, dt)
+		if self.maxDur <= 0 then return end
+		self.dur = self.dur + dt
+		if self.dur >= self.maxDur then
+			self:StopRing()
+			return
+		end
+		self:SetProgress(self.dur / self.maxDur)
+	end)
+	ring:Hide()
+	return ring
+end
+
+-------------------------------------------------------------------------------
+--  Cursor circle
+-------------------------------------------------------------------------------
+local f, t, reticle
+local lastX, lastY
+local isVisible = true
+local mouselookActive = false
 
 local function CursorSize(p)
-    local size = floor((p.baseSize or DEF_BASESIZE) * (p.scale or DEF_SCALE) + 0.5)
-    if size < 8 then return 8 end
-    if size > 512 then return 512 end
-    return size
+	local size = floor(DEF_BASESIZE * (p.scale or 1) + 0.5)
+	if size < 8 then return 8 end
+	if size > 512 then return 512 end
+	return size
 end
 
-local function ApplyReticle(p, size, r, g, b, a)
-    if not reticle then return end
-    if not p.reticle then
-        reticle:Hide()
-        return
-    end
-    -- ~20% of the ring so the mask has enough pixels to stay circular.
-    local dot = max(4, floor(size * 0.2 + 0.5))
-    reticle:SetSize(dot, dot)
-    reticle:SetColorTexture(r, g, b, a)
-    reticle:Show()
+local function GlueToCursor(frame)
+	local s = UIParent:GetEffectiveScale()
+	local cx, cy = GetCursorPosition()
+	frame:ClearAllPoints()
+	frame:SetPoint("CENTER", UIParent, "BOTTOMLEFT", floor(cx / s + 0.5), floor(cy / s + 0.5))
 end
 
-local function Apply()
-    if not f or not t then return end
-    local p = ECL.db.profile
+local function CursorOnUpdate(self)
+	local s = UIParent:GetEffectiveScale()
+	local cx, cy = GetCursorPosition()
+	local x, y = floor(cx / s + 0.5), floor(cy / s + 0.5)
+	if x ~= lastX or y ~= lastY then
+		lastX, lastY = x, y
+		self:ClearAllPoints()
+		self:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
+	end
+end
 
-    local scale = p.scale or DEF_SCALE
-    local size = CursorSize(p)
-    if scale ~= lastScale then
-        lastScale = scale
-        f:SetSize(size, size)
-    end
+local function CreateCursorFrame()
+	if f then return end
+	f = CreateFrame("Frame", "EllesmereUICursorFrame", UIParent)
+	f:SetFrameStrata("TOOLTIP")
+	f:SetFrameLevel(100)
+	f:EnableMouse(false)
+	f:SetPoint("CENTER")
+	t = f:CreateTexture(nil, "OVERLAY")
+	t:SetAllPoints(f)
+	reticle = f:CreateTexture(nil, "OVERLAY", nil, 1)
+	reticle:SetPoint("CENTER")
+	reticle:SetTexture(MEDIA .. "circle_fill")
+	reticle:Hide()
+	f:SetScript("OnUpdate", CursorOnUpdate)
+end
 
-    local hex = p.hex or DEF_HEX
-    local colorModeChanged = (p.useClassColor ~= lastUseClassColor)
-    lastUseClassColor = p.useClassColor
-    -- Recompute whenever hex, class mode, accent mode, or the mode flag
-    -- changed. Accent mode also needs per-frame re-read since ELLESMERE_GREEN
-    -- mutates in place when the user changes their accent color mid-session.
-    local a = (p.alpha or 100) / 100
-    local r, g, b
-    if hex ~= lastHex or p.useClassColor or p.useAccentColor or colorModeChanged or a ~= lastAlpha then
-        lastHex = hex
-        lastAlpha = a
-        r, g, b = ResolveColor(p)
-        t:SetVertexColor(r, g, b, a)
-    end
-
-    local tex = p.texture or DEF_TEX
-    if tex ~= lastTex then
-        lastTex = tex
-        -- Map dropdown keys (ring_thin, etc.) to RING_TEXTURES keys (thin, etc.)
-        local ringKey = tex:match("^ring_(.+)$")
-        local path = (ringKey and RING_TEXTURES[ringKey]) or RING_TEXTURES[tex] or TEX_CUSTOM
-        t:SetTexture(path)
-    end
-
-    -- Reticle is cheap and Apply() only runs on setting changes, so always
-    -- refresh it (toggle, scale, and color all land here).
-    if not r then r, g, b = ResolveColor(p) end
-    ApplyReticle(p, size, r, g, b, a)
-
-    UpdateVisibility()
+C.Apply = function()
+	local p = P()
+	if not p then return end
+	CreateCursorFrame()
+	local size = CursorSize(p)
+	f:SetSize(size, size)
+	local a = (p.alpha or 100) / 100
+	local r, g, b = ResolveColor(p)
+	local tex = p.texture or "ring_normal"
+	local ringKey = tex:match("^ring_(.+)$")
+	t:SetTexture(ringKey and RingPath(ringKey) or TEX_CUSTOM)
+	t:SetVertexColor(r, g, b, a)
+	if p.reticle then
+		local dot = max(4, floor(size * 0.2 + 0.5))
+		reticle:SetSize(dot, dot)
+		reticle:SetVertexColor(r, g, b, a)
+		reticle:Show()
+	else
+		reticle:Hide()
+	end
+	C.UpdateVisibility()
 end
 
 -------------------------------------------------------------------------------
---  Cursor Trail Engine (simple dot trail)
+--  Trail (simple fading dots)
 -------------------------------------------------------------------------------
-local trailDots = {}   -- texture pool
-local trailActive = {} -- active dot entries { tex, life, maxLife }
-local trailEntryPool = {} -- recycled entry tables to avoid GC churn
-local trailTimer = 0
-local trailLastCX, trailLastCY = 0, 0
+local trailDots, trailActive, trailEntryPool = {}, {}, {}
+local trailTimer, trailLastCX, trailLastCY = 0, 0, 0
 local trailEnabled = false
-
-local TRAIL_POOL_SIZE = 150
-local TRAIL_DOT_DURATION = 0.5
-local TRAIL_DOT_DENSITY = 0.004
-local TRAIL_DOT_BASE_SIZE = 40
-
-local trailContainer  -- high-strata parent for trail dots
+local trailContainer
+local TRAIL_POOL_SIZE, TRAIL_DOT_DURATION, TRAIL_DOT_DENSITY, TRAIL_DOT_BASE_SIZE = 150, 0.5, 0.004, 40
 
 local function InitTrailDotPool()
-    if not trailContainer then
-        trailContainer = CreateFrame("Frame", "ECL_TrailContainer", UIParent)
-        trailContainer:SetAllPoints(UIParent)
-        trailContainer:SetFrameStrata("TOOLTIP")
-        trailContainer:SetFrameLevel(9998)
-        trailContainer:EnableMouse(false)
-    end
-    for i = 1, TRAIL_POOL_SIZE do
-        local dot = trailContainer:CreateTexture(nil, "ARTWORK")
-        dot:SetTexture("Interface\\AddOns\\EllesmereUIQoL\\Media\\ring_normal.tga")
-        dot:SetBlendMode("ADD")
-        dot:Hide()
-        trailDots[i] = dot
-    end
-end
-
-local function GetTrailColor()
-    local p = ECL.db and ECL.db.profile
-    return ResolveColor(p)
+	if not trailContainer then
+		trailContainer = CreateFrame("Frame", nil, UIParent)
+		trailContainer:SetAllPoints(UIParent)
+		trailContainer:SetFrameStrata("TOOLTIP")
+		trailContainer:SetFrameLevel(98)
+		trailContainer:EnableMouse(false)
+	end
+	for i = 1, TRAIL_POOL_SIZE do
+		local dot = trailContainer:CreateTexture(nil, "ARTWORK")
+		dot:SetTexture(RingPath("normal"))
+		dot:SetBlendMode("ADD")
+		dot:Hide()
+		trailDots[i] = dot
+	end
 end
 
 local function SpawnTrailDot(cx, cy)
-    if #trailDots == 0 then return end
-    local dot = trailDots[#trailDots]
-    trailDots[#trailDots] = nil
-    local s = UIParent:GetEffectiveScale()
-    local r, g, b = GetTrailColor()
-    local baseSize = TRAIL_DOT_BASE_SIZE * 0.8
-    dot:SetVertexColor(r, g, b, 1)
-    dot:SetSize(baseSize, baseSize)
-    dot:ClearAllPoints()
-    dot:SetPoint("CENTER", trailContainer, "BOTTOMLEFT", cx / s, cy / s)
-    dot:SetAlpha(1)
-    dot:Show()
-    local entry = table.remove(trailEntryPool) or {}
-    entry.tex = dot; entry.life = TRAIL_DOT_DURATION; entry.maxLife = TRAIL_DOT_DURATION
-    trailActive[#trailActive + 1] = entry
+	if #trailDots == 0 then return end
+	local dot = trailDots[#trailDots]
+	trailDots[#trailDots] = nil
+	local s = UIParent:GetEffectiveScale()
+	local r, g, b = ResolveColor(P())
+	local size = TRAIL_DOT_BASE_SIZE * 0.8
+	dot:SetVertexColor(r, g, b, 1)
+	dot:SetSize(size, size)
+	dot:ClearAllPoints()
+	dot:SetPoint("CENTER", trailContainer, "BOTTOMLEFT", cx / s, cy / s)
+	dot:SetAlpha(1)
+	dot:Show()
+	local entry = tremove(trailEntryPool) or {}
+	entry.tex, entry.life, entry.maxLife = dot, TRAIL_DOT_DURATION, TRAIL_DOT_DURATION
+	trailActive[#trailActive + 1] = entry
 end
 
 local function UpdateTrailDots(elapsed)
-    for i = #trailActive, 1, -1 do
-        local e = trailActive[i]
-        e.life = e.life - elapsed
-        if e.life <= 0 then
-            e.tex:Hide()
-            trailDots[#trailDots + 1] = e.tex
-            e.tex = nil
-            trailEntryPool[#trailEntryPool + 1] = e
-            trailActive[i] = trailActive[#trailActive]
-            trailActive[#trailActive] = nil
-        else
-            local pct = e.life / e.maxLife
-            local sz = max(2, TRAIL_DOT_BASE_SIZE * 0.8 * pct)
-            e.tex:SetSize(sz, sz)
-            e.tex:SetAlpha(pct)
-        end
-    end
+	for i = #trailActive, 1, -1 do
+		local e = trailActive[i]
+		e.life = e.life - elapsed
+		if e.life <= 0 then
+			e.tex:Hide()
+			trailDots[#trailDots + 1] = e.tex
+			e.tex = nil
+			trailEntryPool[#trailEntryPool + 1] = e
+			trailActive[i] = trailActive[#trailActive]
+			trailActive[#trailActive] = nil
+		else
+			local pct = e.life / e.maxLife
+			local sz = max(2, TRAIL_DOT_BASE_SIZE * 0.8 * pct)
+			e.tex:SetSize(sz, sz)
+			e.tex:SetAlpha(pct)
+		end
+	end
 end
 
 local function HideTrailDots()
-    for i = #trailActive, 1, -1 do
-        local e = trailActive[i]
-        e.tex:Hide()
-        trailDots[#trailDots + 1] = e.tex
-        e.tex = nil
-        trailEntryPool[#trailEntryPool + 1] = e
-        trailActive[i] = nil
-    end
+	for i = #trailActive, 1, -1 do
+		local e = trailActive[i]
+		e.tex:Hide()
+		trailDots[#trailDots + 1] = e.tex
+		e.tex = nil
+		trailEntryPool[#trailEntryPool + 1] = e
+		trailActive[i] = nil
+	end
 end
 
-local function ApplyTrail()
-    local p = ECL.db and ECL.db.profile
-    trailEnabled = p and p.trail or false
-
-    if not trailEnabled then
-        HideTrailDots()
-        if trailContainer then trailContainer:SetScript("OnUpdate", nil) end
-        return
-    end
-
-    if #trailDots == 0 and #trailActive == 0 then
-        InitTrailDotPool()
-    end
-
-    -- Trail runs on trailContainer (always visible) so it keeps ticking
-    -- even when the cursor circle frame is hidden (disabled or instance-only).
-    if trailContainer and not trailContainer:GetScript("OnUpdate") then
-        trailContainer:SetScript("OnUpdate", function(_, elapsed)
-            if not trailEnabled then return end
-
-            -- Only spawn dots while the cursor circle itself is visible, so the
-            -- trail follows every gate on the circle (Combat Only, Only Show in
-            -- Instances, Only Show When Hidden, the Visibility block) rather
-            -- than re-deriving a subset of them.
-            if isVisible then
-                local cx, cy = GetCursorPosition()
-                trailTimer = trailTimer + elapsed
-                local dx = cx - trailLastCX
-                local dy = cy - trailLastCY
-                local moved = (dx * dx + dy * dy) ^ 0.5
-                if trailTimer >= TRAIL_DOT_DENSITY and moved >= 0.5 then
-                    trailTimer = 0
-                    SpawnTrailDot(cx, cy)
-                    trailLastCX, trailLastCY = cx, cy
-                end
-            end
-
-            -- Always update (fade/shrink) active dots so they finish animating
-            UpdateTrailDots(elapsed)
-        end)
-    end
-end
-
-local _unlockHidGCD, _unlockHidCast
--- Cursor glue + state watch, riding the suite's shared cursor service
--- (EllesmereUI.Mouse) instead of a per-frame OnUpdate on the cursor frame:
--- the glue is a Tier A motionOnly subscriber (per render frame while the cursor MOVES,
--- parked while it rests -- a resting cursor ring needs no repositioning, and mouselook
--- freezes GetCursorPosition so steering parks it too, which Only-Show-When-Hidden wants
--- anyway); the unlock-mode circle sync is pure state and rides the 0.15s Tier B watch.
--- Both are subscribed ONLY while the frame is visible (UpdateVisibility owns the
--- edges), preserving the old hidden-frame-stops-OnUpdate behavior.
-local function CursorGlueBody(rawX, rawY)
-    local s = UIParent:GetEffectiveScale()
-    local x, y = floor(rawX / s + 0.5), floor(rawY / s + 0.5)
-    if x ~= lastX or y ~= lastY then
-        lastX, lastY = x, y
-        f:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
-    end
-end
-local function CursorWatchBody()
-    -- Hide attached GCD/Cast circles during unlock mode
-    if EllesmereUI._unlockActive then
-        if gcdAttached and gcdRoot and gcdRoot:IsShown() then
-            gcdRoot:Hide(); _unlockHidGCD = true
-        end
-        if castAttached and castRoot and castRoot:IsShown() then
-            castRoot:Hide(); _unlockHidCast = true
-        end
-    else
-        if _unlockHidGCD and gcdRoot then gcdRoot:Show(); _unlockHidGCD = nil end
-        if _unlockHidCast and castRoot then castRoot:Show(); _unlockHidCast = nil end
-    end
-end
-local function SetCursorGlue(on)
-    local M = EllesmereUI and EllesmereUI.Mouse
-    if not M then return end
-    if on then
-        -- Snap immediately: the motionOnly subscriber stays parked until the cursor
-        -- moves, so without this the frame would sit wherever it last was (OnEnable's
-        -- CENTER default on login) until the first pixel of motion.
-        CursorGlueBody(M.Get())
-        M.SubscribeFrame("qolCursor", CursorGlueBody, true)
-        M.SubscribeTick("qolCursorWatch", 0.15, CursorWatchBody)
-    else
-        M.UnsubscribeFrame("qolCursor")
-        M.UnsubscribeTick("qolCursorWatch")
-    end
+C.ApplyTrail = function()
+	local p = P()
+	trailEnabled = p and p.trail or false
+	if not trailEnabled then
+		HideTrailDots()
+		if trailContainer then trailContainer:SetScript("OnUpdate", nil) end
+		return
+	end
+	if #trailDots == 0 and #trailActive == 0 then InitTrailDotPool() end
+	if not trailContainer:GetScript("OnUpdate") then
+		trailContainer:SetScript("OnUpdate", function(_, elapsed)
+			if not trailEnabled then return end
+			-- Dots only while the cursor circle itself is shown (all its gates apply).
+			if isVisible then
+				local cx, cy = GetCursorPosition()
+				trailTimer = trailTimer + elapsed
+				local dx, dy = cx - trailLastCX, cy - trailLastCY
+				if trailTimer >= TRAIL_DOT_DENSITY and (dx * dx + dy * dy) >= 0.25 then
+					trailTimer = 0
+					SpawnTrailDot(cx, cy)
+					trailLastCX, trailLastCY = cx, cy
+				end
+			end
+			UpdateTrailDots(elapsed)
+		end)
+	end
 end
 
 -------------------------------------------------------------------------------
---  Ring rendering engine (Cooldown-swipe based)
---  Uses CooldownFrameTemplate for smooth circular sweep.
---  Ring thickness is controlled by swapping pre-baked ring textures
---  (ring_thin, ring_light, ring_normal, ring_heavy, ring_thick).
+--  GCD and cast rings
 -------------------------------------------------------------------------------
+local gcdRoot, gcdRing, castRoot, castRing
 
---- Create a ring frame using cooldown swipe for smooth circular fill.
---- @param parent Frame   parent frame
---- @param radius number  half-size of the ring frame
---- @param ringTex string  ring texture key (thin/light/normal/heavy/thick)
---- @param r number  red
---- @param g number  green
---- @param b number  blue
---- @param a number  alpha
---- @return Frame  the ring frame with :StartRing / :StopRing / :SetRingColor / :SetRingTexture
-local function CreateRing(parent, radius, ringTex, r, g, b, a)
-    local ring = CreateFrame("Frame", nil, parent)
-    ring:SetSize(radius * 2, radius * 2)
-    ring:SetPoint("CENTER", parent, "CENTER", 0, 0)
-    ring:SetFrameLevel(parent:GetFrameLevel() + 1)
-
-    ring.radius = radius
-    ring.dur = 0
-    ring.maxDur = 0
-    ring._r, ring._g, ring._b, ring._a = r, g, b, a
-
-    local texPath = RING_TEXTURES[ringTex] or RING_TEXTURES.normal
-
-    -- Ring texture: static full ring for non-animated display
-    ring._fg = ring:CreateTexture(nil, "ARTWORK")
-    ring._fg:SetAllPoints(ring)
-    ring._fg:SetTexture(texPath)
-    ring._fg:SetVertexColor(r, g, b, a)
-    ring._fg:Hide()
-
-    -- Cooldown swipe for smooth progress using the ring texture directly.
-    ring._cd = CreateFrame("Cooldown", nil, ring, "CooldownFrameTemplate")
-    ring._cd:SetAllPoints(ring)
-    ring._cd:SetFrameLevel(ring:GetFrameLevel() + 1)
-    ring._cd:SetHideCountdownNumbers(true)
-    ring._cd:SetDrawEdge(false)
-    ring._cd:SetDrawBling(false)
-    ring._cd:SetReverse(true)
-    ring._cd:SetSwipeTexture(texPath)
-    ring._cd:SetSwipeColor(r, g, b, a)
-    ring._cd:Hide()
-
-    function ring:SetRingColor(nr, ng, nb, na)
-        self._r, self._g, self._b, self._a = nr, ng, nb, na
-        self._fg:SetVertexColor(nr, ng, nb, na)
-        self._cd:SetSwipeColor(nr, ng, nb, na)
-    end
-
-    function ring:SetRingRadius(newRadius)
-        self.radius = newRadius
-        self:SetSize(newRadius * 2, newRadius * 2)
-    end
-
-    function ring:SetRingTexture(newKey)
-        local tp = RING_TEXTURES[newKey] or RING_TEXTURES.normal
-        self._fg:SetTexture(tp)
-        self._cd:SetSwipeTexture(tp)
-    end
-
-    function ring:StartRing(elapsed, maxDur)
-        self.dur = max(elapsed, 0)
-        self.maxDur = maxDur
-        self._fg:Hide()
-        local now = GetTime()
-        self._cd:SetCooldown(now - elapsed, maxDur)
-        self._cd:Show()
-        self:Show()
-    end
-
-    -- Secret-value path: the engine draws the real cooldown from the duration
-    -- object; ceiling only bounds how long the ring frame stays shown
-    function ring:StartRingFromDuration(durObj, ceiling)
-        self.dur = 0
-        self.maxDur = ceiling
-        self._fg:Hide()
-        self._cd:SetCooldownFromDurationObject(durObj)
-        self._cd:Show()
-        self:Show()
-    end
-
-    function ring:StopRing()
-        self._cd:Hide()
-        self._fg:Hide()
-        self.dur = 0
-        self.maxDur = 0
-        self:Hide()
-    end
-
-    ring:SetScript("OnUpdate", function(self, dt)
-        if self.maxDur <= 0 then return end
-        self.dur = self.dur + dt
-        if self.dur >= self.maxDur then
-            self:StopRing()
-        end
-    end)
-
-    ring:Hide()
-    return ring
+-- Attached rings follow the cursor frame, or the mouse itself while the
+-- cursor circle is hidden. During Unlock Mode the mover owns detached rings.
+local function TrackCursor(root, attached)
+	if not root then return end
+	if attached and not ns._unlockActive then
+		if f and f:IsShown() then
+			root:SetScript("OnUpdate", nil)
+			root:ClearAllPoints()
+			root:SetPoint("CENTER", f, "CENTER", 0, 0)
+		else
+			GlueToCursor(root)
+			root:SetScript("OnUpdate", GlueToCursor)
+		end
+	else
+		root:SetScript("OnUpdate", nil)
+	end
 end
 
--------------------------------------------------------------------------------
---  GCD Circle
--------------------------------------------------------------------------------
-local gcdRoot, gcdRing
-local gcdAttached = true  -- follows cursor by default
+local function ApplySavedPos(root, cfg)
+	if not root then return end
+	if ns.IsUnlockAnchored and root == gcdRoot and ns.IsUnlockAnchored("ECL_GCD") and root:GetLeft() then return end
+	if ns.IsUnlockAnchored and root == castRoot and ns.IsUnlockAnchored("ECL_Cast") and root:GetLeft() then return end
+	local pos = cfg.pos
+	root:ClearAllPoints()
+	if pos and pos.point then
+		root:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
+	else
+		root:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+	end
+end
+C.ApplyGCDPosition = function() ApplySavedPos(gcdRoot, GCD_DB()) end
+C.ApplyCastPosition = function() ApplySavedPos(castRoot, Cast_DB()) end
 
-local function GCD_DB()
-    local p = ECL.db and ECL.db.profile
-    return p and p.gcd or {}
+local function RingGated(cfg)
+	return (cfg.instanceOnly and not InRealInstancedContent()) or (cfg.combatOnly and not InCombat())
 end
 
--- Start the ring from the live GCD (does nothing when no GCD is running).
--- Called from the cast events and from the combat-start visibility pass.
 local function ArmGCDRing()
-    if not gcdRing then return end
-    local cdData = GetSpellCooldown(GCD_SPELL)
-    if not cdData then return end
-    local d, s = cdData.duration, cdData.startTime
-    if issecretvalue(d) or issecretvalue(s) then
-        -- Restricted combat hides the numbers: hand the GCD's duration object to
-        -- the swipe (the Resource Bars GCD bar's native path). isActive is never
-        -- secret and skips a GCD that already ended (the SUCCEEDED of a hard cast).
-        if not cdData.isActive then return end
-        local durObj = C_Spell.GetSpellCooldownDuration(GCD_SPELL)
-        if durObj then gcdRing:StartRingFromDuration(durObj, 1.6) end
-    elseif d and d > 0 and d <= 1.6 and s and s > 0 then
-        gcdRing:StartRing(GetTime() - s, d)
-    end
+	if not gcdRing then return end
+	local start, duration = GetSpellCooldown(GCD_SPELL)
+	if start and duration and duration > 0 and duration <= 1.6 and start > 0 then
+		gcdRing:StartRing(GetTime() - start, duration)
+	end
+end
+
+local GCD_EVENTS = { "UNIT_SPELLCAST_SUCCEEDED", "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_INTERRUPTED", "UNIT_SPELLCAST_STOP" }
+local CAST_EVENTS = {
+	"UNIT_SPELLCAST_START", "UNIT_SPELLCAST_DELAYED", "UNIT_SPELLCAST_STOP", "UNIT_SPELLCAST_FAILED",
+	"UNIT_SPELLCAST_INTERRUPTED", "UNIT_SPELLCAST_CHANNEL_START", "UNIT_SPELLCAST_CHANNEL_UPDATE", "UNIT_SPELLCAST_CHANNEL_STOP",
+}
+local function RegisterPlayerEvents(frame, list)
+	for i = 1, #list do frame:RegisterUnitEvent(list[i], "player") end
 end
 
 local function CreateGCDCircle()
-    if gcdRoot then return end
-    local g = GCD_DB()
-    local radius = (g.radius or 30)
-    local r, ng, b = ParseHex(g.hex)
-    local a = (g.alpha or 100) / 100
-
-    gcdRoot = CreateFrame("Frame", "ECL_GCDRoot", UIParent)
-    gcdRoot:SetSize(radius * 2, radius * 2)
-    gcdRoot:SetFrameStrata("TOOLTIP")
-    gcdRoot:SetFrameLevel(9990)
-    gcdRoot:EnableMouse(false)
-    gcdRoot:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-
-    gcdRing = CreateRing(gcdRoot, radius, g.ringTex or "normal", r, ng, b, a)
-
-    -- GCD event handling
-    gcdRoot:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
-    gcdRoot:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
-    gcdRoot:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
-    gcdRoot:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
-    gcdRoot:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
-    gcdRoot:SetScript("OnEvent", function(self, event, unit, _, spellID)
-        if unit ~= "player" then return end
-        local g2 = GCD_DB()
-        if not g2.enabled then return end
-        if g2.instanceOnly and not InRealInstancedContent() then return end
-        if g2.combatOnly and not InCombatLockdown() then return end
-        -- On cancelled/failed/interrupted casts the GCD resets stop the ring
-        if event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_INTERRUPTED" or event == "UNIT_SPELLCAST_STOP" then
-            local cdData = GetSpellCooldown(GCD_SPELL)
-            local stillActive = false
-            if cdData then
-                -- A secret read (restricted combat) keeps the ring: the GCD may still
-                -- be running (same rule as the Resource Bars GCD bar stop handler).
-                local d, s = cdData.duration, cdData.startTime
-                if issecretvalue(d) or issecretvalue(s) then
-                    stillActive = true
-                else
-                    stillActive = (d and d > 0 and s and s > 0) and true or false
-                end
-            end
-            if not stillActive then
-                gcdRing:StopRing()
-            end
-            return
-        end
-        ArmGCDRing()
-    end)
-
-    gcdRoot:Hide()
+	if gcdRoot then return end
+	local g = GCD_DB()
+	local radius = g.radius or 21
+	local r, gg, b = ParseHex(g.hex)
+	gcdRoot = CreateFrame("Frame", "ECL_GCDRoot", UIParent)
+	gcdRoot:SetSize(radius * 2, radius * 2)
+	gcdRoot:SetFrameStrata("TOOLTIP")
+	gcdRoot:SetFrameLevel(90)
+	gcdRoot:EnableMouse(false)
+	gcdRoot:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+	gcdRing = CreateRing(gcdRoot, radius, g.ringTex or "light", r, gg, b, (g.alpha or 80) / 100)
+	gcdRoot:SetScript("OnEvent", function(_, event, unit)
+		if unit ~= "player" then return end
+		local g2 = GCD_DB()
+		if not g2.enabled or RingGated(g2) then return end
+		if event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_INTERRUPTED" or event == "UNIT_SPELLCAST_STOP" then
+			local start, duration = GetSpellCooldown(GCD_SPELL)
+			if not (start and start > 0 and duration and duration > 0) then
+				gcdRing:StopRing()
+			end
+			return
+		end
+		ArmGCDRing()
+	end)
+	gcdRoot:Hide()
 end
 
-local function ApplyGCDCircle()
-    local g = GCD_DB()
-    local enabled = g.enabled
-    if not enabled then
-        if gcdRoot then
-            gcdRoot:Hide()
-            gcdRoot:SetScript("OnUpdate", nil)
-            gcdRoot:UnregisterAllEvents()
-        end
-        return
-    end
-    if not gcdRoot then CreateGCDCircle() end
-    -- Re-register events in case they were unregistered when disabled
-    gcdRoot:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
-    gcdRoot:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
-    gcdRoot:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
-    gcdRoot:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
-    gcdRoot:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
-    local attached = g.attached ~= false  -- default true
-    local radius = g.radius or 30
-    local scale = (g.scale or 100) / 100
-    -- ResolveColor picks accent > class > custom hex automatically
-    local r, ng, b = ResolveColor(g)
-    local a = (g.alpha or 100) / 100
-
-    gcdAttached = attached
-    gcdRoot:SetScale(scale)
-    gcdRing:SetRingColor(r, ng, b, a)
-    gcdRing:SetRingRadius(radius)
-    gcdRing:SetRingTexture(g.ringTex or "normal")
-    gcdRoot:SetSize(radius * 2, radius * 2)
-
-    gcdRoot:Show()
-    -- Respect instance-only: hide if not in instance
-    if g.instanceOnly and not InRealInstancedContent() then
-        gcdRoot:Hide()
-    end
-    -- Respect combat-only: hide if not in combat
-    if g.combatOnly and not InCombatLockdown() then
-        gcdRoot:Hide()
-    end
-    if attached and not EllesmereUI._unlockActive then
-        -- When the cursor circle is visible, anchor directly to it.
-        -- When the cursor circle is hidden (e.g. instance-only outside an instance),
-        -- the cursor frame's OnUpdate stops firing so it no longer tracks the mouse.
-        -- In that case we give the GCD circle its own cursor-tracking OnUpdate.
-        local cursorVisible = f and f:IsShown()
-        if cursorVisible then
-            gcdRoot:SetScript("OnUpdate", nil)
-            gcdRoot:ClearAllPoints()
-            gcdRoot:SetPoint("CENTER", f, "CENTER", 0, 0)
-        else
-            gcdRoot:ClearAllPoints()
-            gcdRoot:SetPoint("CENTER", UIParent, "BOTTOMLEFT", 0, 0)
-            local s = UIParent:GetEffectiveScale()
-            local cx, cy = GetCursorPosition()
-            gcdRoot:SetPoint("CENTER", UIParent, "BOTTOMLEFT", floor(cx / s + 0.5), floor(cy / s + 0.5))
-            gcdRoot:SetScript("OnUpdate", function()
-                local sc = UIParent:GetEffectiveScale()
-                local mx, my = GetCursorPosition()
-                gcdRoot:ClearAllPoints()
-                gcdRoot:SetPoint("CENTER", UIParent, "BOTTOMLEFT", floor(mx / sc + 0.5), floor(my / sc + 0.5))
-            end)
-        end
-    else
-        gcdRoot:SetScript("OnUpdate", nil)
-        -- Skip repositioning during unlock mode (mover owns position)
-        if not EllesmereUI._unlockActive then
-            _G._ECL_ApplyGCDPosition()
-        end
-    end
-end
-
--------------------------------------------------------------------------------
---  Cast Bar Circle
--------------------------------------------------------------------------------
-local castRoot, castRing
-local castAttached = true
-
-local function Cast_DB()
-    local p = ECL.db and ECL.db.profile
-    return p and p.castCircle or {}
-end
-
--- Defined here so it closes over the real trailEnabled, HideTrailDots,
--- gcdRoot, GCD_DB, castRoot, and Cast_DB locals declared above.
-UpdateVisibility = function()
-    if not f then return end
-    local p = ECL.db.profile
-    local shouldShow = (p.enabled ~= false)
-    if shouldShow and p.instanceOnly then
-        shouldShow = InRealInstancedContent()
-    end
-    -- "Combat Only": only show while the player is in combat. The combat-edge
-    -- events driving this are registered only while a toggle is on
-    -- (ApplyCombatOnlyEvents).
-    if shouldShow and p.combatOnly then
-        shouldShow = InCombatLockdown() and true or false
-    end
-    -- Standard visibility options (returns true if should HIDE)
-    if shouldShow and EllesmereUI.CheckVisibilityOptions(p) then
-        shouldShow = false
-    end
-    -- Standard visibility mode (mouseover treated as always for cursor)
-    if shouldShow then
-        local mode = p.visibility or "always"
-        if mode == "never" then
-            shouldShow = false
-        elseif mode == "in_combat" then
-            shouldShow = _G._EBS_InCombat and _G._EBS_InCombat() or false
-        elseif mode == "out_of_combat" then
-            shouldShow = not (_G._EBS_InCombat and _G._EBS_InCombat())
-        elseif mode == "in_raid" then
-            shouldShow = IsInRaid()
-        elseif mode == "in_party" then
-            shouldShow = IsInGroup() and not IsInRaid()
-        elseif mode == "solo" then
-            shouldShow = not IsInGroup()
-        -- "always" and "mouseover" both show (cursor is always at mouse)
-        end
-    end
-    -- "Only Show When Hidden": only show while steering the camera/character with
-    -- the mouse (cursor hidden). mouselookActive is maintained by the world mouse-
-    -- handler hooks (CameraOrSelectOrMove / TurnOrAction) further below.
-    if shouldShow and p.onlyWhenHidden and not mouselookActive then
-        shouldShow = false
-    end
-    if shouldShow and not isVisible then
-        isVisible = true
-        -- Snap to the current cursor BEFORE showing, otherwise the frame flashes
-        -- at its last (stale) position for one frame -- the glue only repositions
-        -- on the following motion sample.
-        local s = UIParent:GetEffectiveScale()
-        local cx, cy = GetCursorPosition()
-        cx, cy = floor(cx / s + 0.5), floor(cy / s + 0.5)
-        lastX, lastY = cx, cy
-        f:SetPoint("CENTER", UIParent, "BOTTOMLEFT", cx, cy)
-        f:Show()
-        SetCursorGlue(true)
-    elseif not shouldShow and isVisible then
-        isVisible = false
-        f:Hide()
-        SetCursorGlue(false)
-    end
-
-    -- Trail: hide dots and suppress spawning when circle is hidden
-    if not shouldShow and trailEnabled then
-        HideTrailDots()
-    end
-
-    -- GCD circle instance-only / combat-only check
-    if gcdRoot then
-        local g = GCD_DB()
-        if g.enabled then
-            if (g.instanceOnly and not InRealInstancedContent())
-                or (g.combatOnly and not InCombatLockdown()) then
-                gcdRoot:Hide()
-                gcdRoot:SetScript("OnUpdate", nil)
-            else
-                gcdRoot:Show()
-                -- Combat Only: the pull cast lands before combat starts, so the
-                -- OnEvent gate dropped its GCD; pick up whatever of it remains
-                if g.combatOnly and gcdRing and gcdRing.maxDur <= 0 then
-                    ArmGCDRing()
-                end
-                -- Re-apply cursor tracking since cursor visibility may have changed.
-                -- Skip while unlocked: the mover owns position, and re-arming this
-                -- would fight it (see the same gate in ApplyGCDCircle).
-                if g.attached ~= false and not EllesmereUI._unlockActive then
-                    local cursorVisible = f and f:IsShown()
-                    if cursorVisible then
-                        gcdRoot:SetScript("OnUpdate", nil)
-                        gcdRoot:ClearAllPoints()
-                        gcdRoot:SetPoint("CENTER", f, "CENTER", 0, 0)
-                    else
-                        gcdRoot:SetScript("OnUpdate", function()
-                            local sc = UIParent:GetEffectiveScale()
-                            local mx, my = GetCursorPosition()
-                            gcdRoot:ClearAllPoints()
-                            gcdRoot:SetPoint("CENTER", UIParent, "BOTTOMLEFT", floor(mx / sc + 0.5), floor(my / sc + 0.5))
-                        end)
-                    end
-                elseif g.attached ~= false then
-                    gcdRoot:SetScript("OnUpdate", nil)
-                end
-            end
-        end
-    end
-
-    -- Cast circle instance-only / combat-only check
-    if castRoot then
-        local c = Cast_DB()
-        if c.enabled then
-            if (c.instanceOnly and not InRealInstancedContent())
-                or (c.combatOnly and not InCombatLockdown()) then
-                castRoot:Hide()
-                castRoot:SetScript("OnUpdate", nil)
-            else
-                castRoot:Show()
-                -- Re-apply cursor tracking since cursor visibility may have changed.
-                -- Skip while unlocked: the mover owns position, and re-arming this
-                -- would fight it (see the same gate in ApplyCastCircle).
-                if c.attached ~= false and not EllesmereUI._unlockActive then
-                    local cursorVisible = f and f:IsShown()
-                    if cursorVisible then
-                        castRoot:SetScript("OnUpdate", nil)
-                        castRoot:ClearAllPoints()
-                        castRoot:SetPoint("CENTER", f, "CENTER", 0, 0)
-                    else
-                        castRoot:SetScript("OnUpdate", function()
-                            local sc = UIParent:GetEffectiveScale()
-                            local mx, my = GetCursorPosition()
-                            castRoot:ClearAllPoints()
-                            castRoot:SetPoint("CENTER", UIParent, "BOTTOMLEFT", floor(mx / sc + 0.5), floor(my / sc + 0.5))
-                        end)
-                    end
-                elseif c.attached ~= false then
-                    castRoot:SetScript("OnUpdate", nil)
-                end
-            end
-        end
-    end
-end
-
--------------------------------------------------------------------------------
---  "Only Show When Hidden"
---  Show the cursor circle only while the player is steering the camera/character
---  with the mouse (cursor hidden), and NOT on UI clicks. We post-hook WoW's world
---  mouse handlers, which the game calls ONLY for presses on the 3D world (never
---  for UI -- confirmed: dragging a UI frame fires neither):
---    * Left on the world  -> CameraOrSelectOrMoveStart / ...Stop
---    * Right (turn/move)  -> TurnOrActionStart / ...Stop
---  The cursor position freezes while hidden, so "moving vs static" can't be read;
---  instead a press must be HELD past HOLD_DELAY to count, which ignores quick
---  clicks and leaves only sustained pans/turns. Event + one-shot-timer driven
---  (no per-frame polling); the hooks no-op unless the option is enabled.
--------------------------------------------------------------------------------
-local mlFeatureOn = false
-local mlLeftWorld, mlRight = false, false   -- a world left / right control is active
-local mlPending = false                     -- a delayed show is scheduled
-local MS_HOLD_DELAY = 0.15                  -- hold this long before it counts as a pan (not a click)
-
-local function ML_Show()
-    mlPending = false
-    if mlFeatureOn and (mlLeftWorld or mlRight) and not mouselookActive then
-        mouselookActive = true
-        UpdateVisibility()
-    end
-end
-
-local function ML_ControlStart()
-    if not mlFeatureOn or mouselookActive or mlPending then return end
-    mlPending = true
-    C_Timer.After(MS_HOLD_DELAY, ML_Show)
-end
-
-local function ML_ControlStop()
-    if mlFeatureOn and not (mlLeftWorld or mlRight) and mouselookActive then
-        mouselookActive = false
-        UpdateVisibility()
-    end
-end
-
-local mlHooked = false
-local function ML_InstallHooks()
-    if mlHooked then return end
-    mlHooked = true
-    if type(CameraOrSelectOrMoveStart) == "function" then
-        hooksecurefunc("CameraOrSelectOrMoveStart", function() mlLeftWorld = true;  ML_ControlStart() end)
-        hooksecurefunc("CameraOrSelectOrMoveStop",  function() mlLeftWorld = false; ML_ControlStop() end)
-    end
-    if type(TurnOrActionStart) == "function" then
-        hooksecurefunc("TurnOrActionStart", function() mlRight = true;  ML_ControlStart() end)
-        hooksecurefunc("TurnOrActionStop",  function() mlRight = false; ML_ControlStop() end)
-    end
-end
-
-local function ApplyOnlyWhenHidden()
-    local p = ECL.db and ECL.db.profile
-    mlFeatureOn = p and p.onlyWhenHidden or false
-    if mlFeatureOn then
-        ML_InstallHooks()  -- hooksecurefunc can't be undone; install once, gate by mlFeatureOn
-    else
-        mlLeftWorld, mlRight, mlPending = false, false, false
-        mouselookActive = false
-    end
-    UpdateVisibility()
+C.ApplyGCDCircle = function()
+	local g = GCD_DB()
+	if not g.enabled then
+		if gcdRoot then
+			gcdRoot:Hide()
+			gcdRoot:SetScript("OnUpdate", nil)
+			gcdRoot:UnregisterAllEvents()
+		end
+		return
+	end
+	CreateGCDCircle()
+	RegisterPlayerEvents(gcdRoot, GCD_EVENTS)
+	local radius = g.radius or 21
+	local r, gg, b = ResolveColor(g)
+	gcdRoot:SetScale(max(0.1, (g.scale or 100) / 100))
+	gcdRing:SetRingColor(r, gg, b, (g.alpha or 80) / 100)
+	gcdRing:SetRingRadius(radius)
+	gcdRing:SetRingTexture(g.ringTex or "light")
+	gcdRoot:SetSize(radius * 2, radius * 2)
+	gcdRoot:SetShown(not RingGated(g))
+	local attached = g.attached ~= false
+	if attached then
+		TrackCursor(gcdRoot, true)
+	else
+		gcdRoot:SetScript("OnUpdate", nil)
+		if not ns._unlockActive then C.ApplyGCDPosition() end
+	end
 end
 
 local function CreateCastCircle()
-    if castRoot then return end
-    local c = Cast_DB()
-    local radius = (c.radius or 36)
-    local r, ng, b = ParseHex(c.hex)
-    local a = (c.alpha or 100) / 100
+	if castRoot then return end
+	local c = Cast_DB()
+	local radius = c.radius or 30
+	local r, g, b = ParseHex(c.hex)
+	castRoot = CreateFrame("Frame", "ECL_CastRoot", UIParent)
+	castRoot:SetSize(radius * 2, radius * 2)
+	castRoot:SetFrameStrata("TOOLTIP")
+	castRoot:SetFrameLevel(88)
+	castRoot:EnableMouse(false)
+	castRoot:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+	castRing = CreateRing(castRoot, radius, c.ringTex or "normal", r, g, b, (c.alpha or 80) / 100)
 
-    castRoot = CreateFrame("Frame", "ECL_CastRoot", UIParent)
-    castRoot:SetSize(radius * 2, radius * 2)
-    castRoot:SetFrameStrata("TOOLTIP")
-    castRoot:SetFrameLevel(9988)
-    castRoot:EnableMouse(false)
-    castRoot:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+	-- Spark + glow at the leading edge of the ring.
+	local sparkOverlay = CreateFrame("Frame", nil, castRoot)
+	sparkOverlay:SetAllPoints(castRoot)
+	sparkOverlay:SetFrameLevel(castRoot:GetFrameLevel() + 3)
+	castRoot._spark = sparkOverlay:CreateTexture(nil, "OVERLAY")
+	castRoot._spark:SetTexture("Interface\\CastingBar\\UI-CastingBar-Spark")
+	castRoot._spark:SetBlendMode("ADD")
+	castRoot._spark:SetSize(radius * 0.6, radius * 0.6)
+	castRoot._spark:Hide()
+	castRoot._sparkGlow = sparkOverlay:CreateTexture(nil, "OVERLAY", nil, -1)
+	castRoot._sparkGlow:SetTexture("Interface\\CastingBar\\UI-CastingBar-Spark")
+	castRoot._sparkGlow:SetBlendMode("ADD")
+	castRoot._sparkGlow:SetSize(radius * 0.9, radius * 0.9)
+	castRoot._sparkGlow:SetAlpha(0.5)
+	castRoot._sparkGlow:Hide()
 
-    castRing = CreateRing(castRoot, radius, c.ringTex or "normal", r, ng, b, a)
+	local RING_INNER = { thin = 0.92, light = 0.85, normal = 0.78, heavy = 0.68, thick = 0.58 }
+	sparkOverlay:SetScript("OnUpdate", function()
+		local spark, glow = castRoot._spark, castRoot._sparkGlow
+		if not spark:IsShown() then return end
+		local dur, maxDur = castRing.dur, castRing.maxDur
+		local pct = (maxDur and maxDur > 0) and dur / maxDur or 0
+		if pct <= 0 or pct >= 1 then spark:Hide(); glow:Hide(); return end
+		local c2 = Cast_DB()
+		local orbit = (c2.radius or 30) * (1 + (RING_INNER[c2.ringTex or "normal"] or 0.78)) * 0.5
+		local angle = 90 - pct * 360
+		local sx, sy = cos(rad(angle)) * orbit, sin(rad(angle)) * orbit
+		spark:ClearAllPoints()
+		spark:SetPoint("CENTER", castRoot, "CENTER", sx, sy)
+		spark:SetRotation(rad(angle - 90))
+		glow:ClearAllPoints()
+		glow:SetPoint("CENTER", castRoot, "CENTER", sx, sy)
+		glow:SetRotation(rad(angle - 90))
+	end)
 
-    -- Spark textures: main spark + glow layer for vibrancy
-    local sparkOverlay = CreateFrame("Frame", nil, castRoot)
-    sparkOverlay:SetAllPoints(castRoot)
-    sparkOverlay:SetFrameLevel(castRoot:GetFrameLevel() + 3)
+	local function ShowSpark(c2)
+		if c2.sparkEnabled then
+			castRoot._spark:Show()
+			castRoot._sparkGlow:Show()
+		end
+	end
+	local function StopCast()
+		castRoot._castID = nil
+		castRing:StopRing()
+		castRoot._spark:Hide()
+		castRoot._sparkGlow:Hide()
+	end
 
-    -- Primary spark
-    castRoot._spark = sparkOverlay:CreateTexture(nil, "OVERLAY")
-    castRoot._spark:SetTexture("Interface\\CastingBar\\UI-CastingBar-Spark")
-    castRoot._spark:SetBlendMode("ADD")
-    castRoot._spark:SetSize(radius * 0.6, radius * 0.6)
-    castRoot._spark:Hide()
-
-    -- Glow layer: a second additive spark, slightly larger and softer, for bloom
-    castRoot._sparkGlow = sparkOverlay:CreateTexture(nil, "OVERLAY", nil, -1)
-    castRoot._sparkGlow:SetTexture("Interface\\CastingBar\\UI-CastingBar-Spark")
-    castRoot._sparkGlow:SetBlendMode("ADD")
-    castRoot._sparkGlow:SetSize(radius * 0.9, radius * 0.9)
-    castRoot._sparkGlow:SetAlpha(0.5)
-    castRoot._sparkGlow:Hide()
-
-    -- Spark position updater: orbits the ring centerline each frame
-    sparkOverlay:SetScript("OnUpdate", function()
-        local spark = castRoot._spark
-        local glow = castRoot._sparkGlow
-        if not spark or not spark:IsShown() then return end
-        local dur, maxDur = castRing.dur, castRing.maxDur
-        if not dur or not maxDur or maxDur <= 0 then spark:Hide(); if glow then glow:Hide() end; return end
-        local pct = dur / maxDur
-        if pct <= 0 or pct >= 1 then spark:Hide(); if glow then glow:Hide() end; return end
-
-        local c2 = Cast_DB()
-        local ringRadius = c2.radius or 36
-        -- Approximate inner radius ratio per ring texture for spark orbit
-        local RING_INNER = { thin = 0.92, light = 0.85, normal = 0.78, heavy = 0.68, thick = 0.58 }
-        local innerRatio = RING_INNER[c2.ringTex or "normal"] or 0.78
-        local sparkOrbitR = ringRadius * (1 + innerRatio) * 0.5
-
-        local angleDeg = 90 - (pct * 360)
-        local sx = cos(angleDeg) * sparkOrbitR
-        local sy = sin(angleDeg) * sparkOrbitR
-
-        spark:ClearAllPoints()
-        spark:SetPoint("CENTER", castRoot, "CENTER", sx, sy)
-        spark:SetRotation(math.rad(angleDeg - 90))
-
-        if glow then
-            glow:ClearAllPoints()
-            glow:SetPoint("CENTER", castRoot, "CENTER", sx, sy)
-            glow:SetRotation(math.rad(angleDeg - 90))
-        end
-    end)
-
-    -- Cast event handling
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_DELAYED", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_UPDATE", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")
-    if UnitChannelInfo and GetUnitEmpowerHoldAtMaxTime then
-        castRoot:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_START", "player")
-        castRoot:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_UPDATE", "player")
-        castRoot:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_STOP", "player")
-    end
-
-    castRoot._castID = nil
-
-    castRoot:SetScript("OnEvent", function(self, event, unit, castID)
-        if unit ~= "player" then return end
-        local c2 = Cast_DB()
-        if not c2.enabled then return end
-        if c2.instanceOnly and not InRealInstancedContent() then return end
-        if c2.combatOnly and not InCombatLockdown() then return end
-
-        if event == "UNIT_SPELLCAST_START" or event == "UNIT_SPELLCAST_DELAYED" then
-            local name, _, _, startMS, endMS, _, cID = UnitCastingInfo("player")
-            if name then
-                self._castID = cID
-                local elapsed = GetTime() - startMS * 0.001
-                local total = (endMS - startMS) * 0.001
-                castRing:StartRing(elapsed, total)
-                if c2.sparkEnabled then
-                    if self._spark then self._spark:Show() end
-                    if self._sparkGlow then self._sparkGlow:Show() end
-                end
-            end
-
-        elseif event == "UNIT_SPELLCAST_CHANNEL_START"
-            or event == "UNIT_SPELLCAST_CHANNEL_UPDATE"
-            or event == "UNIT_SPELLCAST_EMPOWER_START"
-            or event == "UNIT_SPELLCAST_EMPOWER_UPDATE" then
-            local name, _, _, startMS, endMS, _, _, _, _, numStages = UnitChannelInfo("player")
-            if name then
-                self._castID = nil
-                if numStages and numStages > 0 and GetUnitEmpowerHoldAtMaxTime then
-                    endMS = endMS + GetUnitEmpowerHoldAtMaxTime("player")
-                end
-                local elapsed = GetTime() - startMS * 0.001
-                local total = (endMS - startMS) * 0.001
-                castRing:StartRing(elapsed, total)
-                if c2.sparkEnabled then
-                    if self._spark then self._spark:Show() end
-                    if self._sparkGlow then self._sparkGlow:Show() end
-                end
-            end
-
-        elseif event == "UNIT_SPELLCAST_STOP" then
-            if castID == self._castID then
-                self._castID = nil
-                castRing:StopRing()
-                if self._spark then self._spark:Hide() end
-                if self._sparkGlow then self._sparkGlow:Hide() end
-            end
-
-        else  -- FAILED, INTERRUPTED, CHANNEL_STOP, EMPOWER_STOP
-            if not castID or castID == self._castID then
-                self._castID = nil
-                castRing:StopRing()
-                if self._spark then self._spark:Hide() end
-                if self._sparkGlow then self._sparkGlow:Hide() end
-            end
-        end
-    end)
-
-    castRoot:Hide()
+	-- 5.4.8 event args: unit, spellName, rank, lineID, spellID.
+	castRoot:SetScript("OnEvent", function(self, event, unit, _, _, lineID)
+		if unit ~= "player" then return end
+		local c2 = Cast_DB()
+		if not c2.enabled or RingGated(c2) then return end
+		if event == "UNIT_SPELLCAST_START" or event == "UNIT_SPELLCAST_DELAYED" then
+			local name, _, _, _, startMS, endMS, _, castID = UnitCastingInfo("player")
+			if name then
+				self._castID = castID
+				castRing:StartRing(GetTime() - startMS * 0.001, (endMS - startMS) * 0.001)
+				ShowSpark(c2)
+			end
+		elseif event == "UNIT_SPELLCAST_CHANNEL_START" or event == "UNIT_SPELLCAST_CHANNEL_UPDATE" then
+			local name, _, _, _, startMS, endMS = UnitChannelInfo("player")
+			if name then
+				self._castID = nil
+				castRing:StartRing(GetTime() - startMS * 0.001, (endMS - startMS) * 0.001)
+				ShowSpark(c2)
+			end
+		elseif event == "UNIT_SPELLCAST_STOP" then
+			if lineID == self._castID then StopCast() end
+		else  -- FAILED, INTERRUPTED, CHANNEL_STOP
+			if event == "UNIT_SPELLCAST_CHANNEL_STOP" or not lineID or lineID == self._castID then StopCast() end
+		end
+	end)
+	castRoot:Hide()
 end
 
-local function ApplyCastCircle()
-    local c = Cast_DB()
-    local enabled = c.enabled
-    if not enabled then
-        if castRoot then
-            castRoot:Hide()
-            castRoot:SetScript("OnUpdate", nil)
-            castRoot:UnregisterAllEvents()
-        end
-        return
-    end
-    if not castRoot then CreateCastCircle() end
-    -- Re-register events in case they were unregistered when disabled
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_DELAYED", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_UPDATE", "player")
-    castRoot:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")
-    if UnitChannelInfo and GetUnitEmpowerHoldAtMaxTime then
-        castRoot:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_START", "player")
-        castRoot:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_UPDATE", "player")
-        castRoot:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_STOP", "player")
-    end
-    local attached = c.attached ~= false  -- default true
-    local radius = c.radius or 36
-    local scale = (c.scale or 100) / 100
-    -- ResolveColor picks accent > class > custom hex automatically
-    local r, ng, b = ResolveColor(c)
-    local a = (c.alpha or 100) / 100
-
-    castAttached = attached
-    castRoot:SetScale(scale)
-    castRing:SetRingColor(r, ng, b, a)
-    castRing:SetRingRadius(radius)
-    castRing:SetRingTexture(c.ringTex or "normal")
-    castRoot:SetSize(radius * 2, radius * 2)
-
-    -- Spark settings
-    if castRoot._spark then
-        local sparkSize = radius * 0.6
-        castRoot._spark:SetSize(sparkSize, sparkSize)
-        if c.sparkEnabled then
-            local sr, sg, sb
-            -- In accent or class mode, the spark inherits the ring color.
-            -- In custom mode, the spark uses its own sparkHex (or falls
-            -- back to the ring hex if sparkHex isn't set).
-            if c.useAccentColor or c.useClassColor then
-                sr, sg, sb = r, ng, b
-            else
-                sr, sg, sb = ParseHex(c.sparkHex or c.hex)
-            end
-            castRoot._spark:SetVertexColor(sr, sg, sb, 1)
-            -- Glow layer: same color, slightly transparent for bloom
-            if castRoot._sparkGlow then
-                castRoot._sparkGlow:SetVertexColor(sr, sg, sb, 1)
-                castRoot._sparkGlow:SetSize(radius * 0.9, radius * 0.9)
-                castRoot._sparkGlow:SetAlpha(0.5)
-            end
-        end
-    end
-
-    castRoot:Show()
-    -- Respect instance-only: hide if not in instance
-    if c.instanceOnly and not InRealInstancedContent() then
-        castRoot:Hide()
-    end
-    -- Respect combat-only: hide if not in combat
-    if c.combatOnly and not InCombatLockdown() then
-        castRoot:Hide()
-    end
-    if attached and not EllesmereUI._unlockActive then
-        -- When the cursor circle is visible, anchor directly to it.
-        -- When the cursor circle is hidden (e.g. instance-only outside an instance),
-        -- the cursor frame's OnUpdate stops firing so it no longer tracks the mouse.
-        -- In that case we give the cast circle its own cursor-tracking OnUpdate.
-        local cursorVisible = f and f:IsShown()
-        if cursorVisible then
-            castRoot:SetScript("OnUpdate", nil)
-            castRoot:ClearAllPoints()
-            castRoot:SetPoint("CENTER", f, "CENTER", 0, 0)
-        else
-            castRoot:ClearAllPoints()
-            castRoot:SetPoint("CENTER", UIParent, "BOTTOMLEFT", 0, 0)
-            local s = UIParent:GetEffectiveScale()
-            local cx, cy = GetCursorPosition()
-            castRoot:SetPoint("CENTER", UIParent, "BOTTOMLEFT", floor(cx / s + 0.5), floor(cy / s + 0.5))
-            castRoot:SetScript("OnUpdate", function()
-                local sc = UIParent:GetEffectiveScale()
-                local mx, my = GetCursorPosition()
-                castRoot:ClearAllPoints()
-                castRoot:SetPoint("CENTER", UIParent, "BOTTOMLEFT", floor(mx / sc + 0.5), floor(my / sc + 0.5))
-            end)
-        end
-    else
-        castRoot:SetScript("OnUpdate", nil)
-        -- Skip repositioning during unlock mode (mover owns position)
-        if not EllesmereUI._unlockActive then
-            _G._ECL_ApplyCastPosition()
-        end
-    end
+C.ApplyCastCircle = function()
+	local c = Cast_DB()
+	if not c.enabled then
+		if castRoot then
+			castRoot:Hide()
+			castRoot:SetScript("OnUpdate", nil)
+			castRoot:UnregisterAllEvents()
+		end
+		return
+	end
+	CreateCastCircle()
+	RegisterPlayerEvents(castRoot, CAST_EVENTS)
+	local radius = c.radius or 30
+	local r, g, b = ResolveColor(c)
+	castRoot:SetScale(max(0.1, (c.scale or 100) / 100))
+	castRing:SetRingColor(r, g, b, (c.alpha or 80) / 100)
+	castRing:SetRingRadius(radius)
+	castRing:SetRingTexture(c.ringTex or "normal")
+	castRoot:SetSize(radius * 2, radius * 2)
+	castRoot._spark:SetSize(radius * 0.6, radius * 0.6)
+	castRoot._sparkGlow:SetSize(radius * 0.9, radius * 0.9)
+	if c.sparkEnabled then
+		-- Accent / class mode: the spark takes the ring color; custom: sparkHex or the ring hex.
+		local sr, sg, sb = r, g, b
+		if not (c.useAccentColor or c.useClassColor) then sr, sg, sb = ParseHex(c.sparkHex or c.hex) end
+		castRoot._spark:SetVertexColor(sr, sg, sb, 1)
+		castRoot._sparkGlow:SetVertexColor(sr, sg, sb, 1)
+	else
+		castRoot._spark:Hide()
+		castRoot._sparkGlow:Hide()
+	end
+	castRoot:SetShown(not RingGated(c))
+	if c.attached ~= false then
+		TrackCursor(castRoot, true)
+	else
+		castRoot:SetScript("OnUpdate", nil)
+		if not ns._unlockActive then C.ApplyCastPosition() end
+	end
 end
 
 -------------------------------------------------------------------------------
---  Unlock Mode registration (for detached GCD / Cast circles)
+--  Visibility
 -------------------------------------------------------------------------------
-local function RegisterUnlockElements()
-    if not EllesmereUI or not EllesmereUI.RegisterUnlockElements then return end
-    local MK = EllesmereUI.MakeUnlockElement
-
-    local elements = {}
-
-    -- Both keys register whenever the module runs and qualify LIVE through
-    -- isHidden/getFrame (a circle only has a mover while enabled and detached).
-    -- Never unregister a key that can come back: UnregisterUnlockElement runs
-    -- PruneStaleLinks, which deletes the key's saved anchor links, so toggling
-    -- Attach to Cursor would silently destroy a detached circle's anchor. The
-    -- mover sync reads isHidden every pass, and the options setters re-run
-    -- this registration on every Attach flip, so the mover follows the toggle
-    -- inside an open unlock session too.
-    local function GCDDetached()
-        local g2 = GCD_DB()
-        return g2.enabled and g2.attached == false
-    end
-    local function CastDetached()
-        local c2 = Cast_DB()
-        return c2.enabled and c2.attached == false
-    end
-
-    do
-        elements[#elements + 1] = MK({
-            key = "ECL_GCD",
-            label = "GCD Circle",
-            group = "Cursor Lite",
-            order = 500,
-            isHidden = function() return not GCDDetached() end,
-            getFrame = function()
-                if not GCDDetached() then return nil end
-                return gcdRoot
-            end,
-            getSize = function()
-                local g2 = GCD_DB()
-                local r = g2.radius or 30
-                return r * 2, r * 2
-            end,
-            setWidth = function(_, w)
-                local p = ECL.db and ECL.db.profile
-                if not p or not p.gcd then return end
-                local PPg = EllesmereUI and EllesmereUI.PP
-                p.gcd.radius = math.max(PPg and PPg.Snap(w / 2) or math.floor(w / 2 + 0.5), 5)
-                ApplyGCDCircle()
-                if EllesmereUI._unlockActive and EllesmereUI.RepositionBarToMover then
-                    EllesmereUI.RepositionBarToMover("ECL_GCD")
-                end
-            end,
-            setHeight = function(_, h)
-                local p = ECL.db and ECL.db.profile
-                if not p or not p.gcd then return end
-                local PPg = EllesmereUI and EllesmereUI.PP
-                p.gcd.radius = math.max(PPg and PPg.Snap(h / 2) or math.floor(h / 2 + 0.5), 5)
-                ApplyGCDCircle()
-                if EllesmereUI._unlockActive and EllesmereUI.RepositionBarToMover then
-                    EllesmereUI.RepositionBarToMover("ECL_GCD")
-                end
-            end,
-            savePos = function(key, point, relPoint, x, y)
-                local p = ECL.db and ECL.db.profile
-                if not p then return end
-                if not p.gcd then p.gcd = {} end
-                p.gcd.pos = { point = point, relPoint = relPoint, x = x, y = y }
-                if not EllesmereUI._unlockActive then
-                    ApplyGCDCircle()
-                end
-            end,
-            loadPos = function()
-                local g2 = GCD_DB()
-                return g2.pos
-            end,
-            clearPos = function()
-                local p = ECL.db and ECL.db.profile
-                if p and p.gcd then p.gcd.pos = nil end
-            end,
-            applyPos = function()
-                _G._ECL_ApplyGCDPosition()
-            end,
-        })
-    end
-
-    do
-        elements[#elements + 1] = MK({
-            key = "ECL_Cast",
-            label = "Cast Bar Circle",
-            group = "Cursor Lite",
-            order = 501,
-            isHidden = function() return not CastDetached() end,
-            getFrame = function()
-                if not CastDetached() then return nil end
-                return castRoot
-            end,
-            getSize = function()
-                local c2 = Cast_DB()
-                local r = c2.radius or 36
-                return r * 2, r * 2
-            end,
-            setWidth = function(_, w)
-                local p = ECL.db and ECL.db.profile
-                if not p or not p.castCircle then return end
-                local PPc = EllesmereUI and EllesmereUI.PP
-                p.castCircle.radius = math.max(PPc and PPc.Snap(w / 2) or math.floor(w / 2 + 0.5), 5)
-                ApplyCastCircle()
-                EllesmereUI.RepositionBarToMover("ECL_Cast")
-            end,
-            setHeight = function(_, h)
-                local p = ECL.db and ECL.db.profile
-                if not p or not p.castCircle then return end
-                local PPc = EllesmereUI and EllesmereUI.PP
-                p.castCircle.radius = math.max(PPc and PPc.Snap(h / 2) or math.floor(h / 2 + 0.5), 5)
-                ApplyCastCircle()
-                EllesmereUI.RepositionBarToMover("ECL_Cast")
-            end,
-            savePos = function(key, point, relPoint, x, y)
-                local p = ECL.db and ECL.db.profile
-                if not p then return end
-                if not p.castCircle then p.castCircle = {} end
-                p.castCircle.pos = { point = point, relPoint = relPoint, x = x, y = y }
-                if not EllesmereUI._unlockActive then
-                    ApplyCastCircle()
-                end
-            end,
-            loadPos = function()
-                local c2 = Cast_DB()
-                return c2.pos
-            end,
-            clearPos = function()
-                local p = ECL.db and ECL.db.profile
-                if p and p.castCircle then p.castCircle.pos = nil end
-            end,
-            applyPos = function()
-                _G._ECL_ApplyCastPosition()
-            end,
-        })
-    end
-
-    if #elements > 0 then
-        EllesmereUI:RegisterUnlockElements(elements, "EllesmereUIQoL")
-    end
+-- Retail CheckVisibilityOptions (true = hide). Housing has no Mists match.
+local function VisibilityHides(p)
+	if p.visOnlyInstances and not IsInInstance() then return true end
+	if p.visHideMounted and IsMounted() then return true end
+	if p.visHideNoTarget and not UnitExists("target") then return true end
+	if p.visHideNoEnemy and not (UnitExists("target") and UnitCanAttack("player", "target")) then return true end
+	return false
 end
 
--- Position apply helpers (called from unlock mode and from ApplyGCDCircle/ApplyCastCircle)
-_G._ECL_ApplyGCDPosition = function()
-    if not gcdRoot then return end
-    -- Skip for unlock-anchored elements (anchor system is authority)
-    local anchored = EllesmereUI and EllesmereUI.IsUnlockAnchored and EllesmereUI.IsUnlockAnchored("ECL_GCD")
-    if anchored and gcdRoot:GetLeft() then return end
-    local g = GCD_DB()
-    local pos = g.pos
-    if pos and pos.point then
-        local px, py = pos.x or 0, pos.y or 0
-        local PPa = EllesmereUI and EllesmereUI.PP
-        if PPa then
-            local es = gcdRoot:GetEffectiveScale()
-            local isCenterAnchor = (pos.point == "CENTER")
-                and (pos.relPoint == "CENTER" or pos.relPoint == nil)
-            if isCenterAnchor and PPa.SnapCenterForDim then
-                px = PPa.SnapCenterForDim(px, gcdRoot:GetWidth() or 0, es)
-                py = PPa.SnapCenterForDim(py, gcdRoot:GetHeight() or 0, es)
-            elseif PPa.SnapForES then
-                px = PPa.SnapForES(px, es)
-                py = PPa.SnapForES(py, es)
-            end
-        end
-        gcdRoot:ClearAllPoints()
-        gcdRoot:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, px, py)
-    else
-        -- Default: screen center
-        gcdRoot:ClearAllPoints()
-        gcdRoot:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-    end
-end
+C.UpdateVisibility = function()
+	if not f then return end
+	local p = P()
+	if not p then return end
+	local show = p.enabled ~= false
+	if show and p.instanceOnly then show = InRealInstancedContent() end
+	if show and p.combatOnly then show = InCombat() end
+	if show and VisibilityHides(p) then show = false end
+	if show then
+		local mode = p.visibility or "always"
+		if mode == "never" then
+			show = false
+		elseif mode == "in_combat" then
+			show = InCombat()
+		elseif mode == "out_of_combat" then
+			show = not InCombat()
+		elseif mode == "in_raid" then
+			show = IsInRaid()
+		elseif mode == "in_party" then
+			show = IsInGroup() and not IsInRaid()
+		elseif mode == "solo" then
+			show = not IsInGroup()
+		end
+	end
+	if show and p.onlyWhenHidden and not mouselookActive then show = false end
 
-_G._ECL_ApplyCastPosition = function()
-    if not castRoot then return end
-    -- Skip for unlock-anchored elements (anchor system is authority)
-    local anchored = EllesmereUI and EllesmereUI.IsUnlockAnchored and EllesmereUI.IsUnlockAnchored("ECL_Cast")
-    if anchored and castRoot:GetLeft() then return end
-    local c = Cast_DB()
-    local pos = c.pos
-    if pos and pos.point then
-        local px, py = pos.x or 0, pos.y or 0
-        local PPa = EllesmereUI and EllesmereUI.PP
-        if PPa then
-            local es = castRoot:GetEffectiveScale()
-            local isCenterAnchor = (pos.point == "CENTER")
-                and (pos.relPoint == "CENTER" or pos.relPoint == nil)
-            if isCenterAnchor and PPa.SnapCenterForDim then
-                px = PPa.SnapCenterForDim(px, castRoot:GetWidth() or 0, es)
-                py = PPa.SnapCenterForDim(py, castRoot:GetHeight() or 0, es)
-            elseif PPa.SnapForES then
-                px = PPa.SnapForES(px, es)
-                py = PPa.SnapForES(py, es)
-            end
-        end
-        castRoot:ClearAllPoints()
-        castRoot:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, px, py)
-    else
-        -- Default: screen center
-        castRoot:ClearAllPoints()
-        castRoot:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-    end
-end
+	if show and not isVisible then
+		isVisible = true
+		lastX, lastY = nil, nil
+		CursorOnUpdate(f)
+		f:Show()
+	elseif not show and isVisible then
+		isVisible = false
+		f:Hide()
+	end
+	if not show and trailEnabled then HideTrailDots() end
 
--- Combat-edge events exist only while some Combat Only toggle is on: the
--- cursor circle is default-enabled, so unconditional PLAYER_REGEN_*
--- registrations would run the visibility pass on every combat edge for every
--- user. Re-evaluated from OnEnable and the three options setters; Lite's
--- UnregisterEvent is nil-safe, the _combatEventsOn latch skips no-op flips.
-local function ApplyCombatOnlyEvents()
-    local p = ECL.db and ECL.db.profile
-    local want = (p and (p.combatOnly
-        or (p.gcd and p.gcd.combatOnly)
-        or (p.castCircle and p.castCircle.combatOnly))) and true or false
-    if want == ECL._combatEventsOn then return end
-    ECL._combatEventsOn = want
-    if want then
-        ECL:RegisterEvent("PLAYER_REGEN_DISABLED", UpdateVisibility)
-        ECL:RegisterEvent("PLAYER_REGEN_ENABLED", UpdateVisibility)
-    else
-        ECL:UnregisterEvent("PLAYER_REGEN_DISABLED")
-        ECL:UnregisterEvent("PLAYER_REGEN_ENABLED")
-    end
+	-- Rings: their own instance / combat gates, then cursor tracking again
+	-- (the cursor frame may have been shown or hidden).
+	local g = GCD_DB()
+	if gcdRoot and g.enabled then
+		if RingGated(g) then
+			gcdRoot:Hide()
+			gcdRoot:SetScript("OnUpdate", nil)
+		else
+			gcdRoot:Show()
+			if g.combatOnly and gcdRing.maxDur <= 0 then ArmGCDRing() end
+			if g.attached ~= false then TrackCursor(gcdRoot, true) end
+		end
+	end
+	local c = Cast_DB()
+	if castRoot and c.enabled then
+		if RingGated(c) then
+			castRoot:Hide()
+			castRoot:SetScript("OnUpdate", nil)
+		else
+			castRoot:Show()
+			if c.attached ~= false then TrackCursor(castRoot, true) end
+		end
+	end
 end
 
 -------------------------------------------------------------------------------
---  Initialization
+--  Only Show When Hidden: shown while a world mouse button is held to turn
+--  the camera / character (post-hooks on the world mouse handlers).
 -------------------------------------------------------------------------------
-function ECL:OnInitialize()
-    -- Cursor owns its own slice of EllesmereUIQoLDB at profile.cursor
-    local cursorDefaults = {
-        profile = {
-            cursor = {
-                enabled = true,
-                instanceOnly = false,
-                onlyWhenHidden = false,
-                combatOnly = false,
-                useClassColor = true,
-                hex = "0CD29D",
-                texture = "ring_normal",
-                scale = 1,
-                alpha = 100,
-                gcd = {
-                    enabled = false,
-                    attached = true,
-                    radius = 21,
-                    ringTex = "light",
-                    scale = 100,
-                    hex = "FFFFFF",
-                    alpha = 80,
-                    useClassColor = false,
-                    instanceOnly = false,
-                    combatOnly = false,
-                },
-                castCircle = {
-                    enabled = false,
-                    attached = true,
-                    radius = 30,
-                    ringTex = "normal",
-                    scale = 100,
-                    hex = "3FA7FF",
-                    alpha = 80,
-                    sparkEnabled = true,
-                    sparkHex = nil,
-                    useClassColor = true,
-                    instanceOnly = false,
-                    combatOnly = false,
-                },
-                trail = false,
-                reticle = false,
-                visibility       = "always",
-                visOnlyInstances = false,
-                visHideHousing   = false,
-                visHideMounted   = false,
-                visHideNoTarget  = false,
-                visHideNoEnemy   = false,
-            },
-        },
-    }
-    local sharedDB = EllesmereUI.Lite.NewDB("EllesmereUIQoLDB", cursorDefaults)
-    -- Narrow view onto the cursor sub-table so legacy code using
-    -- self.db.profile.<key> keeps working without rewrites.
-    -- profile is resolved DYNAMICALLY so it follows profile swaps. The profile
-    -- system repoints the registered sharedDB.profile in place (RepointAllDBs);
-    -- a frozen `profile = sharedDB.profile.cursor` reference would go stale after
-    -- a swap and the cursor would keep applying the old profile's settings.
-    self.db = setmetatable({ _shared = sharedDB }, {
-        __index = function(t, k)
-            if k == "profile" then
-                local p = t._shared.profile
-                if not p.cursor then p.cursor = {} end
-                return p.cursor
-            end
-        end,
-    })
-    self.db.ResetProfile = function(dbSelf)
-        local defaults = cursorDefaults.profile.cursor
-        wipe(dbSelf.profile)
-        for k, v in pairs(defaults) do
-            if type(v) == "table" then
-                dbSelf.profile[k] = {}
-                for k2, v2 in pairs(v) do dbSelf.profile[k][k2] = v2 end
-            else
-                dbSelf.profile[k] = v
-            end
-        end
-    end
+local mlFeatureOn, mlLeftWorld, mlRight, mlPending = false, false, false, false
+local MS_HOLD_DELAY = 0.15
 
-    -- Expose for EUI_QoL_Cursor_Options.lua
-    _G._ECL_AceDB = self.db
-    _G._ECL_Apply = Apply
-    _G._ECL_UpdateVisibility = UpdateVisibility
-    _G._ECL_ApplyCombatOnlyEvents = ApplyCombatOnlyEvents
-    EllesmereUI.RegisterVisibilityUpdater(UpdateVisibility)
-    _G._ECL_ApplyGCDCircle = ApplyGCDCircle
-    _G._ECL_ApplyCastCircle = ApplyCastCircle
-    _G._ECL_RegisterUnlock = RegisterUnlockElements
-    _G._ECL_RING_TEXTURES = RING_TEXTURES
-    _G._ECL_ApplyTrail = ApplyTrail
-    _G._ECL_ApplyOnlyWhenHidden = ApplyOnlyWhenHidden
+local function ML_Show()
+	mlPending = false
+	if mlFeatureOn and (mlLeftWorld or mlRight) and not mouselookActive then
+		mouselookActive = true
+		C.UpdateVisibility()
+	end
+end
+local function ML_ControlStart()
+	if not mlFeatureOn or mouselookActive or mlPending then return end
+	mlPending = true
+	After("mouselook", MS_HOLD_DELAY, ML_Show)
+end
+local function ML_ControlStop()
+	if mlFeatureOn and not (mlLeftWorld or mlRight) and mouselookActive then
+		mouselookActive = false
+		C.UpdateVisibility()
+	end
 end
 
-function ECL:OnEnable()
-    if _G._EBS_TEMP_DISABLED and _G._EBS_TEMP_DISABLED.cursor then return end
-    f = CreateFrame("Frame", "EllesmereUICursorFrame", UIParent)
-    f:SetFrameStrata("TOOLTIP")
-    f:SetFrameLevel(9999)
-    f:SetClampedToScreen(true)
-    f:EnableMouse(false)
-    f:SetPoint("CENTER")
+local mlHooked = false
+C.ApplyOnlyWhenHidden = function()
+	local p = P()
+	mlFeatureOn = p and p.onlyWhenHidden or false
+	if mlFeatureOn and not mlHooked then
+		mlHooked = true
+		hooksecurefunc("CameraOrSelectOrMoveStart", function() mlLeftWorld = true; ML_ControlStart() end)
+		hooksecurefunc("CameraOrSelectOrMoveStop", function() mlLeftWorld = false; ML_ControlStop() end)
+		hooksecurefunc("TurnOrActionStart", function() mlRight = true; ML_ControlStart() end)
+		hooksecurefunc("TurnOrActionStop", function() mlRight = false; ML_ControlStop() end)
+	end
+	if not mlFeatureOn then
+		mlLeftWorld, mlRight, mlPending = false, false, false
+		mouselookActive = false
+	end
+	C.UpdateVisibility()
+end
 
-    t = f:CreateTexture(nil, "OVERLAY")
-    t:SetAllPoints(f)
-    t:SetTexture(TEX_CUSTOM)
+-------------------------------------------------------------------------------
+--  Events (combat edges only while a Combat Only toggle needs them)
+-------------------------------------------------------------------------------
+local evFrame = CreateFrame("Frame")
+evFrame:SetScript("OnEvent", function() C.UpdateVisibility() end)
+local combatEventsOn, visEventsOn = false, false
 
-    -- Center reticle: solid fill through the shared portrait circle mask,
-    -- same construction as the patch-notes sidebar dot.
-    reticle = f:CreateTexture(nil, "OVERLAY", nil, 1)
-    reticle:SetPoint("CENTER")
-    reticle:SetColorTexture(1, 1, 1, 1)
-    if reticle.SetSnapToPixelGrid then
-        reticle:SetSnapToPixelGrid(false)
-        reticle:SetTexelSnappingBias(0)
-    end
-    local reticleMask = f:CreateMaskTexture()
-    reticleMask:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\portraits\\circle_mask.tga",
-        "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-    reticleMask:SetAllPoints(reticle)
-    reticle:AddMaskTexture(reticleMask)
-    reticle:Hide()
+C.ApplyEvents = function()
+	local p = P()
+	if not p then return end
+	local wantCombat = (p.combatOnly or p.gcd.combatOnly or p.castCircle.combatOnly
+		or p.visibility == "in_combat" or p.visibility == "out_of_combat") and true or false
+	if wantCombat ~= combatEventsOn then
+		combatEventsOn = wantCombat
+		if wantCombat then
+			evFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
+			evFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+		else
+			evFrame:UnregisterEvent("PLAYER_REGEN_DISABLED")
+			evFrame:UnregisterEvent("PLAYER_REGEN_ENABLED")
+		end
+	end
+	local wantVis = (p.visHideMounted or p.visHideNoTarget or p.visHideNoEnemy
+		or p.visibility == "in_raid" or p.visibility == "in_party" or p.visibility == "solo") and true or false
+	if wantVis ~= visEventsOn then
+		visEventsOn = wantVis
+		if wantVis then
+			evFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+			evFrame:RegisterEvent("COMPANION_UPDATE")
+			evFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+		else
+			evFrame:UnregisterEvent("PLAYER_TARGET_CHANGED")
+			evFrame:UnregisterEvent("COMPANION_UPDATE")
+			evFrame:UnregisterEvent("GROUP_ROSTER_UPDATE")
+		end
+	end
+end
 
-    -- No OnUpdate: the shared cursor service drives positioning. The frame
-    -- is SHOWN by default and isVisible initializes TRUE, so the first
-    -- UpdateVisibility never takes a show TRANSITION -- subscribe here
-    -- explicitly; UpdateVisibility owns both edges from then on.
-    SetCursorGlue(true)
+-------------------------------------------------------------------------------
+--  Unlock Mode (detached GCD / Cast rings)
+-------------------------------------------------------------------------------
+local function GCDDetached() local g = GCD_DB(); return g.enabled and g.attached == false end
+local function CastDetached() local c = Cast_DB(); return c.enabled and c.attached == false end
 
-    Apply()
+local function RingElement(key, label, order, detached, cfgFn, getRoot, apply, applyPos)
+	local function Resize(v)
+		local cfg = cfgFn()
+		cfg.radius = max(5, floor(v / 2 + 0.5))
+		apply()
+		if ns._unlockActive and ns.RepositionBarToMover then ns.RepositionBarToMover(key) end
+	end
+	return ns.MakeUnlockElement({
+		key = key,
+		label = label,
+		group = "Cursor Lite",
+		order = order,
+		linkedDimensions = true,
+		isHidden = function() return not detached() end,
+		getFrame = function()
+			if not detached() then return nil end
+			return getRoot()
+		end,
+		getSize = function()
+			local r = cfgFn().radius or 30
+			return r * 2, r * 2
+		end,
+		setWidth = function(_, w) Resize(w) end,
+		setHeight = function(_, h) Resize(h) end,
+		savePos = function(_, point, relPoint, x, y)
+			cfgFn().pos = { point = point, relPoint = relPoint, x = x, y = y }
+			if not ns._unlockActive then apply() end
+		end,
+		loadPos = function() return cfgFn().pos end,
+		clearPos = function() cfgFn().pos = nil end,
+		applyPos = applyPos,
+	})
+end
 
-    -- Repaint when the accent lands: the lifecycle's PLAYER_LOGIN fires
-    -- before the core resolves the profile accent, so Apply() above painted
-    -- the parse-time fallback and is never called again. Also covers a
-    -- mid-session accent change, which nothing pushed to us before.
-    EllesmereUI.RegAccent({ type = "callback", fn = function()
-        local p = ECL.db and ECL.db.profile
-        if not p then return end
-        if p.useAccentColor then Apply() end
-        if p.gcd and p.gcd.useAccentColor then ApplyGCDCircle() end
-        if p.castCircle and p.castCircle.useAccentColor then ApplyCastCircle() end
-    end })
+local unlockRegistered = false
+C.RegisterUnlock = function()
+	if unlockRegistered or not ns.RegisterUnlockElements or not ns.MakeUnlockElement then return end
+	unlockRegistered = true
+	ns:RegisterUnlockElements({
+		RingElement("ECL_GCD", "GCD Circle", 500, GCDDetached, GCD_DB, function() return gcdRoot end,
+			function() C.ApplyGCDCircle() end, function() C.ApplyGCDPosition() end),
+		RingElement("ECL_Cast", "Cast Bar Circle", 501, CastDetached, Cast_DB, function() return castRoot end,
+			function() C.ApplyCastCircle() end, function() C.ApplyCastPosition() end),
+	}, addonName)
+	if ns.RegisterUnlockModeListener then
+		ns:RegisterUnlockModeListener("EllesmereUIQoL_Cursor", function(active)
+			if active then
+				-- Attached rings hide; detached rings stop following the mouse.
+				if gcdRoot then
+					gcdRoot:SetScript("OnUpdate", nil)
+					if GCD_DB().attached ~= false then gcdRoot:Hide() end
+				end
+				if castRoot then
+					castRoot:SetScript("OnUpdate", nil)
+					if Cast_DB().attached ~= false then castRoot:Hide() end
+				end
+			else
+				C.ApplyGCDCircle()
+				C.ApplyCastCircle()
+			end
+		end)
+	end
+end
 
-    -- Apply GCD / Cast circles (creates on demand only when enabled)
-    C_Timer.After(0.5, function()
-        -- Re-apply the circle too: the RegAccent callback only lands if we
-        -- registered before the core notified (event-dispatch order, not a
-        -- guarantee). This runs past the login resolution either way.
-        Apply()
-        ApplyGCDCircle()
-        ApplyCastCircle()
-        ApplyTrail()
-        ApplyOnlyWhenHidden()
-        RegisterUnlockElements()
+-------------------------------------------------------------------------------
+--  Apply all (settings window applyHooks + login)
+-------------------------------------------------------------------------------
+local loggedIn = false
+C.ApplyAll = function()
+	if not loggedIn or not P() then return end
+	C.Apply()
+	C.ApplyGCDCircle()
+	C.ApplyCastCircle()
+	C.ApplyTrail()
+	C.ApplyOnlyWhenHidden()
+	C.ApplyEvents()
+end
+ns.CursorApply = C.ApplyAll
+ns.CursorModule = C
 
-        -- Every _unlockActive check in this file only stops a FUTURE re-arm
-        -- of the attached cursor-tracking OnUpdate -- none of them tear down
-        -- one that's already running. CursorWatchBody (the 0.15s tick above)
-        -- is meant to hide an attached circle once unlock mode starts, but
-        -- it only ticks while the base cursor frame (f) is itself
-        -- subscribed/visible, so a user running GCD/Cast circles without the
-        -- base cursor dot gets no safety net at all: toggle Attach to Cursor
-        -- off then on (arms the OnUpdate while _unlockActive is still false,
-        -- correctly), then open unlock mode, and the circle just keeps
-        -- chasing the mouse forever with nothing to ever stop it. Hook the
-        -- real open/close event directly instead of depending on that tick.
-        if EllesmereUI and EllesmereUI.RegisterUnlockModeListener then
-            EllesmereUI:RegisterUnlockModeListener("EllesmereUIQoL_Cursor", function(active)
-                if active then
-                    if gcdRoot then
-                        gcdRoot:SetScript("OnUpdate", nil)
-                        if gcdAttached then gcdRoot:Hide() end
-                    end
-                    if castRoot then
-                        castRoot:SetScript("OnUpdate", nil)
-                        if castAttached then castRoot:Hide() end
-                    end
-                else
-                    -- Re-apply: an attached circle resumes live cursor
-                    -- tracking, a detached one snaps back to its saved spot.
-                    ApplyGCDCircle()
-                    ApplyCastCircle()
-                end
-            end)
-        end
-    end)
+ns.applyHooks = ns.applyHooks or {}
+tinsert(ns.applyHooks, function() C.ApplyAll() end)
 
-    self:RegisterEvent("PLAYER_ENTERING_WORLD", UpdateVisibility)
-    self:RegisterEvent("ZONE_CHANGED_NEW_AREA", UpdateVisibility)
-    -- Combat-edge events only while a Combat Only toggle needs them.
-    ApplyCombatOnlyEvents()
+ns.accentListeners = ns.accentListeners or {}
+tinsert(ns.accentListeners, function()
+	local p = loggedIn and P()
+	if not p then return end
+	if p.useAccentColor then C.Apply() end
+	if p.gcd.useAccentColor then C.ApplyGCDCircle() end
+	if p.castCircle.useAccentColor then C.ApplyCastCircle() end
+end)
+
+local boot = CreateFrame("Frame")
+boot:RegisterEvent("PLAYER_LOGIN")
+boot:RegisterEvent("PLAYER_ENTERING_WORLD")
+boot:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+boot:SetScript("OnEvent", function(_, event)
+	if event == "PLAYER_LOGIN" then
+		loggedIn = true
+		C.RegisterUnlock()
+		C.ApplyAll()
+	else
+		C.UpdateVisibility()
+	end
+end)
+
+-------------------------------------------------------------------------------
+--  Retail profile import: also take the cursor table.
+-------------------------------------------------------------------------------
+do
+	local R = ns.ProfileRetail
+	if R and R.CONVERT then
+		local prev = R.CONVERT.EllesmereUIQoL
+		R.CONVERT.EllesmereUIQoL = function(blob, notes)
+			local root = prev and prev(blob, notes)
+			if type(blob) == "table" and type(blob.cursor) == "table" then
+				if not root then
+					root = ns.ProfileDeepCopy and ns.ProfileDeepCopy(EllesmereUIQoLDB or {}) or {}
+				end
+				root.cursor = ns.ProfileDeepCopy and ns.ProfileDeepCopy(blob.cursor) or blob.cursor
+				root.cursor._seeded = nil
+			end
+			return root
+		end
+	end
 end

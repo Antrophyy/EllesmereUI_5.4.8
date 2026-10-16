@@ -1,33 +1,22 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Nameplates
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
-## Notes: Clean, lightweight nameplates with endless customization.
-## Author: Ellesmere
-## Version: 9.5.5
+## Notes: Clean, lightweight nameplates with endless customization (EllesmereUI Nameplates, 5.4.8 port). /enp for settings.
+## Author: EllesmereUI port
+## Version: 3.14.0
 ## Dependencies: EllesmereUI
+## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ElvUI
 ## SavedVariables: EllesmereUINameplatesDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
-
-# Main Luas
+# Defaults, saved settings (Naowh seed), shared helpers
 EllesmereUINameplates.lua
-EUI_Nameplates_Styles.lua
-EUI_Nameplates_Layout.lua
-EUI_Nameplates_Overlays.lua
-EUI_Nameplates_PlatePool.lua
-EUI_Nameplates_CastState.lua
-EUI_Nameplates_ClassPower.lua
+# Finds and reads the Blizzard plates
+EUI_Nameplates_Plates.lua
+# Health bar colors (retail priority list)
 EUI_Nameplates_Colors.lua
-EUI_Nameplates_Plate.lua
-EUI_Nameplates_Health.lua
-EUI_Nameplates_Name.lua
+# The look of a plate
+EUI_Nameplates_Display.lua
+# Cast bar
 EUI_Nameplates_Cast.lua
-EUI_Nameplates_Events.lua
+# Debuffs, buffs, crowd control
+EUI_Nameplates_Auras.lua
+# Events, start-up, /enp
 EUI_Nameplates_Init.lua
-EUI_Nameplates_AuraContainers.lua
-EllesmereUINameplates_DebuffColors.lua
-EllesmereUINameplatesFriendly.lua
-EllesmereUINameplates_Faction.lua
-EllesmereUINameplates_CastOverlay.lua
-
-# Options

@@ -1,37 +1,19 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Unit Frames
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
 ## Notes: Simple unit frames with a modern visual style.
-## Author: Ellesmere
-## Version: 9.5.5
+## Author: EllesmereUI port
+## Version: 3.1.0
 ## Dependencies: EllesmereUI
+## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ExRT, ElvUI, Details, DBM-Core, WeakAuras, VuhDo
 ## SavedVariables: EllesmereUIUnitFramesDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
-# Main Luas
-EUI_UnitFrames_Engine.lua
-EllesmereUIUnitFrames.lua
-EUI_UnitFrames_Text.lua
-EUI_UnitFrames_Portrait.lua
+EUI_UnitFrames_Core.lua
+EUI_UnitFrames_Frames.lua
+EUI_UnitFrames_Elements.lua
 EUI_UnitFrames_Castbar.lua
-EUI_UnitFrames_Layout.lua
-EUI_UnitFrames_Absorb.lua
-EUI_UnitFrames_Power.lua
-EUI_UnitFrames_Builders.lua
+EUI_UnitFrames_Auras.lua
 EUI_UnitFrames_ClassPower.lua
-EUI_UnitFrames_Threat.lua
-EUI_UnitFrames_StockStyles.lua
-EUI_UnitFrames_Reload.lua
-EUI_UnitFrames_ForeverExtras.lua
-EUI_UnitFrames_Visibility.lua
-EUI_UnitFrames_Init.lua
-EUI_UnitFrames_OptionsSetup.lua
-EUI_UnitFrames_Unlock.lua
-EUI_UnitFrames_Lifecycle.lua
-EUI_UnitFrames_ForeverFormBar.lua
-EllesmereUIUnitFrames_PlayerAuraBars.lua
-EUI_UnitFrames_ForeverImbues.lua
-EUI_UnitFrames_AuraContainers.lua
-
-# Options
+EllesmereUIUnitFrames.lua
+EUI_UnitFrames_PlayerAuraBars_Presets.lua
+EUI_UnitFrames_PlayerAuraBars_Seed.lua
+EUI_UnitFrames_PlayerAuraBars.lua

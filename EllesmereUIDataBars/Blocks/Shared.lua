@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIDataBars_Compat.lua
 -- Blocks\Shared.lua
 -- Shared scaffolding for the DataBars block factories. Loads before every other
 -- Blocks\*.lua file; each block file lives in its own file and imports helpers
@@ -177,6 +177,8 @@ local function ZoneReactionColor()
     return 0.9, 0.85, 0.05
 end
 
+-- 5.4.8 port: there are no crests (and no Crests block); only the tints below
+-- are used, by the item level "Band" color.
 -- SEASON UPDATE: replace the ids when the crest set rotates; the tints are the
 -- item-quality colors the crest art itself uses and only move if Blizzard
 -- restyles them. Keep in sync with EllesmereUIQoL/EUI_UpgradeCalc.lua's
@@ -201,12 +203,13 @@ do
     ns.CREST_IDS = ids
 end
 
--- SEASON UPDATE: rank-1 item level of each upgrade track, highest first;
--- mirrors Data.tracks[*].ranks[1] in EllesmereUIQoL/EUI_UpgradeCalc.lua. Feeds
--- the item level block's "Band" text swatch, which tints the number with the
--- crest color of the track its gear sits in.
+-- Item level bands, highest first, feeding the item level block's "Band" text
+-- swatch (the number tinted with the color of the tier its gear sits in).
+-- 5.4.8 port: Siege of Orgrimmar tiers instead of the retail upgrade tracks
+-- (528 Raid Finder, 540 Flexible, 553/566 Normal, 580 Heroic, 600+ upgraded
+-- Heroic / Warforged), tinted with the item quality colors of the crest table.
 local ILVL_BANDS = {
-    { 272, 5 }, { 259, 4 }, { 246, 3 }, { 233, 2 }, { 220, 1 },
+    { 600, 4 }, { 566, 3 }, { 540, 2 }, { 496, 1 },
 }
 -- Equipped item level, written by the ilvl block's Refresh; read by the band
 -- tint below (and its swatch preview) exactly like K.lastDurabilityPct.
@@ -239,19 +242,19 @@ local ICON_DEFAULTS = {
 -- Block icon art in one place: the EllesmereUI file (full path) and its
 -- Blizzard counterpart (a path or a fileID). Entries without
 -- `wow` have no stock equivalent and always show the custom art.
+-- 5.4.8 port: TGA copies of the art; the hearthstone by path (no file IDs).
 local MEDIA, MM = ns.MEDIA, ns.MICROMENU_MEDIA
 local ICON_ART = {
-    audio      = { custom = MEDIA .. "audio.png",           wow = "Interface\\Common\\VoiceChat-Speaker" },
-    bags       = { custom = MM .. "menu-bags.png",          wow = "Interface\\Buttons\\Button-Backpack-Up" },
-    gold       = { custom = MM .. "menu-bags.png",          wow = "Interface\\MoneyFrame\\UI-GoldIcon" },
-    ilvl       = { custom = MM .. "menu-character.png",     wow = "Interface\\Icons\\INV_Chest_Chain" },
-    location   = { custom = MM .. "menu-map.png",           wow = "Interface\\Icons\\INV_Misc_Map09" },
-    coords     = { custom = MEDIA .. "coordinates.png",     wow = "Interface\\Icons\\INV_Misc_Spyglass_02" },
-    durability = { custom = MM .. "menu-professions.png",   wow = "Interface\\Minimap\\Tracking\\Repair" },
-    travel     = { custom = MEDIA .. "hearthstone.png",     wow = 134414 },  -- Hearthstone item icon
-    greatvault = { custom = MM .. "menu-vault.png" },
-    home       = { custom = MEDIA .. "home_latency.png" },
-    world      = { custom = MEDIA .. "world_latency.png" },
+    audio      = { custom = MEDIA .. "audio.tga",           wow = "Interface\\Common\\VoiceChat-Speaker" },
+    bags       = { custom = MM .. "menu-bags.tga",          wow = "Interface\\Buttons\\Button-Backpack-Up" },
+    gold       = { custom = MM .. "menu-bags.tga",          wow = "Interface\\MoneyFrame\\UI-GoldIcon" },
+    ilvl       = { custom = MM .. "menu-character.tga",     wow = "Interface\\Icons\\INV_Chest_Chain" },
+    location   = { custom = MM .. "menu-map.tga",           wow = "Interface\\Icons\\INV_Misc_Map09" },
+    coords     = { custom = MEDIA .. "coordinates.tga",     wow = "Interface\\Icons\\INV_Misc_Spyglass_02" },
+    durability = { custom = MM .. "menu-professions.tga",   wow = "Interface\\Minimap\\Tracking\\Repair" },
+    travel     = { custom = MEDIA .. "hearthstone.tga",     wow = "Interface\\Icons\\INV_Misc_Rune_01" },  -- Hearthstone item icon
+    home       = { custom = MEDIA .. "home_latency.tga" },
+    world      = { custom = MEDIA .. "world_latency.tga" },
 }
 -- Blocks that resolve their Blizzard art themselves (API icons per spec,
 -- profession or micro button); they read settings.iconStyle directly.

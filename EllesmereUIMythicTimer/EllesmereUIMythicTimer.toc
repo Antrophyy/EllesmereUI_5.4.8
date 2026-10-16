@@ -1,22 +1,13 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
-## AllowLoadGameType: standard
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Mythic+ Tools
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
-## Notes: A simple Mythic+ timer with full tracking customizations.
-## Author: Ellesmere
-## Version: 9.5.5
+## Notes: Challenge Mode timer with full tracking customizations, run summary, target/focus cast bars and targeted spell bars (5.4.8 port of EllesmereUI Mythic+ Tools).
+## Author: EllesmereUI port
+## Version: 3.18.0
 ## Dependencies: EllesmereUI
 ## SavedVariables: EllesmereUIMythicTimerDB
 ## SavedVariablesPerCharacter: EllesmereUIMythicRunsDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
-# Main Lua
 EllesmereUIMythicTimer.lua
-
-# Mythic+ Tools features
 EUI_MythicTimer_TargetedSpellBars.lua
 EUI_MythicTimer_TargetFocusBars.lua
 EUI_MythicTimer_RunSummary.lua
-
-# Options

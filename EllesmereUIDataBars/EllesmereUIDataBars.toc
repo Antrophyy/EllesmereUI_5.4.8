@@ -1,15 +1,21 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r DataBars
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
-## Notes: Information bar for EllesmereUI - clock, gold, reputation and more
-## Author: Ellesmere
-## Version: 9.5.5
+## Notes: Information bar for EllesmereUI - clock, gold, reputation and more (EllesmereUI DataBars, 5.4.8 port).
+## Author: EllesmereUI port
+## Version: 3.7.0
 ## Dependencies: EllesmereUI
+## OptionalDeps: ElvUI, EllesmereUIActionBars
 ## SavedVariables: EllesmereUIDataBarsDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
-# Runtime
+# Retail API shims for 5.4.8 (private environment of this addon)
+EllesmereUIDataBars_Compat.lua
+
+# LibDataBroker (the Broker Plugin block); MoP-era CallbackHandler
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+
+# Runtime (options page lives in EllesmereUIOptions)
 EllesmereUIDataBars.lua
 Blocks\Shared.lua
 Blocks\Clock.lua
@@ -23,12 +29,7 @@ Blocks\Spec.lua
 Blocks\Profession.lua
 Blocks\MicroMenu.lua
 Blocks\Currency.lua
-Blocks\Supplies.lua
-Blocks\Crests.lua
 Blocks\ItemLevel.lua
-Blocks\GreatVault.lua
 Blocks\Audio.lua
 Blocks\LDB.lua
 Blocks\Spacer.lua
-
-# Options

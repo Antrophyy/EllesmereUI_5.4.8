@@ -1,17 +1,11 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Damage Meters
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
-## Notes: Lightweight damage meters with simple but powerful customization.
-## Author: Ellesmere
-## Version: 9.5.5
+## Notes: Damage meter windows (numbers from Details!) and Spell History: your recent casts as an icon strip and as bars.
+## Author: EllesmereUI port
+## Version: 3.18.0
 ## Dependencies: EllesmereUI
+## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ExRT, ElvUI, Details, DBM-Core, WeakAuras, VuhDo
 ## SavedVariables: EllesmereUIDamageMetersDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
-# Main Luas
-EllesmereUIDamageMeters.lua
 EllesmereUIDamageMeters_SpellHistory.lua
-EllesmereUIDamageMeters_ForeverThreat.lua
-
-# Options
+EllesmereUIDamageMeters_Meter.lua

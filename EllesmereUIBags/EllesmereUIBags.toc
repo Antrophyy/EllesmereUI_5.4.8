@@ -1,13 +1,14 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
+## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Bags
-## Category: |cff0cd29fEllesmere|rUI
-## Group: EllesmereUI
-## Notes: A beautiful visual refresh of Blizzard Bags with intuitive organization.
-## Author: Ellesmere
-## Version: 9.5.5
+## Notes: A beautiful visual refresh of Blizzard Bags with intuitive organization (EllesmereUI Bags, 5.4.8 port).
+## Author: EllesmereUI port
+## Version: 3.3.0
 ## Dependencies: EllesmereUI
+## OptionalDeps: ElvUI
 ## SavedVariables: EllesmereUIBagsDB
-## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
+
+# Retail API shims for 5.4.8 (private environment of this addon)
+EllesmereUIBags_Compat.lua
 
 # Module database (options page lives in EllesmereUIOptions)
 EllesmereUIBags_DB.lua
@@ -17,6 +18,4 @@ EllesmereUIBags_Categories.lua
 EllesmereUIBags.lua
 EllesmereUIBags_Grid.lua
 EllesmereUIBags_List.lua
-EllesmereUIBags_Compact.lua
 EllesmereUIBags_Bank.lua
-EllesmereUIBags_QuickActions.lua

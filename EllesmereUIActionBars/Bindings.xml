@@ -1,26 +1,50 @@
 <Bindings>
-	<Binding name="EUI_BAR9_BUTTON1" header="EUI_BAR9" category="EllesmereUI" />
-	<Binding name="EUI_BAR9_BUTTON2" category="EllesmereUI" />
-	<Binding name="EUI_BAR9_BUTTON3" category="EllesmereUI" />
-	<Binding name="EUI_BAR9_BUTTON4" category="EllesmereUI" />
-	<Binding name="EUI_BAR9_BUTTON5" category="EllesmereUI" />
-	<Binding name="EUI_BAR9_BUTTON6" category="EllesmereUI" />
-	<Binding name="EUI_BAR9_BUTTON7" category="EllesmereUI" />
-	<Binding name="EUI_BAR9_BUTTON8" category="EllesmereUI" />
-	<Binding name="EUI_BAR9_BUTTON9" category="EllesmereUI" />
-	<Binding name="EUI_BAR9_BUTTON10" category="EllesmereUI" />
-	<Binding name="EUI_BAR9_BUTTON11" category="EllesmereUI" />
-	<Binding name="EUI_BAR9_BUTTON12" category="EllesmereUI" />
-	<Binding name="EUI_BAR10_BUTTON1" header="EUI_BAR10" category="EllesmereUI" />
-	<Binding name="EUI_BAR10_BUTTON2" category="EllesmereUI" />
-	<Binding name="EUI_BAR10_BUTTON3" category="EllesmereUI" />
-	<Binding name="EUI_BAR10_BUTTON4" category="EllesmereUI" />
-	<Binding name="EUI_BAR10_BUTTON5" category="EllesmereUI" />
-	<Binding name="EUI_BAR10_BUTTON6" category="EllesmereUI" />
-	<Binding name="EUI_BAR10_BUTTON7" category="EllesmereUI" />
-	<Binding name="EUI_BAR10_BUTTON8" category="EllesmereUI" />
-	<Binding name="EUI_BAR10_BUTTON9" category="EllesmereUI" />
-	<Binding name="EUI_BAR10_BUTTON10" category="EllesmereUI" />
-	<Binding name="EUI_BAR10_BUTTON11" category="EllesmereUI" />
-	<Binding name="EUI_BAR10_BUTTON12" category="EllesmereUI" />
+	<Binding name="EUI_BAR9_BUTTON1" header="EUI_BAR9">
+	</Binding>
+	<Binding name="EUI_BAR9_BUTTON2">
+	</Binding>
+	<Binding name="EUI_BAR9_BUTTON3">
+	</Binding>
+	<Binding name="EUI_BAR9_BUTTON4">
+	</Binding>
+	<Binding name="EUI_BAR9_BUTTON5">
+	</Binding>
+	<Binding name="EUI_BAR9_BUTTON6">
+	</Binding>
+	<Binding name="EUI_BAR9_BUTTON7">
+	</Binding>
+	<Binding name="EUI_BAR9_BUTTON8">
+	</Binding>
+	<Binding name="EUI_BAR9_BUTTON9">
+	</Binding>
+	<Binding name="EUI_BAR9_BUTTON10">
+	</Binding>
+	<Binding name="EUI_BAR9_BUTTON11">
+	</Binding>
+	<Binding name="EUI_BAR9_BUTTON12">
+	</Binding>
+	<Binding name="EUI_BAR10_BUTTON1" header="EUI_BAR10">
+	</Binding>
+	<Binding name="EUI_BAR10_BUTTON2">
+	</Binding>
+	<Binding name="EUI_BAR10_BUTTON3">
+	</Binding>
+	<Binding name="EUI_BAR10_BUTTON4">
+	</Binding>
+	<Binding name="EUI_BAR10_BUTTON5">
+	</Binding>
+	<Binding name="EUI_BAR10_BUTTON6">
+	</Binding>
+	<Binding name="EUI_BAR10_BUTTON7">
+	</Binding>
+	<Binding name="EUI_BAR10_BUTTON8">
+	</Binding>
+	<Binding name="EUI_BAR10_BUTTON9">
+	</Binding>
+	<Binding name="EUI_BAR10_BUTTON10">
+	</Binding>
+	<Binding name="EUI_BAR10_BUTTON11">
+	</Binding>
+	<Binding name="EUI_BAR10_BUTTON12">
+	</Binding>
 </Bindings>

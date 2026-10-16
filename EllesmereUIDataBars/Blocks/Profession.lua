@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+setfenv(1, select(2, ...).env) -- 5.4.8 port: retail APIs from EllesmereUIDataBars_Compat.lua
 -- Blocks\Profession.lua
 -- Profession block factories (primary and secondary).
 
@@ -47,11 +47,15 @@ local SECONDARY_SLOT = { [185] = 1, [356] = 2, [129] = 3 }   -- Cooking, Fishing
 local function MakeProfessionBlock(blockCfg, slot, content, barCtx, secondary)
     local inst = { cfg = blockCfg, slot = slot, content = content, ctx = barCtx }
     inst.key = InstKey(barCtx, blockCfg)
-    inst.events = { "TRADE_SKILL_DETAILS_UPDATE", "SPELLS_CHANGED", "SKILL_LINES_CHANGED" }
+    -- 5.4.8 port: skill-ups fire CHAT_MSG_SKILL / TRADE_SKILL_UPDATE (unknown
+    -- retail events are skipped by RegisterInstEvents).
+    inst.events = { "TRADE_SKILL_DETAILS_UPDATE", "SPELLS_CHANGED", "SKILL_LINES_CHANGED",
+                    "CHAT_MSG_SKILL", "TRADE_SKILL_UPDATE" }
 
     local MEDIA_PROF = MEDIA .. "profession\\"
     local entries = { { data = {} }, { data = {} } }
-    if secondary and EllesmereUI.IS_FOREVER then entries[3] = { data = {} } end
+    -- 5.4.8 port: First Aid exists (third secondary slot), as on WoW Forever.
+    if secondary then entries[3] = { data = {} } end
 
     local function BC() return barCtx.cfg end
 
@@ -67,7 +71,6 @@ local function MakeProfessionBlock(blockCfg, slot, content, barCtx, secondary)
                 local name, icon, rank, maxRank, _, _, id = GetProfessionInfo(index)
                 local slotIndex = i
                 if secondary then slotIndex = SECONDARY_SLOT[id] end
-                -- First Aid (slot 3) has an entry only on WoW Forever.
                 local entry = slotIndex and entries[slotIndex]
                 if entry then
                     local data = entry.data
@@ -92,7 +95,7 @@ local function MakeProfessionBlock(blockCfg, slot, content, barCtx, secondary)
 
         local iconTex = profData.icon
         local custom = (blockCfg.settings or {}).iconStyle ~= "wow" and profIcons[profData.id]
-        if custom then iconTex = MEDIA_PROF .. custom .. ".png" end
+        if custom then iconTex = MEDIA_PROF .. custom .. ".tga" end
         -- Show Icon (default ON): hidden drops the icon and its gap from the layout; the text/bar stack keeps the icon's vertical band.
         local showIcon = (blockCfg.settings or {}).showIcon ~= false
         profIcon:SetTexture(iconTex)
@@ -138,7 +141,7 @@ local function MakeProfessionBlock(blockCfg, slot, content, barCtx, secondary)
                 local bH = 3
                 profBar:Show()
                 profBar:SetMinMaxValues(1, profData.maxRank); profBar:SetValue(profData.rank)
-                profBar:SetStatusBarColor(ar, ag, ab, 1); profBarBg:SetColorTexture(0.15, 0.15, 0.15, 0.6)
+                profBar:SetStatusBarColor(ar, ag, ab, 1); profBarBg:SetTexture(0.15, 0.15, 0.15, 0.6)
                 profBar:SetSize(innerW, bH)
                 profBar:ClearAllPoints()
                 profBar:SetPoint("TOP", profText, "BOTTOM", 0, -3)
@@ -173,7 +176,7 @@ local function MakeProfessionBlock(blockCfg, slot, content, barCtx, secondary)
                 end
                 local ar, ag, ab = ns.GetAccent()
                 profBar:SetMinMaxValues(1, profData.maxRank); profBar:SetValue(profData.rank)
-                profBar:SetStatusBarColor(ar, ag, ab, 1); profBarBg:SetColorTexture(0.15, 0.15, 0.15, 0.6)
+                profBar:SetStatusBarColor(ar, ag, ab, 1); profBarBg:SetTexture(0.15, 0.15, 0.15, 0.6)
                 -- Icon left; text top-right; bar bottom-right, sharing the text's
                 -- left edge and tracking TEXT width, bottom-aligned to the icon (same recipe as xprep).
                 local textW = max(profText:GetStringWidth(), 20)
@@ -192,14 +195,17 @@ local function MakeProfessionBlock(blockCfg, slot, content, barCtx, secondary)
         end
     end
 
-    local function OpenProf(prof)
-        if not prof or not prof.id or InCombatLockdown() then return end
-        local currInfo = C_TradeSkillUI and C_TradeSkillUI.GetBaseProfessionInfo and C_TradeSkillUI.GetBaseProfessionInfo()
-        if currInfo and currInfo.professionID == prof.id and _G.ProfessionsFrame and _G.ProfessionsFrame:IsShown() then
-            C_TradeSkillUI.CloseTradeSkill()
-        elseif prof.id then
-            C_TradeSkillUI.OpenTradeSkill(prof.id)
-        end
+    -- 5.4.8 port: a profession window opens by casting its spell, which is
+    -- protected, so the left click is a secure *spell1 cast (set out of
+    -- combat in Refresh). Crafting professions cast their own name; Mining
+    -- opens Smelting; gathering-only skills (Herbalism, Skinning, Fishing)
+    -- have no window, so their left click does nothing.
+    local SMELTING = 2656
+    local NO_WINDOW = { [182] = true, [393] = true, [356] = true }
+    local function ProfSpell(prof)
+        if not prof or not prof.id or NO_WINDOW[prof.id] then return nil end
+        if prof.id == 186 then return (GetSpellInfo(SMELTING)) end
+        return prof.name
     end
 
     local function Build()
@@ -211,13 +217,13 @@ local function MakeProfessionBlock(blockCfg, slot, content, barCtx, secondary)
             f:SetSize(1, barCtx.GetThickness()); f:EnableMouse(true); f:RegisterForClicks("AnyUp")
             f:SetAttribute("useOnKeyDown", false)
             if secondary then
-                -- Right-click = Basic Campfire, cast securely.
+                -- Right-click = Basic Campfire, cast securely (by name: the
+                -- 5.4.8 secure spell type takes a name, not an id).
                 f:SetAttribute("*type2", "spell")
-                f:SetAttribute("*spell2", CAMPFIRE_SPELL)
-            elseif _G.ProfessionMicroButton then
-                f:SetAttribute("*type2", "click")
-                f:SetAttribute("*clickbutton2", _G.ProfessionMicroButton)
+                f:SetAttribute("*spell2", (GetSpellInfo(CAMPFIRE_SPELL)) or CAMPFIRE_SPELL)
             end
+            -- 5.4.8 port: left click casts the profession spell (see ProfSpell).
+            f:SetAttribute("*type1", "spell")
             local icon = f:CreateTexture(nil, "OVERLAY")
             local text = f:CreateFontString(nil, "OVERLAY")
             local bar  = CreateFrame("StatusBar", nil, f); bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
@@ -231,9 +237,11 @@ local function MakeProfessionBlock(blockCfg, slot, content, barCtx, secondary)
             local frame = entry.frame
             -- HookScript, NOT SetScript: SetScript("OnClick") would overwrite SecureActionButton_OnClick
             -- and kill the secure *clickbutton2 passthrough to ProfessionMicroButton (right-click).
+            -- 5.4.8 port: right click on a primary profession opens the
+            -- spellbook's Professions tab (no profession micro button in 5.4.8).
             frame:HookScript("OnClick", function(_, button)
-                if button == "LeftButton" then
-                    OpenProf(entry.data)
+                if button == "RightButton" and not secondary and not InCombatLockdown() then
+                    if ToggleSpellBook then ToggleSpellBook(BOOKTYPE_PROFESSION or "professions") end
                 end
             end)
             frame:SetScript("OnEnter", function(f)
@@ -309,6 +317,8 @@ local function MakeProfessionBlock(blockCfg, slot, content, barCtx, secondary)
         if isSide then gap = 4 end
         for _, entry in ipairs(entries) do
             local frame = entry.frame
+            -- Out of combat here (the gate above): the secure cast is current.
+            frame:SetAttribute("*spell1", ProfSpell(entry.data))
             StyleProfFrame(entry.data, frame, entry.icon, entry.text, entry.bar, entry.bg)
             if entry.data.idx then
                 frame:ClearAllPoints()

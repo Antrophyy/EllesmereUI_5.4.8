@@ -1,1109 +1,309 @@
-if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
--------------------------------------------------------------------------------
---  EUI_QoL_MovementAlert_Options.lua
---  Options page for Movement Alert (registered as a page under the
---  EllesmereUIQoL module by EUI_QoL_Options.lua). Builds four sections:
---    MOVEMENT COOLDOWN ALERT, TRACKED SPELLS, TIME SPIRAL, GATEWAY SHARD.
---  Position/size for all three on-screen trackers is controlled entirely
---  through EUI's Unlock Mode (registered in EllesmereUIQoL_MovementAlert.lua)
---  rather than in-page sliders, matching how Combat Alert/BattleRes work.
--------------------------------------------------------------------------------
+-- Settings for Quality of Life > Movement Alerts (retail EUI_QoL_MovementAlert_Options.lua).
+-- Tab builder only: EUI_QoL_Options.lua adds the tab. Settings live in
+-- EllesmereUIQoLDB.movementAlert; setters only store, the runtime follows
+-- them through ns.applyHooks. Not on 5.4.8: TTS rows (no C_VoiceChat) and
+-- the Gateway Shard alert (no Gateway Control Shard item in Mists).
 
-if not EllesmereUI._ModuleNS["EllesmereUIQoL"] then return end  -- module disabled: no options page
-
-local function DB()
-    local fn = _G._EUI_MovementAlert_DB
-    return fn and fn() or nil
+local ns = EllesmereUI
+if not IsAddOnLoaded("EllesmereUIQoL") then
+	return
 end
 
-local function MA()
-    local d = DB()
-    return d and d.profile and d.profile.movementAlert
-end
+local U = ns.OptionsUtil
 
-local function Refresh()
-    if EllesmereUI._applyMovementAlert then EllesmereUI._applyMovementAlert() end
-    if EllesmereUI._applyTimeSpiral then EllesmereUI._applyTimeSpiral() end
-    if EllesmereUI._applyGateway then EllesmereUI._applyGateway() end
-    if EllesmereUI._UpdateMovementAlertEvents then EllesmereUI._UpdateMovementAlertEvents() end
-    if EllesmereUI._CheckMovementCooldown then EllesmereUI._CheckMovementCooldown() end
-    if EllesmereUI._CheckGatewayUsable then EllesmereUI._CheckGatewayUsable() end
-end
-
--- The legacy stored "text" value displays and renders as text_dn (its old
--- duration-first default format) -- no migration, the getter maps it.
-local DISPLAY_MODE_VALUES = {
-    text_nd = "Text: Name Duration",
-    text_dn = "Text: Duration Name",
-    text_d  = "Text: Duration",
-    icon    = "Icon",
-    bar     = "Bar",
-}
-local DISPLAY_MODE_ORDER  = { "text_nd", "text_dn", "text_d", "icon", "bar" }
-
--- One-shot guard: the options-close hook that kills the movement preview is
--- registered on first page build, never per rebuild.
-local _previewOnHideRegistered = false
+local function MA() return ns.GetMovementAlertDB and ns.GetMovementAlertDB() or {} end
+local function M() return ns.MovementAlert end
 
 local CLASS_ORDER = {
-    "DEATHKNIGHT", "DEMONHUNTER", "DRUID", "EVOKER", "HUNTER",
-    "MAGE", "MONK", "PALADIN", "PRIEST", "ROGUE",
-    "SHAMAN", "WARLOCK", "WARRIOR",
+	"DEATHKNIGHT", "DRUID", "HUNTER", "MAGE", "MONK", "PALADIN",
+	"PRIEST", "ROGUE", "SHAMAN", "WARLOCK", "WARRIOR",
 }
 
--- Preset tracked spells for the checkbox grid: the castable mobility ids the tracker
--- (EllesmereUIQoL_MovementAlert.lua MOVEMENT_ABILITIES) actually polls, across ALL
--- classes/specs, curated against the raid-frame Buff Manager movement filter
--- (EllesmereUIRaidFrames\EUI_RaidFrames_BuffManager2.lua,
--- DEFAULT_FILTER_SPELLS.movement) for class coverage and alternate ids -- keep the
--- three tables in sync when mobility spells change. ids[1] is the primary (label +
--- checkbox state source); the rest are CASTABLE variant ids the tracker also polls
--- (talent replacements, form casts) whose override state follows the primary's checkbox
--- -- never aura-only ids, which the tracker cannot poll. Ids are never displayed; names
--- resolve live via GetSpellInfo.
-local MOVEMENT_PRESETS = {
-    { class = "DEATHKNIGHT", ids = { 48265 } },            -- Death's Advance
-    { class = "DEATHKNIGHT", ids = { 212552 } },           -- Wraith Walk
-    { class = "DEATHKNIGHT", ids = { 444347, 444010 } },   -- Death Charge (both ids share the name)
-    { class = "DEMONHUNTER", ids = { 195072 } },           -- Fel Rush
-    { class = "DEMONHUNTER", ids = { 189110 } },           -- Infernal Strike
-    { class = "DEMONHUNTER", ids = { 1234796 } },
-    { class = "DRUID", ids = { 102401, 102417 } },         -- Wild Charge
-    { class = "DRUID", ids = { 1850 } },                   -- Dash
-    { class = "DRUID", ids = { 252216 } },                 -- Tiger Dash
-    { class = "DRUID", ids = { 106898, 77761, 77764 } },   -- Stampeding Roar (base + bear/cat form casts)
-    { class = "EVOKER", ids = { 358267 } },                -- Hover
-    { class = "HUNTER", ids = { 186257 } },                -- Aspect of the Cheetah
-    { class = "HUNTER", ids = { 781 } },                   -- Disengage
-    { class = "MAGE", ids = { 1953, 212653 } },            -- Blink / Shimmer
-    { class = "MONK", ids = { 109132, 115008 } },          -- Roll / Chi Torpedo
-    { class = "MONK", ids = { 119085 } },
-    { class = "MONK", ids = { 361138 } },
-    { class = "MONK", ids = { 101545 } },                  -- Flying Serpent Kick
-    { class = "PALADIN", ids = { 190784 } },               -- Divine Steed
-    { class = "PRIEST", ids = { 121536 } },                -- Angelic Feather
-    { class = "PRIEST", ids = { 73325 } },                 -- Leap of Faith
-    { class = "ROGUE", ids = { 2983 } },                   -- Sprint
-    { class = "ROGUE", ids = { 36554 } },                  -- Shadowstep
-    { class = "ROGUE", ids = { 195457 } },                 -- Grappling Hook
-    { class = "SHAMAN", ids = { 79206 } },                 -- Spiritwalker's Grace
-    { class = "SHAMAN", ids = { 192063 } },                -- Gust of Wind
-    { class = "SHAMAN", ids = { 58875, 90328 } },          -- Spirit Walk
-    { class = "WARLOCK", ids = { 48020 } },                -- Demonic Circle: Teleport
-    { class = "WARLOCK", ids = { 111400 } },               -- Burning Rush (buff-active, ships unchecked)
-    { class = "WARRIOR", ids = { 6544 } },                 -- Heroic Leap
-}
-
--- Set of every preset id (all variants): any other id in ma.spellOverrides
--- is a user-added custom spell and gets its own deletable grid cell.
-local MOVEMENT_PRESET_IDS = {}
-for _, e in ipairs(MOVEMENT_PRESETS) do
-    for _, id in ipairs(e.ids) do MOVEMENT_PRESET_IDS[id] = true end
+local function ClassLabel(cf)
+	local name = (LOCALIZED_CLASS_NAMES_MALE and LOCALIZED_CLASS_NAMES_MALE[cf]) or (cf:sub(1, 1) .. cf:sub(2):lower())
+	local c = RAID_CLASS_COLORS[cf]
+	local hex = c and c.colorStr or "ffffffff"
+	return "|c" .. hex .. name .. "|r"
 end
 
--- Presets that default to unchecked (backend-owned set, shared so the grid
--- and the tracker read the same truth).
-local MOVEMENT_DEFAULT_OFF = EllesmereUI._MovementDefaultOff or {}
-
--- Voices are enumerated live from C_VoiceChat rather than a static list --
--- availability varies by client/OS. Falls back to a single "Default" entry
--- (voiceID 0) if the API or voice list isn't available.
-local function TTSVoiceDropdownValues()
-    local values, order = { [0] = "Default" }, { 0 }
-    if C_VoiceChat and C_VoiceChat.GetTtsVoices then
-        local ok, voices = pcall(C_VoiceChat.GetTtsVoices)
-        if ok and voices then
-            for _, voice in ipairs(voices) do
-                if voice.voiceID and voice.voiceID ~= 0 and voice.name then
-                    values[voice.voiceID] = voice.name
-                    order[#order + 1] = voice.voiceID
-                end
-            end
-        end
-    end
-    values._menuOpts = {
-        itemHeight = 26,
-        maxTextWidthPct = 0.8,
-        iconAtlas = function() return EllesmereUI.SOUND_ICON_ATLAS end,
-        iconPressedAtlas = function() return EllesmereUI.SOUND_ICON_PRESSED_ATLAS end,
-        iconOnClick = function(key)
-            if C_VoiceChat and C_VoiceChat.SpeakText then
-                pcall(C_VoiceChat.SpeakText, key, "This is a voice preview", 1, 100, true)
-            end
-        end,
-        iconTooltip = function() return "Preview Voice" end,
-    }
-    return values, order
+local function Items(list)
+	local items = {}
+	for i = 1, #list, 2 do
+		items[#items + 1] = { value = list[i], name = list[i + 1] }
+	end
+	return function() return items end, function(v)
+		for i = 1, #list, 2 do
+			if list[i] == v then return list[i + 1] end
+		end
+		return tostring(v)
+	end
 end
 
--------------------------------------------------------------------------------
---  "Add Spell" popup -- small modal for adding a custom tracked spell by ID,
---  styled after the CDM "Custom Buff ID" popup
---  (EllesmereUICooldownManager\EUI_CooldownManager_Options.lua).
--------------------------------------------------------------------------------
-local addSpellPopup
-local function ShowAddSpellPopup(onAdded)
-    local PP = EllesmereUI.PanelPP
-    local FONT = EllesmereUI._font or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.ttf"
+local DM_ITEMS, DM_LABEL = Items({
+	"text_nd", "Text: Name Duration",
+	"text_dn", "Text: Duration Name",
+	"text_d", "Text: Duration",
+	"icon", "Icon",
+	"bar", "Bar",
+})
 
-    if not addSpellPopup then
-        local dimmer = CreateFrame("Frame", nil, UIParent)
-        dimmer:SetFrameStrata("FULLSCREEN_DIALOG")
-        dimmer:SetAllPoints(UIParent)
-        dimmer:EnableMouse(true)
-        dimmer:Hide()
-        local dimTex = dimmer:CreateTexture(nil, "BACKGROUND")
-        dimTex:SetAllPoints(); dimTex:SetColorTexture(0, 0, 0, 0.25)
-
-        local popup = CreateFrame("Frame", nil, dimmer)
-        popup:SetSize(240, 150)
-        popup:SetPoint("CENTER", EllesmereUI._mainFrame or UIParent, "CENTER", 0, 60)
-        popup:SetFrameStrata("FULLSCREEN_DIALOG")
-        popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
-        popup:EnableMouse(true)
-        local bg = popup:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints(); bg:SetColorTexture(0.077, 0.068, 0.058, 1)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, PP)
-
-        local title = popup:CreateFontString(nil, "OVERLAY")
-        title:SetFont(FONT, 14, "")
-        title:SetPoint("TOP", popup, "TOP", 0, -18)
-        title:SetTextColor(1, 1, 1, 1)
-        title:SetText(EllesmereUI.L("Add Spell"))
-
-        local sidLbl = popup:CreateFontString(nil, "OVERLAY")
-        sidLbl:SetFont(FONT, 11, "")
-        sidLbl:SetPoint("TOPLEFT", popup, "TOPLEFT", 24, -52)
-        sidLbl:SetTextColor(0.7, 0.7, 0.7, 1)
-        sidLbl:SetText(EllesmereUI.L("Spell ID"))
-
-        local sidBox = CreateFrame("EditBox", nil, popup)
-        sidBox:SetSize(192, 28)
-        sidBox:SetPoint("TOPLEFT", sidLbl, "BOTTOMLEFT", 0, -4)
-        sidBox:SetAutoFocus(false)
-        sidBox:SetNumeric(true)
-        sidBox:SetMaxLetters(7)
-        sidBox:SetFont(FONT, 13, "")
-        sidBox:SetTextColor(1, 1, 1, 0.9)
-        sidBox:SetJustifyH("LEFT")
-        sidBox:SetTextInsets(6, 6, 0, 0)
-        local sidBg = sidBox:CreateTexture(nil, "BACKGROUND")
-        sidBg:SetAllPoints(); sidBg:SetColorTexture(0.060, 0.049, 0.037, 1)
-        EllesmereUI.MakeBorder(sidBox, 1, 1, 1, 0.12, PP)
-        popup._sidBox = sidBox
-
-        local status = popup:CreateFontString(nil, "OVERLAY")
-        status:SetFont(FONT, 11, "")
-        status:SetPoint("TOP", sidBox, "BOTTOM", 0, -8)
-        status:SetTextColor(1, 0.3, 0.3, 1)
-        popup._status = status
-
-        local ar, ag, ab = EllesmereUI.GetAccentColor()
-        local addBtn = CreateFrame("Button", nil, popup)
-        addBtn:SetSize(80, 26)
-        addBtn:SetPoint("BOTTOM", popup, "BOTTOM", 0, 16)
-        local addBg = addBtn:CreateTexture(nil, "BACKGROUND")
-        addBg:SetAllPoints(); addBg:SetColorTexture(ar, ag, ab, 0.15)
-        EllesmereUI.MakeBorder(addBtn, ar, ag, ab, 0.4, PP)
-        local addLbl = addBtn:CreateFontString(nil, "OVERLAY")
-        addLbl:SetFont(FONT, 12, "")
-        addLbl:SetPoint("CENTER")
-        addLbl:SetTextColor(ar, ag, ab, 1)
-        addLbl:SetText(EllesmereUI.L("Add"))
-
-        local function TryAdd()
-            local id = tonumber(sidBox:GetText())
-            if not id or id <= 0 then
-                popup._status:SetText(EllesmereUI.L("Enter a valid spell ID"))
-                return
-            end
-            sidBox:SetText("")
-            dimmer:Hide()
-            if popup._onAdded then popup._onAdded(id) end
-        end
-        addBtn:SetScript("OnClick", TryAdd)
-        sidBox:SetScript("OnEnterPressed", TryAdd)
-        sidBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-
-        dimmer:SetScript("OnMouseDown", function(self)
-            if not popup:IsMouseOver() then self:Hide() end
-        end)
-
-        popup._dimmer = dimmer
-        addSpellPopup = popup
-    end
-
-    addSpellPopup._status:SetText("")
-    addSpellPopup._sidBox:SetText("")
-    addSpellPopup._onAdded = onAdded
-    addSpellPopup._dimmer:Show()
-    addSpellPopup._sidBox:SetFocus()
+local function SoundItems()
+	local Q = ns.QoL
+	local items = {}
+	if Q and Q.SOUND_ORDER then
+		for _, key in ipairs(Q.SOUND_ORDER) do
+			items[#items + 1] = { value = key, name = Q.SOUND_NAMES[key] or key }
+		end
+	else
+		items[1] = { value = "none", name = "None" }
+	end
+	return items
+end
+local function SoundLabel(key)
+	local Q = ns.QoL
+	return (Q and Q.SOUND_NAMES and Q.SOUND_NAMES[key or "none"]) or (key == "none" and "None") or tostring(key)
 end
 
--------------------------------------------------------------------------------
---  "Custom Text" popup -- right-click on a tracked-spell grid cell. Sets the
---  text the Movement Cooldown Alert shows for that spell instead of the
---  ability name; empty text restores the ability name. Same styling as the
---  Add Spell popup above.
--------------------------------------------------------------------------------
-local customTextPopup
-local function ShowCustomTextPopup(titleText, initial, onSave)
-    local PP = EllesmereUI.PanelPP
-    local FONT = EllesmereUI._font or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.ttf"
-
-    if not customTextPopup then
-        local dimmer = CreateFrame("Frame", nil, UIParent)
-        dimmer:SetFrameStrata("FULLSCREEN_DIALOG")
-        dimmer:SetAllPoints(UIParent)
-        dimmer:EnableMouse(true)
-        dimmer:Hide()
-        local dimTex = dimmer:CreateTexture(nil, "BACKGROUND")
-        dimTex:SetAllPoints(); dimTex:SetColorTexture(0, 0, 0, 0.25)
-
-        local popup = CreateFrame("Frame", nil, dimmer)
-        popup:SetSize(260, 150)
-        popup:SetPoint("CENTER", EllesmereUI._mainFrame or UIParent, "CENTER", 0, 60)
-        popup:SetFrameStrata("FULLSCREEN_DIALOG")
-        popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
-        popup:EnableMouse(true)
-        local bg = popup:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints(); bg:SetColorTexture(0.077, 0.068, 0.058, 1)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, PP)
-
-        local title = popup:CreateFontString(nil, "OVERLAY")
-        title:SetFont(FONT, 14, "")
-        title:SetPoint("TOP", popup, "TOP", 0, -18)
-        title:SetTextColor(1, 1, 1, 1)
-        popup._title = title
-
-        local lbl = popup:CreateFontString(nil, "OVERLAY")
-        lbl:SetFont(FONT, 11, "")
-        lbl:SetPoint("TOPLEFT", popup, "TOPLEFT", 24, -52)
-        lbl:SetTextColor(0.7, 0.7, 0.7, 1)
-        lbl:SetText(EllesmereUI.L("Custom Alert Text (empty = ability name)"))
-
-        local box = CreateFrame("EditBox", nil, popup)
-        box:SetSize(212, 28)
-        box:SetPoint("TOPLEFT", lbl, "BOTTOMLEFT", 0, -4)
-        box:SetAutoFocus(false)
-        box:SetMaxLetters(40)
-        box:SetFont(FONT, 13, "")
-        box:SetTextColor(1, 1, 1, 0.9)
-        box:SetJustifyH("LEFT")
-        box:SetTextInsets(6, 6, 0, 0)
-        local boxBg = box:CreateTexture(nil, "BACKGROUND")
-        boxBg:SetAllPoints(); boxBg:SetColorTexture(0.060, 0.049, 0.037, 1)
-        EllesmereUI.MakeBorder(box, 1, 1, 1, 0.12, PP)
-        popup._box = box
-
-        local ar, ag, ab = EllesmereUI.GetAccentColor()
-        local saveBtn = CreateFrame("Button", nil, popup)
-        saveBtn:SetSize(80, 26)
-        saveBtn:SetPoint("BOTTOM", popup, "BOTTOM", 0, 16)
-        local saveBg = saveBtn:CreateTexture(nil, "BACKGROUND")
-        saveBg:SetAllPoints(); saveBg:SetColorTexture(ar, ag, ab, 0.15)
-        EllesmereUI.MakeBorder(saveBtn, ar, ag, ab, 0.4, PP)
-        local saveLbl = saveBtn:CreateFontString(nil, "OVERLAY")
-        saveLbl:SetFont(FONT, 12, "")
-        saveLbl:SetPoint("CENTER")
-        saveLbl:SetTextColor(ar, ag, ab, 1)
-        saveLbl:SetText(EllesmereUI.L("Save"))
-
-        local function Commit()
-            dimmer:Hide()
-            if popup._onSave then popup._onSave(popup._box:GetText() or "") end
-        end
-        saveBtn:SetScript("OnClick", Commit)
-        box:SetScript("OnEnterPressed", Commit)
-        box:SetScript("OnEscapePressed", function() dimmer:Hide() end)
-
-        dimmer:SetScript("OnMouseDown", function(self)
-            if not popup:IsMouseOver() then self:Hide() end
-        end)
-
-        popup._dimmer = dimmer
-        customTextPopup = popup
-    end
-
-    customTextPopup._title:SetText(titleText or "")
-    customTextPopup._box:SetText(initial or "")
-    customTextPopup._onSave = onSave
-    customTextPopup._dimmer:Show()
-    customTextPopup._box:SetFocus()
+local function BarTexItems()
+	local items = { { name = "None", value = "none" } }
+	for _, item in ipairs(U.MediaItems(ns.GetBarTextures and ns.GetBarTextures() or {})) do
+		items[#items + 1] = item
+	end
+	return items
+end
+local function BarTexLabel(v)
+	if v == nil or v == "none" or not tostring(v):find("[\\/]") then return "None" end
+	return ns.GetBarTextureLabel and ns.GetBarTextureLabel(v) or tostring(v)
 end
 
--------------------------------------------------------------------------------
---  Page builder
--------------------------------------------------------------------------------
-local function BuildMovementAlertPage(pageName, parent, yOffset)
-    local W = EllesmereUI.Widgets
-    local PP = EllesmereUI.PanelPP
-    local FONT = EllesmereUI._font or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.ttf"
-    local EG = EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.82, b = 0.62 }
-    local ma = MA()
-    if not ma then return 0 end
-    local y = yOffset
-    local _, h
+-- Which class's spell list the Tracked Spells section shows (kept across rebuilds).
+local spellClass = select(2, UnitClass("player"))
 
-    parent._showRowDivider = true
-
-    _, h = W:Spacer(parent, y, 12);  y = y - h
-
-    -- Activate / Deactivate Movement Preview -- centered wide button matching
-    -- the Boss Frames preview button. Loops a fake cooldown through the real
-    -- display path using all current settings; the backend self-terminates it
-    -- on window close or page/module change (plus the OnHide hook below).
-    local previewBtnLbl
-    local function PreviewLabel()
-        return (EllesmereUI._MovementAlertPreviewActive and EllesmereUI._MovementAlertPreviewActive())
-            and EllesmereUI.L("Deactivate Movement Preview")
-            or EllesmereUI.L("Activate Movement Preview")
-    end
-    local previewBtnFrame
-    previewBtnFrame, h = W:WideButton(parent, PreviewLabel(), y, function()
-        if not EllesmereUI._MovementAlertPreview then return end
-        EllesmereUI._MovementAlertPreview(not EllesmereUI._MovementAlertPreviewActive())
-        if previewBtnLbl then previewBtnLbl:SetText(PreviewLabel()) end
-    end);  y = y - h
-    if not EllesmereUI._prebuilding then
-        local btn = select(1, previewBtnFrame:GetChildren())
-        if btn then
-            local regions = { btn:GetRegions() }
-            for i = 1, #regions do
-                local rgn = regions[i]
-                if rgn and rgn.GetText and rgn:GetText() then previewBtnLbl = rgn; break end
-            end
-        end
-        -- Keep the label truthful if the preview self-terminated meanwhile.
-        EllesmereUI.RegisterWidgetRefresh(function()
-            if previewBtnLbl then previewBtnLbl:SetText(PreviewLabel()) end
-        end)
-    end
-    if not _previewOnHideRegistered and EllesmereUI.RegisterOnHide then
-        _previewOnHideRegistered = true
-        EllesmereUI:RegisterOnHide(function()
-            if EllesmereUI._MovementAlertPreview and EllesmereUI._MovementAlertPreviewActive
-                and EllesmereUI._MovementAlertPreviewActive() then
-                EllesmereUI._MovementAlertPreview(false)
-            end
-        end)
-    end
-
-    _, h = W:Spacer(parent, y, 8);  y = y - h
-
-    -------------------------------------------------------------------------
-    --  MOVEMENT COOLDOWN ALERT
-    -------------------------------------------------------------------------
-    _, h = W:SectionHeader(parent, "MOVEMENT COOLDOWN ALERT", y);  y = y - h
-
-    -- Off = no class checked at all (enabledClasses nil), the Totem Bar
-    -- convention -- the page stays configurable while ANY class is checked;
-    -- the backend additionally gates runtime on the player's own class.
-    local function maOff() return not ma.enabledClasses end
-
-    local enableRow
-    enableRow, h = W:DualRow(parent, y,
-        { type="label", text="Enable Movement Alerts",
-          tooltip="Shows the checked classes' mobility spell(s) counting down on cooldown. Nothing checked = feature disabled. Use Unlock Mode to reposition/resize." },
-        { type="toggle", text="Combat Only",
-          tooltip="Only show the alert while in combat.",
-          disabled=maOff, disabledTooltip="Select a class above", rawTooltip=true,
-          getValue=function() return ma.combatOnly == true end,
-          setValue=function(v) ma.combatOnly = v; Refresh() end }
-    );  y = y - h
-
-    -- Enabled-classes checkbox dropdown (same widget/storage convention as
-    -- the Resource Bars Totem Bar): nothing checked = zero-cost disabled.
-    if not EllesmereUI._prebuilding then
-        local leftRgn = enableRow._leftRegion
-        local classItems = {}
-        for _, cf in ipairs(CLASS_ORDER) do
-            local color = RAID_CLASS_COLORS and RAID_CLASS_COLORS[cf]
-            local name = (LOCALIZED_CLASS_NAMES_MALE and LOCALIZED_CLASS_NAMES_MALE[cf])
-                or (cf:sub(1, 1):upper() .. cf:sub(2):lower())
-            local hex = color and color.colorStr or "ffffffff"
-            classItems[#classItems + 1] = { key = cf, label = "|c" .. hex .. name .. "|r" }
-        end
-        local cbDD, cbDDRefresh
-        cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
-            leftRgn, 210, leftRgn:GetFrameLevel() + 2,
-            classItems,
-            function(key)
-                return ma.enabledClasses and ma.enabledClasses[key] or false
-            end,
-            function(key, v)
-                -- Zero classes checked collapses the set back to nil, which is THE
-                -- disabled state: the backend's MovementEnabled() gate drops every
-                -- event/cache/poll, same as the old master toggle being off.
-                if not ma.enabledClasses then ma.enabledClasses = {} end
-                ma.enabledClasses[key] = v or nil
-                if not next(ma.enabledClasses) then ma.enabledClasses = nil end
-                local ddMenu = cbDD._ddMenu
-                if ddMenu then
-                    for _, sf in ipairs({ ddMenu:GetChildren() }) do
-                        local sc = sf.GetScrollChild and sf:GetScrollChild()
-                        if sc then
-                            for _, row in ipairs({ sc:GetChildren() }) do
-                                if row._updateCheck then row._updateCheck() end
-                            end
-                        end
-                    end
-                end
-                if EllesmereUI._UpdateMovementAlertEvents then EllesmereUI._UpdateMovementAlertEvents() end
-                Refresh()
-                EllesmereUI:RefreshPage()
-            end, nil, 8, false)
-        PP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
-        leftRgn._control = cbDD
-        EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
-    end
-
-    -- Display/alert settings as page rows (moved out of the old cog popup):
-    -- every slot keeps the exact profile keys and side-effects the popup rows had;
-    -- RefreshPage() is added only where a value gates another widget's disabled state.
-    local sndValues, sndOrder = EllesmereUI.BuildSoundDropdownValues()
-    local ttsValues, ttsOrder = TTSVoiceDropdownValues()
-
-    -- Bar texture dropdown: identical catalog + SharedMedia merge +
-    -- texture-preview rows as the CDM Tracking Bars "Bar Texture" dropdown.
-    local barTexValues, barTexOrder = {}, {}
-    do
-        local mt = EllesmereUI._MovementBarTextures
-        if mt then
-            EllesmereUI.AppendSharedMediaTextures(mt.names, mt.order, nil, mt.lookup)
-            for _, key in ipairs(mt.order) do
-                if key ~= "---" then barTexValues[key] = mt.names[key] or key end
-                barTexOrder[#barTexOrder + 1] = key
-            end
-            barTexValues._menuOpts = {
-                itemHeight = 28,
-                background = function(key) return mt.lookup[key] end,
-            }
-        end
-    end
-    -- Movement's voice dropdown doubles as the TTS enable: prepend "None"
-    -- (the default) to this section's copy of the voice list and skip the
-    -- preview icon for it. (Time Spiral/Gateway build their own copies.)
-    ttsValues.NONE = "None"
-    table.insert(ttsOrder, 1, "NONE")
-    do
-        local mo = ttsValues._menuOpts
-        local origAtlas, origPressed, origClick = mo.iconAtlas, mo.iconPressedAtlas, mo.iconOnClick
-        mo.iconAtlas = function(key)
-            if key == "NONE" then return nil end
-            return origAtlas and origAtlas(key)
-        end
-        mo.iconPressedAtlas = function(key)
-            if key == "NONE" then return nil end
-            return origPressed and origPressed(key)
-        end
-        mo.iconOnClick = function(key)
-            if key == "NONE" then return end
-            if origClick then origClick(key) end
-        end
-    end
-
-    -- Text modes come in three fixed arrangements (the old free-form Text
-    -- Format input is gone); the legacy stored "text" value maps to the
-    -- duration-first arrangement it used to render.
-    local function DMIsText()
-        local v = ma.displayMode or "text"
-        return v == "text" or v == "text_nd" or v == "text_dn" or v == "text_d"
-    end
-    local function DMSwatchesDisabled()
-        return maOff() or ma.displayMode == "icon"
-    end
-
-    local dmRow
-    dmRow, h = W:DualRow(parent, y,
-        { type="dropdown", text="Display Mode", values=DISPLAY_MODE_VALUES, order=DISPLAY_MODE_ORDER,
-          disabled=maOff, disabledTooltip="Select a class above", rawTooltip=true,
-          getValue=function()
-              local v = ma.displayMode or "text"
-              if v == "text" then v = "text_dn" end
-              return v
-          end,
-          setValue=function(v)
-              local wasText = DMIsText()
-              ma.displayMode = v
-              -- Crossing the text <-> bar/icon boundary re-seeds Text Size
-              -- to that family's default (text 24, bar/icon 12).
-              local isText = (v == "text_nd" or v == "text_dn" or v == "text_d")
-              if wasText ~= isText then ma.textSize = isText and 24 or 12 end
-              Refresh(); EllesmereUI:RefreshPage()
-          end },
-        { type="dropdown", text="Bar Texture", values=barTexValues, order=barTexOrder,
-          disabled=function() return maOff() or ma.displayMode ~= "bar" end,
-          disabledTooltip="Requires Bar display mode", rawTooltip=true,
-          getValue=function() return ma.barTexture or "none" end,
-          setValue=function(v) ma.barTexture = v; Refresh() end }
-    );  y = y - h
-
-    -- Bar settings cog on the Bar Texture slot: Show Icon on Bar lives here.
-    if not EllesmereUI._prebuilding then
-        local rgn = dmRow._rightRegion
-        local function BarCogOff() return maOff() or ma.displayMode ~= "bar" end
-        EllesmereUI.BuildInlineCog(rgn, {
-            title = "Bar Settings",
-            rows = {
-                { type="toggle", label="Show Icon on Bar",
-                  get=function() return ma.barShowIcon ~= false end,
-                  set=function(v) ma.barShowIcon = v; Refresh() end },
-                { type="toggle", label="Show Duration Text",
-                  get=function() return ma.barShowDuration ~= false end,
-                  set=function(v) ma.barShowDuration = v; Refresh() end },
-            },
-            gap = 9, disabled = BarCogOff, disabledTooltip = "Requires Bar display mode",
-        })
-    end
-
-    -- Inline controls on the Display Mode slot, mirroring the Unit Frames
-    -- Health Bar Left/Right Text rows: dropdown at the right, then the
-    -- Custom + Class color swatch pair, then the resize cog. The swatches
-    -- (the Use Class Color replacement) only apply to Text and Bar modes.
-    if not EllesmereUI._prebuilding then
-        local leftRgn = dmRow._leftRegion
-        local dmAnchor = leftRgn._lastInline or leftRgn._control
-
-        -- Class Colored swatch (nearest the control)
-        local dmClassSwatch, dmUpdateClassSwatch = EllesmereUI.BuildColorSwatch(
-            leftRgn, leftRgn:GetFrameLevel() + 5,
-            function()
-                local _, classFile = UnitClass("player")
-                local cc = classFile and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[classFile]
-                if cc then return cc.r, cc.g, cc.b end
-                return 1, 1, 1
-            end,
-            function() end, nil, 20)
-        PP.Point(dmClassSwatch, "RIGHT", dmAnchor, "LEFT", -8, 0)
-        dmClassSwatch:SetScript("OnClick", function()
-            if DMSwatchesDisabled() then return end
-            ma.textColorUseClass = true; Refresh(); EllesmereUI:RefreshPage()
-        end)
-        dmClassSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(dmClassSwatch, "Class Colored") end)
-        dmClassSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-        -- Custom Colored swatch (left of the class swatch): opens the picker;
-        -- clicking while class color is active switches back to custom first.
-        local dmSwatch, dmUpdateSwatch = EllesmereUI.BuildColorSwatch(
-            leftRgn, leftRgn:GetFrameLevel() + 5,
-            function() return ma.textColorR or 1, ma.textColorG or 1, ma.textColorB or 1 end,
-            function(r, g, b) ma.textColorR, ma.textColorG, ma.textColorB = r, g, b; Refresh() end,
-            nil, 20)
-        PP.Point(dmSwatch, "RIGHT", dmClassSwatch, "LEFT", -8, 0)
-        leftRgn._lastInline = dmSwatch
-        local dmOrigClick = dmSwatch:GetScript("OnClick")
-        dmSwatch:SetScript("OnClick", function(self, ...)
-            if DMSwatchesDisabled() then return end
-            if ma.textColorUseClass then
-                ma.textColorUseClass = false; Refresh(); EllesmereUI:RefreshPage(); return
-            end
-            if dmOrigClick then dmOrigClick(self, ...) end
-        end)
-        dmSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(dmSwatch, "Custom Colored") end)
-        dmSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        local function UpdateDmSwatches()
-            local off = DMSwatchesDisabled()
-            local isClass = ma.textColorUseClass == true
-            dmSwatch:SetAlpha((off or isClass) and 0.3 or 1)
-            dmClassSwatch:SetAlpha((isClass and not off) and 1 or 0.3)
-        end
-        EllesmereUI.RegisterWidgetRefresh(function() dmUpdateSwatch(); dmUpdateClassSwatch(); UpdateDmSwatches() end)
-        UpdateDmSwatches()
-
-        -- Resize cog (leftmost): Text Size / Icon Size, each gated to its mode.
-        EllesmereUI.BuildInlineCog(leftRgn, {
-            title = "Display Size",
-            rows = {
-                -- Never disabled: sizes the free text, the bar's number, and
-                -- the icon's countdown numbers alike. Re-seeded on text <->
-                -- bar/icon display mode switches (24 / 12).
-                { type="slider", label="Text Size", min=8, max=72, step=1,
-                  get=function() return ma.textSize or 24 end,
-                  set=function(v) ma.textSize = v; Refresh() end },
-                { type="slider", label="Icon Size", min=16, max=128, step=1,
-                  disabled=function() return ma.displayMode ~= "icon" end,
-                  disabledTooltip="Requires the Icon display mode", rawTooltip=true,
-                  get=function() return ma.iconSize or 40 end,
-                  set=function(v) ma.iconSize = v; Refresh() end },
-                -- View over the old numeric precision key: on = 1 decimal,
-                -- off = whole seconds.
-                { type="toggle", label="Show Decimal",
-                  disabled=function() return ma.displayMode == "icon" end,
-                  disabledTooltip="Not used in Icon display mode", rawTooltip=true,
-                  -- tonumber guard: an older numeric-input build could store
-                  -- precision as a string ("1"), and `"1" > 0` is a hard error
-                  -- in Lua 5.1 -- it would throw here before set could run, so
-                  -- the toggle silently did nothing until a value was written.
-                  get=function() return (tonumber(ma.precision) or 1) > 0 end,
-                  set=function(v) ma.precision = v and 1 or 0; Refresh() end },
-            },
-            icon = EllesmereUI.RESIZE_ICON, gap = 9, disabled = maOff, disabledTooltip = "Select an Enabled Class",
-        })
-    end
-
-    -- TTS Voice doubles as the TTS enable ("None" = off, the default) -- a
-    -- view over the old maTtsEnabled/maTtsVoiceID keys. It speaks the
-    -- ability name (or its per-spell Custom Text); volume lives in the cog.
-    local ttsRow
-    ttsRow, h = W:DualRow(parent, y,
-        { type="dropdown", text="Sound", values=sndValues, order=sndOrder,
-          disabled=function() return maOff() or ma.maTtsEnabled == true end,
-          disabledTooltip="Text-to-Speech is enabled and takes priority over Sound.", rawTooltip=true,
-          getValue=function() return ma.maSoundKey or "none" end,
-          setValue=function(v) ma.maSoundKey = v end },
-        { type="dropdown", text="TTS Voice", values=ttsValues, order=ttsOrder,
-          tooltip="Speaks the ability name once, right when it comes off cooldown -- not a running countdown. None = no speech.",
-          disabled=maOff, disabledTooltip="Select a class above", rawTooltip=true,
-          getValue=function()
-              if not ma.maTtsEnabled then return "NONE" end
-              return ma.maTtsVoiceID or 0
-          end,
-          setValue=function(v)
-              if v == "NONE" then
-                  ma.maTtsEnabled = false
-              else
-                  ma.maTtsEnabled = true
-                  ma.maTtsVoiceID = v
-              end
-              EllesmereUI:RefreshPage()
-          end }
-    );  y = y - h
-
-    if not EllesmereUI._prebuilding then
-        local leftRgn = ttsRow._rightRegion
-        local function TtsCogOff() return maOff() or not ma.maTtsEnabled end
-        EllesmereUI.BuildInlineCog(leftRgn, {
-            title = "Text-to-Speech Settings",
-            rows = {
-                { type="slider", label="TTS Volume", min=0, max=100, step=5,
-                  get=function() return ma.maTtsVolume or 100 end,
-                  set=function(v) ma.maTtsVolume = v end },
-            },
-            gap = 9, disabled = TtsCogOff, disabledTooltip = "Select a TTS Voice",
-        })
-    end
-
-    _, h = W:Spacer(parent, y, 16);  y = y - h
-
-    -------------------------------------------------------------------------
-    --  TRACKED SPELLS
-    -------------------------------------------------------------------------
-    _, h = W:SectionHeader(parent, "TRACKED SPELLS", y);  y = y - h
-    y = y - 6
-
-    -- 4-column checkbox grid (same visual system as the AuraBuffReminders Auras
-    -- section): class-colored spell name left, checkbox right, no ids. Lists every
-    -- class's mobility spells (not just the player's), then any user-added spells
-    -- (deletable via the X icon), then the + Add Spell button in the next free slot.
-    -- Adds/removes rebuild the page so cells always re-flow sequentially with no gaps.
-    do
-        local GRID_COLS     = 4
-        local GRID_ROW_H    = 50
-        local GRID_BOX_SZ   = 18
-        local GRID_PAD      = EllesmereUI.CONTENT_PAD or 16
-        local GRID_SIDE_PAD = 20
-        local playerClass = select(2, UnitClass("player"))
-        if not ma.spellOverrides then ma.spellOverrides = {} end
-
-        local function GridChanged()
-            if EllesmereUI._RebuildMovementSpellLookup then EllesmereUI._RebuildMovementSpellLookup() end
-            if EllesmereUI._CacheMovementSpells then EllesmereUI._CacheMovementSpells() end
-            Refresh()
-        end
-
-        -- Cell list: presets (all classes), then customs, then the add cell.
-        local items = {}
-        local byClassName = {}
-        for _, preset in ipairs(MOVEMENT_PRESETS) do
-            local primary = preset.ids[1]
-            local info = C_Spell and C_Spell.GetSpellInfo(primary)
-            -- WoW Forever: 781 is vanilla's threat drop, not a movement spell, and
-            -- the tracker skips it there; it stays a preset id so a saved override
-            -- is never shown as a custom cell.
-            if info and info.name and not (EllesmereUI.IS_FOREVER and primary == 781) then
-                local dupKey = preset.class .. ":" .. info.name
-                local existing = byClassName[dupKey]
-                if existing then
-                    -- Same display name within a class (Blizzard splits some
-                    -- abilities across ids): fold into the earlier cell so
-                    -- one checkbox governs every id and no name lists twice.
-                    for i = 1, #preset.ids do
-                        existing.ids[#existing.ids + 1] = preset.ids[i]
-                    end
-                else
-                    -- Copy the id list: folded duplicates append to it, and
-                    -- the shared preset table must never be mutated.
-                    local cellIds = {}
-                    for i = 1, #preset.ids do cellIds[i] = preset.ids[i] end
-                    local item = {
-                        label = info.name,
-                        classToken = preset.class,
-                        spellId = primary,
-                        ids = cellIds,
-                        getVal = function()
-                            local o = ma.spellOverrides[primary]
-                            if o and o.enabled ~= nil then return o.enabled ~= false end
-                            return not MOVEMENT_DEFAULT_OFF[primary]
-                        end,
-                        setVal = function(v)
-                            for i = 1, #cellIds do
-                                local id = cellIds[i]
-                                ma.spellOverrides[id] = ma.spellOverrides[id] or {}
-                                ma.spellOverrides[id].enabled = v
-                            end
-                        end,
-                    }
-                    byClassName[dupKey] = item
-                    items[#items + 1] = item
-                end
-            end
-        end
-        local customIds = {}
-        for spellId in pairs(ma.spellOverrides) do
-            if type(spellId) == "number" and not MOVEMENT_PRESET_IDS[spellId] then
-                customIds[#customIds + 1] = spellId
-            end
-        end
-        table.sort(customIds)
-        for _, spellId in ipairs(customIds) do
-            local o = ma.spellOverrides[spellId]
-            local info = C_Spell and C_Spell.GetSpellInfo(spellId)
-            items[#items + 1] = {
-                label = (info and info.name) or EllesmereUI.L("Unknown Spell"),
-                classToken = o.class,
-                spellId = spellId,
-                ids = { spellId },
-                custom = true,
-                getVal = function()
-                    local ov = ma.spellOverrides[spellId]
-                    return ov ~= nil and ov.enabled ~= false
-                end,
-                setVal = function(v)
-                    local ov = ma.spellOverrides[spellId]
-                    if ov then ov.enabled = v end
-                end,
-            }
-        end
-        items[#items + 1] = { addButton = true }
-
-        local totalRows = math.ceil(#items / GRID_COLS)
-        local totalW = parent:GetWidth() - GRID_PAD * 2
-        local colW = math.floor(totalW / GRID_COLS)
-
-        for row = 0, totalRows - 1 do
-            local rowFrame = CreateFrame("Frame", nil, parent)
-            PP.Size(rowFrame, totalW, GRID_ROW_H)
-            PP.Point(rowFrame, "TOPLEFT", parent, "TOPLEFT", GRID_PAD, y - row * GRID_ROW_H)
-            rowFrame._skipRowDivider = true
-            EllesmereUI.RowBg(rowFrame, parent)
-
-            for d = 1, GRID_COLS - 1 do
-                local div = rowFrame:CreateTexture(nil, "ARTWORK")
-                div:SetColorTexture(1, 1, 1, 0.06)
-                if div.SetSnapToPixelGrid then div:SetSnapToPixelGrid(false); div:SetTexelSnappingBias(0) end
-                div:SetWidth(1)
-                local xPos = d * colW
-                PP.Point(div, "TOP", rowFrame, "TOPLEFT", xPos, 0)
-                PP.Point(div, "BOTTOM", rowFrame, "BOTTOMLEFT", xPos, 0)
-            end
-
-            for col = 0, GRID_COLS - 1 do
-                local idx = row * GRID_COLS + col + 1
-                local item = items[idx]
-                if not item then break end
-
-                local cell = CreateFrame("Frame", nil, rowFrame)
-                cell:SetSize(colW, GRID_ROW_H)
-                cell:SetPoint("TOPLEFT", rowFrame, "TOPLEFT", col * colW, 0)
-
-                if item.addButton then
-                    -- Keybind-button style (dropdown-look bg/border with the
-                    -- hover brighten), centered in its grid slot.
-                    local addBtn = CreateFrame("Button", nil, cell)
-                    PP.Size(addBtn, 126, 29)
-                    addBtn:SetPoint("CENTER", cell, "CENTER", 0, 0)
-                    addBtn:SetFrameLevel(cell:GetFrameLevel() + 2)
-                    local addBg = EllesmereUI.SolidTex(addBtn, "BACKGROUND",
-                        EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-                    addBg:SetAllPoints()
-                    local addBrd = EllesmereUI.MakeBorder(addBtn, 1, 1, 1, EllesmereUI.DD_BRD_A, EllesmereUI.PanelPP)
-                    local addLbl = EllesmereUI.MakeFont(addBtn, 12, nil, 1, 1, 1)
-                    addLbl:SetAlpha(EllesmereUI.DD_TXT_A)
-                    addLbl:SetPoint("CENTER")
-                    addLbl:SetText(EllesmereUI.L("+ Add Spell"))
-                    addBtn:SetScript("OnEnter", function()
-                        addBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_HA)
-                        if addBrd and addBrd.SetColor then addBrd:SetColor(1, 1, 1, 0.3) end
-                    end)
-                    addBtn:SetScript("OnLeave", function()
-                        addBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-                        if addBrd and addBrd.SetColor then addBrd:SetColor(1, 1, 1, EllesmereUI.DD_BRD_A) end
-                    end)
-                    addBtn:SetScript("OnClick", function()
-                        ShowAddSpellPopup(function(spellId)
-                            ma.spellOverrides[spellId] = ma.spellOverrides[spellId] or { enabled = true, class = playerClass }
-                            GridChanged()
-                            EllesmereUI:RefreshPage(true)
-                        end)
-                    end)
-                else
-                    local cr, cg, cb = 1, 1, 1
-                    if item.classToken then
-                        local cc = RAID_CLASS_COLORS and RAID_CLASS_COLORS[item.classToken]
-                        if cc then cr, cg, cb = cc.r, cc.g, cc.b end
-                    end
-
-                    local label = EllesmereUI.MakeFont(cell, 13, nil, cr, cg, cb)
-                    label:SetPoint("LEFT", cell, "LEFT", GRID_SIDE_PAD, 0)
-                    label:SetWidth(colW - GRID_SIDE_PAD * 2 - GRID_BOX_SZ - 6)
-                    label:SetJustifyH("LEFT")
-                    label:SetMaxLines(2)
-                    label:SetText(item.label)
-
-                    local box = CreateFrame("Frame", nil, cell)
-                    box:SetSize(GRID_BOX_SZ, GRID_BOX_SZ)
-                    box:SetPoint("RIGHT", cell, "RIGHT", -GRID_SIDE_PAD, 0)
-                    local boxBg = box:CreateTexture(nil, "BACKGROUND")
-                    boxBg:SetAllPoints()
-                    boxBg:SetColorTexture(0.114, 0.106, 0.099, 1)
-                    if boxBg.SetSnapToPixelGrid then boxBg:SetSnapToPixelGrid(false); boxBg:SetTexelSnappingBias(0) end
-                    local boxBrd = EllesmereUI.MakeBorder(box, 0.224, 0.215, 0.207, 0.6, EllesmereUI.PanelPP)
-                    local check = box:CreateTexture(nil, "ARTWORK")
-                    check:SetPoint("TOPLEFT", box, "TOPLEFT", 3, -3)
-                    check:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -3, 3)
-                    check:SetColorTexture(EG.r, EG.g, EG.b, 1)
-                    if check.SetSnapToPixelGrid then check:SetSnapToPixelGrid(false); check:SetTexelSnappingBias(0) end
-
-                    local btn = CreateFrame("Button", nil, cell)
-                    btn:SetAllPoints(cell)
-                    btn:SetFrameLevel(cell:GetFrameLevel() + 2)
-                    btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-
-                    -- A cell is disabled while its class is unchecked in the
-                    -- Enable Movement Alerts dropdown (tracking can never
-                    -- fire for it). The X delete on custom cells stays live
-                    -- so stale entries can still be cleaned up.
-                    local function CellDisabled()
-                        local ec = ma.enabledClasses
-                        if not ec then return true end
-                        if item.classToken then return not ec[item.classToken] end
-                        return false
-                    end
-
-                    local function ApplyVisual()
-                        local dis = CellDisabled()
-                        local on = item.getVal()
-                        if on then
-                            check:Show()
-                            boxBrd:SetColor(EG.r, EG.g, EG.b, 0.15)
-                        else
-                            check:Hide()
-                            boxBrd:SetColor(0.224, 0.215, 0.207, 0.6)
-                        end
-                        if dis then
-                            label:SetAlpha(0.3)
-                            box:SetAlpha(0.4)
-                        else
-                            label:SetAlpha(on and 1 or 0.5)
-                            box:SetAlpha(1)
-                        end
-                    end
-                    ApplyVisual()
-
-                    btn:SetScript("OnClick", function(_, mouseButton)
-                        if CellDisabled() then return end
-                        if mouseButton == "RightButton" then
-                            local ov = ma.spellOverrides[item.spellId]
-                            ShowCustomTextPopup(item.label, ov and ov.customText or "", function(txt)
-                                for i = 1, #item.ids do
-                                    local id = item.ids[i]
-                                    ma.spellOverrides[id] = ma.spellOverrides[id] or {}
-                                    ma.spellOverrides[id].customText = (txt ~= "") and txt or nil
-                                end
-                                if EllesmereUI._CacheMovementSpells then EllesmereUI._CacheMovementSpells() end
-                                Refresh()
-                            end)
-                            return
-                        end
-                        item.setVal(not item.getVal())
-                        ApplyVisual()
-                        GridChanged()
-                    end)
-                    btn:SetScript("OnEnter", function()
-                        if CellDisabled() then
-                            EllesmereUI.ShowWidgetTooltip(cell, EllesmereUI.DisabledTooltip("Enable this class above"))
-                            return
-                        end
-                        if not item.getVal() then label:SetAlpha(0.8) end
-                        EllesmereUI.ShowWidgetTooltip(cell, EllesmereUI.L("Right-Click to set custom alert text."))
-                    end)
-                    btn:SetScript("OnLeave", function()
-                        ApplyVisual()
-                        EllesmereUI.HideWidgetTooltip()
-                    end)
-
-                    EllesmereUI.RegisterWidgetRefresh(ApplyVisual)
-
-                    if item.custom then
-                        local delBtn = CreateFrame("Button", nil, cell)
-                        delBtn:SetSize(12, 12)
-                        delBtn:SetPoint("TOPRIGHT", cell, "TOPRIGHT", -4, -4)
-                        delBtn:SetFrameLevel(btn:GetFrameLevel() + 2)
-                        local delIcon = delBtn:CreateTexture(nil, "OVERLAY")
-                        delIcon:SetAllPoints()
-                        delIcon:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-close.png")
-                        delIcon:SetAlpha(0.4)
-                        delBtn:SetScript("OnEnter", function() delIcon:SetAlpha(0.9) end)
-                        delBtn:SetScript("OnLeave", function() delIcon:SetAlpha(0.4) end)
-                        delBtn:SetScript("OnClick", function()
-                            ma.spellOverrides[item.spellId] = nil
-                            GridChanged()
-                            EllesmereUI:RefreshPage(true)
-                        end)
-                    end
-                end
-            end
-        end
-        y = y - totalRows * GRID_ROW_H
-    end
-
-    _, h = W:Spacer(parent, y, 16);  y = y - h
-
-    -------------------------------------------------------------------------
-    --  EXTRA TRACKING
-    -------------------------------------------------------------------------
-    _, h = W:SectionHeader(parent, "EXTRA TRACKING", y);  y = y - h
-
-    -- The two sibling trackers' master toggles, each carrying its full settings cog.
-    local function tsOff() return not ma.tsEnabled end
-    local function gwOff() return not ma.gwEnabled end
-
-    local extraRow
-    extraRow, h = W:DualRow(parent, y,
-        { type="toggle", text="Enable Time Spiral Tracker",
-          tooltip="Flashes a banner whenever a tracked mobility spell's cooldown is proc-reset. Use Unlock Mode to reposition/resize.",
-          getValue=function() return ma.tsEnabled == true end,
-          setValue=function(v)
-              ma.tsEnabled = v
-              if EllesmereUI._UpdateMovementAlertEvents then EllesmereUI._UpdateMovementAlertEvents() end
-              Refresh()
-              EllesmereUI:RefreshPage()
-          end },
-        { type="toggle", text="Enable Gateway Shard Alert",
-          tooltip="Warlock only. Alerts when your Gateway Control Shard is usable. Use Unlock Mode to reposition/resize.",
-          getValue=function() return ma.gwEnabled == true end,
-          setValue=function(v)
-              ma.gwEnabled = v
-              if EllesmereUI._UpdateMovementAlertEvents then EllesmereUI._UpdateMovementAlertEvents() end
-              Refresh()
-              EllesmereUI:RefreshPage()
-          end }
-    );  y = y - h
-
-    -- Time Spiral settings cog (left slot)
-    if not EllesmereUI._prebuilding then
-        local leftRgn = extraRow._leftRegion
-        local sndValues2, sndOrder2 = EllesmereUI.BuildSoundDropdownValues()
-        local ttsValues2, ttsOrder2 = TTSVoiceDropdownValues()
-        EllesmereUI.BuildInlineCog(leftRgn, {
-            title = "Time Spiral Settings",
-            minWidth = 300,
-            rows = {
-                { type="input", label="Text Format",
-                  get=function() return ma.tsTextFormat or "FREE MOVEMENT\\n%.1f" end,
-                  set=function(v) ma.tsTextFormat = v; Refresh() end },
-                { type="colorpicker", label="Color",
-                  disabled=function() return ma.tsColorUseClass end,
-                  disabledTooltip="Disable Class Color to pick a custom color.", rawTooltip=true,
-                  get=function() return ma.tsColorR or 0.53, ma.tsColorG or 1, ma.tsColorB or 0 end,
-                  set=function(r, g, b) ma.tsColorR, ma.tsColorG, ma.tsColorB = r, g, b; Refresh() end },
-                { type="toggle", label="Use Class Color",
-                  get=function() return ma.tsColorUseClass == true end,
-                  set=function(v) ma.tsColorUseClass = v; Refresh() end },
-                { type="dropdown", label="Sound", values=sndValues2, order=sndOrder2,
-                  disabled=function() return ma.tsTtsEnabled == true end,
-                  disabledTooltip="Text-to-Speech is enabled below and takes priority over Sound.", rawTooltip=true,
-                  get=function() return ma.tsSoundKey or "none" end,
-                  set=function(v) ma.tsSoundKey = v end },
-                { type="toggle", label="Use Text-to-Speech",
-                  get=function() return ma.tsTtsEnabled == true end,
-                  set=function(v) ma.tsTtsEnabled = v end },
-                { type="dropdown", label="TTS Voice", values=ttsValues2, order=ttsOrder2,
-                  disabled=function() return not ma.tsTtsEnabled end,
-                  disabledTooltip="Enable Text-to-Speech first", rawTooltip=true,
-                  get=function() return ma.tsTtsVoiceID or 0 end,
-                  set=function(v) ma.tsTtsVoiceID = v end },
-                { type="input", label="TTS Message",
-                  disabled=function() return not ma.tsTtsEnabled end,
-                  disabledTooltip="Enable Text-to-Speech first", rawTooltip=true,
-                  get=function() return ma.tsTtsMessage or "Free movement" end,
-                  set=function(v) ma.tsTtsMessage = v end },
-                { type="slider", label="TTS Volume", min=0, max=100, step=5,
-                  disabled=function() return not ma.tsTtsEnabled end,
-                  get=function() return ma.tsTtsVolume or 100 end,
-                  set=function(v) ma.tsTtsVolume = v end },
-            },
-            footer = { unlockKey = "EUI_TimeSpiralAlert" },
-            gap = 9, disabled = tsOff, disabledTooltip = "Enable Time Spiral Tracker",
-        })
-    end
-
-    -- Gateway Shard settings cog (right slot); Combat Only lives in here.
-    if not EllesmereUI._prebuilding then
-        local rgn = extraRow._rightRegion
-        local sndValues2, sndOrder2 = EllesmereUI.BuildSoundDropdownValues()
-        local ttsValues2, ttsOrder2 = TTSVoiceDropdownValues()
-        EllesmereUI.BuildInlineCog(rgn, {
-            title = "Gateway Shard Settings",
-            minWidth = 300,
-            rows = {
-                { type="toggle", label="Combat Only",
-                  tooltip="Only show the alert while in combat.",
-                  get=function() return ma.gwCombatOnly == true end,
-                  set=function(v) ma.gwCombatOnly = v; Refresh() end },
-                { type="input", label="Text",
-                  get=function() return ma.gwText or "GATEWAY READY" end,
-                  set=function(v) ma.gwText = v; Refresh() end },
-                { type="colorpicker", label="Color",
-                  disabled=function() return ma.gwColorUseClass end,
-                  disabledTooltip="Disable Class Color to pick a custom color.", rawTooltip=true,
-                  get=function() return ma.gwColorR or 0.7, ma.gwColorG or 0, ma.gwColorB or 1 end,
-                  set=function(r, g, b) ma.gwColorR, ma.gwColorG, ma.gwColorB = r, g, b; Refresh() end },
-                { type="toggle", label="Use Class Color",
-                  get=function() return ma.gwColorUseClass == true end,
-                  set=function(v) ma.gwColorUseClass = v; Refresh() end },
-                { type="dropdown", label="Sound", values=sndValues2, order=sndOrder2,
-                  disabled=function() return ma.gwTtsEnabled == true end,
-                  disabledTooltip="Text-to-Speech is enabled below and takes priority over Sound.", rawTooltip=true,
-                  get=function() return ma.gwSoundKey or "none" end,
-                  set=function(v) ma.gwSoundKey = v end },
-                { type="toggle", label="Use Text-to-Speech",
-                  get=function() return ma.gwTtsEnabled == true end,
-                  set=function(v) ma.gwTtsEnabled = v end },
-                { type="dropdown", label="TTS Voice", values=ttsValues2, order=ttsOrder2,
-                  disabled=function() return not ma.gwTtsEnabled end,
-                  disabledTooltip="Enable Text-to-Speech first", rawTooltip=true,
-                  get=function() return ma.gwTtsVoiceID or 0 end,
-                  set=function(v) ma.gwTtsVoiceID = v end },
-                { type="input", label="TTS Message",
-                  disabled=function() return not ma.gwTtsEnabled end,
-                  disabledTooltip="Enable Text-to-Speech first", rawTooltip=true,
-                  get=function() return ma.gwTtsMessage or "Gateway ready" end,
-                  set=function(v) ma.gwTtsMessage = v end },
-                { type="slider", label="TTS Volume", min=0, max=100, step=5,
-                  disabled=function() return not ma.gwTtsEnabled end,
-                  get=function() return ma.gwTtsVolume or 100 end,
-                  set=function(v) ma.gwTtsVolume = v end },
-            },
-            footer = { unlockKey = "EUI_GatewayShardAlert" },
-            gap = 9, disabled = gwOff, disabledTooltip = "Enable Gateway Shard Alert",
-        })
-    end
-
-    _, h = W:Spacer(parent, y, 20);  y = y - h
-
-    return math.abs(y)
+local function SpellRowLabel(spellId)
+	local name, _, icon = GetSpellInfo(spellId)
+	return "|T" .. (icon or "Interface\\Icons\\INV_Misc_QuestionMark") .. ":16:16:0:0:64:64:5:59:5:59|t " .. (name or ("Spell " .. spellId))
 end
 
-_G._EUI_BuildMovementAlertPage = BuildMovementAlertPage
+ns.QoLO_BuildMovementAlertPage = function(p)
+	if not ns.GetMovementAlertDB or not M() then
+		return
+	end
+	local ma = MA()
+	local function maOff() return type(MA().enabledClasses) ~= "table" end
+
+	-- Live preview while the page is shown (retail loops a fake cooldown).
+	if type(p.scroll) == "table" and not p.scroll.maHooked and M().SetPreview then
+		p.scroll.maHooked = true
+		p.scroll:HookScript("OnShow", function() if not maOff() then M().SetPreview(true) end end)
+		p.scroll:HookScript("OnHide", function() M().SetPreview(false) end)
+	end
+
+	-- MOVEMENT COOLDOWN ALERT ---------------------------------------------
+	p:Section("Movement Cooldown Alert")
+	p:MultiSelect("Enable Movement Alerts", "Shows the checked classes' mobility spell(s) counting down on cooldown. Nothing checked = feature disabled. Use Unlock Mode to reposition/resize.",
+		function()
+			local items = {}
+			for _, cf in ipairs(CLASS_ORDER) do items[#items + 1] = { value = cf, name = ClassLabel(cf) } end
+			return items
+		end,
+		function(cf) local ec = MA().enabledClasses; return type(ec) == "table" and ec[cf] or false end,
+		function(cf)
+			local m = MA()
+			if type(m.enabledClasses) ~= "table" then m.enabledClasses = {} end
+			m.enabledClasses[cf] = (not m.enabledClasses[cf]) or nil
+			if not next(m.enabledClasses) then m.enabledClasses = nil end
+		end,
+		function()
+			local ec, n = MA().enabledClasses, 0
+			if type(ec) == "table" then
+				for _, cf in ipairs(CLASS_ORDER) do if ec[cf] then n = n + 1 end end
+			end
+			if n == 0 then return "None" end
+			if n == #CLASS_ORDER then return "All Classes" end
+			return n .. " Classes"
+		end)
+	p:Toggle("Combat Only", "Only show the alert while in combat.",
+		function() return MA().combatOnly == true end, function(v) MA().combatOnly = v end, maOff)
+
+	local function swatchOff() return maOff() or MA().displayMode == "icon" end
+	p:Dropdown("Display Mode", "Text, an icon with a cooldown swipe, or a bar.",
+		DM_ITEMS,
+		function() local v = MA().displayMode or "text"; return v == "text" and "text_dn" or v end,
+		function() local v = MA().displayMode or "text"; return DM_LABEL(v == "text" and "text_dn" or v) end,
+		function(v)
+			local m = MA()
+			local function isText(x) return x == nil or x == "text" or x == "text_nd" or x == "text_dn" or x == "text_d" end
+			if isText(m.displayMode) ~= isText(v) then m.textSize = isText(v) and 24 or 12 end
+			m.displayMode = v
+		end, nil, maOff)
+	p:Cog("Display Size", {
+		{ type = "slider", label = "Text Size", min = 8, max = 72, step = 1,
+		  get = function() return MA().textSize or 24 end, set = function(v) MA().textSize = v end },
+		{ type = "slider", label = "Icon Size", min = 16, max = 128, step = 1,
+		  get = function() return MA().iconSize or 40 end, set = function(v) MA().iconSize = v end,
+		  disabled = function() return MA().displayMode ~= "icon" end },
+		{ type = "toggle", label = "Show Decimal",
+		  get = function() return (tonumber(MA().precision) or 1) > 0 end,
+		  set = function(v) MA().precision = v and 1 or 0 end,
+		  disabled = function() return MA().displayMode == "icon" end },
+	}, { icon = "resize", disabled = maOff, disabledTip = "Select an Enabled Class" })
+	p:Swatch("Class Colored",
+		function()
+			local c = RAID_CLASS_COLORS[select(2, UnitClass("player"))]
+			if c then return c.r, c.g, c.b end
+			return 1, 1, 1
+		end,
+		function() end,
+		{ readonly = true, disabled = swatchOff, active = function() return MA().textColorUseClass == true end,
+		  onClick = function() MA().textColorUseClass = true; return true end })
+	p:Swatch("Custom Colored",
+		function() local m = MA(); return m.textColorR or 1, m.textColorG or 1, m.textColorB or 1 end,
+		function(r, g, b) local m = MA(); m.textColorR, m.textColorG, m.textColorB = r, g, b end,
+		{ disabled = swatchOff, active = function() return MA().textColorUseClass ~= true end,
+		  onClick = function()
+			  if MA().textColorUseClass then
+				  MA().textColorUseClass = false
+				  return true
+			  end
+		  end })
+
+	local function barOff() return maOff() or MA().displayMode ~= "bar" end
+	p:Dropdown("Bar Texture", "Texture of the bar (Bar display mode).",
+		BarTexItems, function() return MA().barTexture or "none" end,
+		function() return BarTexLabel(MA().barTexture) end,
+		function(v) MA().barTexture = v end,
+		{ texturePreview = true }, barOff)
+	p:Cog("Bar Settings", {
+		{ type = "toggle", label = "Show Icon on Bar",
+		  get = function() return MA().barShowIcon ~= false end, set = function(v) MA().barShowIcon = v end },
+		{ type = "toggle", label = "Show Duration Text",
+		  get = function() return MA().barShowDuration ~= false end, set = function(v) MA().barShowDuration = v end },
+	}, { disabled = barOff, disabledTip = "Requires Bar display mode" })
+
+	p:Dropdown("Sound", "Plays once when a shown cooldown is ready again.",
+		SoundItems, function() return MA().maSoundKey or "none" end,
+		function() return SoundLabel(MA().maSoundKey) end,
+		function(v)
+			MA().maSoundKey = v
+			if M().PlayAlertSound then M().PlayAlertSound(v) end
+		end, nil, maOff)
+
+	-- TRACKED SPELLS -------------------------------------------------------
+	p:Section("Tracked Spells")
+	p:Dropdown("Class", "Whose spells are listed below. Only spells your character knows are tracked.",
+		function()
+			local items = {}
+			for _, cf in ipairs(CLASS_ORDER) do items[#items + 1] = { value = cf, name = ClassLabel(cf) } end
+			return items
+		end,
+		function() return spellClass end,
+		function() return ClassLabel(spellClass) end,
+		function(v) spellClass = v end)
+	p:Button("Add Spell", "Track another spell of this class by its spell ID.", "+ Add Spell", function()
+		ns.ShowInputPopup({
+			title = "Add Spell",
+			message = "Spell ID to track for " .. ClassLabel(spellClass) .. ":",
+			text = "",
+			confirmText = "Add",
+			cancelText = "Cancel",
+			onConfirm = function(text)
+				local id = tonumber(text)
+				if not id or not GetSpellInfo(id) then return end
+				local m = MA()
+				m.spellOverrides = m.spellOverrides or {}
+				local ov = m.spellOverrides[id] or {}
+				ov.enabled, ov.class = true, spellClass
+				m.spellOverrides[id] = ov
+				ns.RebuildSettingsPage()
+			end,
+		})
+	end)
+
+	local overrides = ma.spellOverrides or {}
+	local ids, seen = {}, {}
+	for _, id in ipairs(M().MOVEMENT_ABILITIES[spellClass] or {}) do
+		ids[#ids + 1] = id
+		seen[id] = true
+	end
+	local custom = {}
+	for id, ov in pairs(overrides) do
+		if type(id) == "number" and not seen[id] and type(ov) == "table" and ov.class == spellClass then
+			custom[#custom + 1] = id
+		end
+	end
+	table.sort(custom)
+	for _, id in ipairs(custom) do ids[#ids + 1] = id end
+
+	for _, id in ipairs(ids) do
+		local spellId = id
+		local isCustom = not seen[spellId]
+		local function Ov()
+			local m = MA()
+			m.spellOverrides = m.spellOverrides or {}
+			return m.spellOverrides[spellId]
+		end
+		local label = SpellRowLabel(spellId)
+		local ov = overrides[spellId]
+		if ov and ov.customText and ov.customText ~= "" then
+			label = label .. " |cff888888(" .. ov.customText .. ")|r"
+		end
+		p:Toggle(label, "Track this spell. The pencil sets a custom text shown in place of the spell name.",
+			function() return M().SpellEffectivelyEnabled(Ov(), spellId) end,
+			function(v)
+				local m = MA()
+				m.spellOverrides = m.spellOverrides or {}
+				local o = m.spellOverrides[spellId] or {}
+				o.enabled = v
+				if isCustom then o.class = spellClass end
+				m.spellOverrides[spellId] = o
+			end)
+		p:InlineIcon("Custom Text", "Interface\\Buttons\\UI-GuildButton-PublicNote-Up", function()
+			ns.ShowInputPopup({
+				title = "Custom Text",
+				message = "Text shown in place of the spell name (empty = spell name):",
+				text = (Ov() and Ov().customText) or "",
+				confirmText = "Save",
+				cancelText = "Cancel",
+				onConfirm = function(text)
+					local m = MA()
+					m.spellOverrides = m.spellOverrides or {}
+					local o = m.spellOverrides[spellId] or {}
+					o.customText = (text and text ~= "") and text or nil
+					if isCustom then o.class = spellClass end
+					m.spellOverrides[spellId] = o
+					ns.RebuildSettingsPage()
+				end,
+			})
+		end)
+		if isCustom then
+			p:InlineIcon("Remove", "Interface\\Buttons\\UI-StopButton", function()
+				MA().spellOverrides[spellId] = nil
+				ns.RebuildSettingsPage()
+			end)
+		end
+	end
+
+	-- EXTRA TRACKING -------------------------------------------------------
+	local function tsOff() return not MA().tsEnabled end
+	p:Section("Extra Tracking")
+	p:Toggle("Enable Time Spiral Tracker", "Flashes a banner whenever a tracked mobility spell lights up (spell activation glow, for example when its cooldown is reset). Use Unlock Mode to reposition/resize.",
+		function() return MA().tsEnabled == true end, function(v) MA().tsEnabled = v end)
+	p:Cog("Time Spiral Settings", {
+		{ type = "toggle", label = "Use Class Color",
+		  get = function() return MA().tsColorUseClass == true end, set = function(v) MA().tsColorUseClass = v end },
+		{ type = "color", label = "Color",
+		  get = function() local m = MA(); return m.tsColorR or 0.53, m.tsColorG or 1, m.tsColorB or 0 end,
+		  set = function(r, g, b) local m = MA(); m.tsColorR, m.tsColorG, m.tsColorB = r, g, b end,
+		  disabled = function() return MA().tsColorUseClass == true end },
+		{ type = "dropdown", label = "Sound", items = SoundItems,
+		  get = function() return MA().tsSoundKey or "none" end,
+		  set = function(v)
+			  MA().tsSoundKey = v
+			  if M().PlayAlertSound then M().PlayAlertSound(v) end
+		  end },
+	}, { disabled = tsOff, disabledTip = "Enable Time Spiral Tracker first." })
+	p:TextInput("Text Format", "Banner text. %.1f = seconds left, \\n = new line.",
+		function() return MA().tsTextFormat or "FREE MOVEMENT\\n%.1f" end,
+		function(t) MA().tsTextFormat = (t ~= "") and t or nil end,
+		"FREE MOVEMENT\\n%.1f")
+end
