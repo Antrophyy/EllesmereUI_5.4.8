@@ -1,11 +1,12 @@
-# 5.4.8 port: libraries are vendored (no packager), so Libs/ is tracked.
+# This repo is meant to be cloned straight into Interface\AddOns.
+# Track only the EllesmereUI* addon folders; ignore every other addon there.
+/*
+!/.gitignore
+!/EllesmereUI*/
 
-# Editor / OS files
+# Backups / editor files inside the addon folders
+*.bak
+*.old
 .DS_Store
 Thumbs.db
 .claude/
-CLAUDE.md
-
-# Backups
-*.bak
-*.old
