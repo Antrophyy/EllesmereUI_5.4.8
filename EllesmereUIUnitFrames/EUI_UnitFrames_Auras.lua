@@ -338,7 +338,8 @@ local function TrackedEntry(list, spellId)
 end
 
 local function DebuffAllowed(frame, s, spellId, caster, dtype, duration, isBoss)
-	if spellId and HIDDEN_DEBUFFS[spellId] then
+	-- Hide Exhaustion (retail debuffHideExhaustion, nil = on).
+	if spellId and HIDDEN_DEBUFFS[spellId] and s.debuffHideExhaustion ~= false then
 		return false
 	end
 	if TrackedEntry(s.debuffExclude, spellId) then

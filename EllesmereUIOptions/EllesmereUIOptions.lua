@@ -861,6 +861,416 @@ end
 ns.ShowStringPopup = ShowStringPopup
 
 ---------------------------------------------------------------------------
+-- Tracked Auras popup (retail EllesmereUI_Widgets_AuraPopups.lua
+-- ShowTrackedAurasPopup): INCLUDED / EXCLUDED spell lists, tri-state maps
+-- { [spellID] = true (on) | false (off) }. Adding an ID to one list removes
+-- it from the other. opts: eyebrow, title, subtitle, includeGet, excludeGet,
+-- includePrompt, excludePrompt, onChanged, copyFrom = { label, choices =
+-- { {key, label} }, apply(key) }, includeMine = { anyGet } | { mineGet }
+-- (anyGet: entries default to your casts, the map holds any-caster opt-outs;
+-- mineGet: entries default to any caster, the map holds MINE opt-ins).
+-- FULLSCREEN_DIALOG strata so the Add Spell ID input popup (TOOLTIP) is on top.
+---------------------------------------------------------------------------
+local trackedPopup
+
+local function TrackedSpellInfo(id)
+	local name, _, icon = GetSpellInfo(id)
+	return name, icon
+end
+
+local function BuildTrackedPopup()
+	local d = CreateFrame("Button", nil, UIParent)
+	trackedPopup = d
+	d:SetAllPoints(UIParent)
+	d:SetFrameStrata("FULLSCREEN_DIALOG")
+	d:SetFrameLevel(20)
+	d:EnableMouseWheel(true)
+	d:SetScript("OnMouseWheel", function() end)
+	Solid(d, "BACKGROUND", 0, 0, 0, 0.35):SetAllPoints()
+	d:SetScript("OnClick", function(self) self:Hide() end)
+
+	local p = CreateFrame("Frame", nil, d)
+	d.panel = p
+	p:SetSize(520, 470)
+	p:SetPoint("CENTER", UIParent, "CENTER", 0, 40)
+	p:SetFrameLevel(d:GetFrameLevel() + 10)
+	p:EnableMouse(true)
+	Solid(p, "BACKGROUND", 0.077, 0.068, 0.058, 1):SetAllPoints()
+	AddBorder(p, 1, 1, 1, 0.15)
+	p:EnableKeyboard(true)
+	p:SetScript("OnKeyDown", function(self, key)
+		self:SetPropagateKeyboardInput(key ~= "ESCAPE")
+		if key == "ESCAPE" then
+			d:Hide()
+		end
+	end)
+
+	d.eyebrow = NewText(p, 11, 0.9)
+	d.eyebrow:SetPoint("TOP", 0, -16)
+	d.eyebrow:SetJustifyH("CENTER")
+	AccentText(d.eyebrow, 0.9)
+	d.title = NewText(p, 20, 0.95)
+	d.title:SetPoint("TOP", 0, -32)
+	d.title:SetJustifyH("CENTER")
+	d.subtitle = NewText(p, 12, 0.6)
+	d.subtitle:SetPoint("TOP", d.title, "BOTTOM", 0, -4)
+	d.subtitle:SetWidth(470)
+	d.subtitle:SetJustifyH("CENTER")
+
+	local close = CreateFrame("Button", nil, p)
+	close:SetSize(19, 19)
+	close:SetPoint("TOPRIGHT", -10, -10)
+	local ct = close:CreateTexture(nil, "OVERLAY")
+	ct:SetAllPoints()
+	ct:SetTexture(ns.MEDIA .. "ui\\eui-close")
+	close:SetAlpha(0.5)
+	close:SetScript("OnEnter", function(self) self:SetAlpha(0.9) end)
+	close:SetScript("OnLeave", function(self) self:SetAlpha(0.5) end)
+	close:SetScript("OnClick", function() d:Hide() end)
+
+	-- Copy-from band: label, source dropdown, Apply.
+	local band = CreateFrame("Frame", nil, p)
+	d.band = band
+	band:SetHeight(24)
+	band.label = NewText(band, 12, 0.85)
+	band.label:SetPoint("LEFT", 0, 0)
+	band.apply = CreateFlatButton(band, 64, 24, "Apply", true)
+	band.apply:SetPoint("RIGHT", 0, 0)
+	local dd = CreateFrame("Button", nil, band)
+	band.dd = dd
+	dd:SetSize(110, 24)
+	dd:SetPoint("RIGHT", band.apply, "LEFT", -8, 0)
+	Solid(dd, "BACKGROUND", 0.114, 0.106, 0.099, 1):SetAllPoints()
+	AddBorder(dd, 0.4, 0.4, 0.4, 0.6)
+	dd.text = NewText(dd, 12, 0.8)
+	dd.text:SetPoint("LEFT", 8, 0)
+	dd.text:SetPoint("RIGHT", -18, 0)
+	dd.text:SetWordWrap(false)
+	local arrow = dd:CreateTexture(nil, "OVERLAY")
+	arrow:SetSize(10, 10)
+	arrow:SetPoint("RIGHT", -6, 0)
+	arrow:SetTexture(ns.MEDIA .. "icons\\eui-arrow")
+	local list = CreateFrame("Frame", nil, p)
+	band.list = list
+	list:SetFrameLevel(p:GetFrameLevel() + 20)
+	list:SetPoint("TOPLEFT", dd, "BOTTOMLEFT", 0, -2)
+	list:SetWidth(110)
+	Solid(list, "BACKGROUND", 0.077, 0.068, 0.058, 0.98):SetAllPoints()
+	AddBorder(list, 1, 1, 1, 0.15)
+	list.rows = {}
+	list:Hide()
+	dd:SetScript("OnClick", function() list:SetShown(not list:IsShown()) end)
+
+	d.vdiv = Solid(p, "ARTWORK", 1, 1, 1, 0.08)
+	d.vdiv:SetWidth(1)
+	d.hdiv = Solid(p, "ARTWORK", 1, 1, 1, 0.08)
+	d.hdiv:SetHeight(1)
+
+	local COL_W = 228
+	local function Column(x, colTitle)
+		local col = { rows = {} }
+		col.title = NewText(p, 11, 0.45)
+		col.title:SetText(colTitle)
+		col.add = CreateFlatButton(p, 96, 24, "Add Spell ID", true)
+		col.scroll = CreateFrame("ScrollFrame", nil, p)
+		col.child = CreateFrame("Frame", nil, col.scroll)
+		col.child:SetSize(COL_W, 1)
+		col.scroll:SetScrollChild(col.child)
+		col.scroll:EnableMouseWheel(true)
+		col.scroll:SetScript("OnMouseWheel", function(self, delta)
+			local maxS = max(0, col.child:GetHeight() - self:GetHeight())
+			self:SetVerticalScroll(min(maxS, max(0, self:GetVerticalScroll() - delta * 30)))
+		end)
+		col.x = x
+		function col:Place(secY)
+			self.title:ClearAllPoints()
+			self.title:SetPoint("TOPLEFT", p, "TOPLEFT", x, secY - 16)
+			self.add:ClearAllPoints()
+			self.add:SetPoint("TOPRIGHT", p, "TOPLEFT", x + COL_W, secY - 8)
+			self.scroll:ClearAllPoints()
+			self.scroll:SetPoint("TOPLEFT", p, "TOPLEFT", x, secY - 44)
+			self.scroll:SetPoint("BOTTOMRIGHT", p, "BOTTOMLEFT", x + COL_W, 62)
+		end
+		function col:Row(i)
+			local row = self.rows[i]
+			if row then
+				return row
+			end
+			row = CreateFrame("Button", nil, self.child)
+			row:SetSize(COL_W, 28)
+			row:SetPoint("TOPLEFT", self.child, "TOPLEFT", 0, -(i - 1) * 29)
+			row.hl = Solid(row, "BACKGROUND", 1, 1, 1, 0)
+			row.hl:SetAllPoints()
+			row.box = CreateFrame("Frame", nil, row)
+			row.box:SetSize(16, 16)
+			row.box:SetPoint("LEFT", 2, 0)
+			Solid(row.box, "BACKGROUND", 0.114, 0.106, 0.099, 1):SetAllPoints()
+			row.boxBorder = AddBorder(row.box, 0.4, 0.4, 0.4, 0.6)
+			row.chk = Solid(row.box, "ARTWORK", ACCENT[1], ACCENT[2], ACCENT[3], 1)
+			row.chk:SetPoint("TOPLEFT", 3, -3)
+			row.chk:SetPoint("BOTTOMRIGHT", -3, 3)
+			row.icon = row:CreateTexture(nil, "ARTWORK")
+			row.icon:SetSize(20, 20)
+			row.icon:SetPoint("LEFT", row.box, "RIGHT", 6, 0)
+			row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+			row.x = CreateFrame("Button", nil, row)
+			row.x:SetSize(14, 14)
+			row.x:SetPoint("RIGHT", -4, 0)
+			row.x:SetFrameLevel(row:GetFrameLevel() + 2)
+			local xt = row.x:CreateTexture(nil, "OVERLAY")
+			xt:SetAllPoints()
+			xt:SetTexture(ns.MEDIA .. "ui\\eui-close")
+			row.x:SetAlpha(0.5)
+			row.x:SetScript("OnEnter", function(self)
+				self:SetAlpha(0.9)
+				ShowTip(self, "Remove")
+			end)
+			row.x:SetScript("OnLeave", function(self)
+				self:SetAlpha(0.5)
+				HideTip()
+			end)
+			row.mine = CreateFrame("Button", nil, row)
+			row.mine:SetSize(30, 16)
+			row.mine:SetPoint("RIGHT", row.x, "LEFT", -2, 0)
+			row.mine:SetFrameLevel(row:GetFrameLevel() + 2)
+			row.mine.text = NewText(row.mine, 11, 1)
+			row.mine.text:SetPoint("CENTER")
+			row.mine.text:SetText("MINE")
+			row.name = NewText(row, 13, 0.9)
+			row.name:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
+			row.name:SetWordWrap(false)
+			row:SetScript("OnEnter", function(self) self.hl:SetTexture(1, 1, 1, 0.04) end)
+			row:SetScript("OnLeave", function(self) self.hl:SetTexture(1, 1, 1, 0) end)
+			self.rows[i] = row
+			return row
+		end
+		return col
+	end
+	d.inc = Column(24, "INCLUDED DEBUFFS")
+	d.exc = Column(268, "EXCLUDED DEBUFFS")
+
+	d.done = CreateFlatButton(p, 150, 32, "Done", true)
+	d.done:SetPoint("BOTTOM", 0, 14)
+	d.done:SetScript("OnClick", function() d:Hide() end)
+	d:Hide()
+end
+
+local function ShowTrackedAurasPopup(opts)
+	if not trackedPopup then
+		BuildTrackedPopup()
+	end
+	local d, p = trackedPopup, trackedPopup.panel
+	d.opts = opts
+	d.eyebrow:SetText(opts.eyebrow or "TRACKED AURAS")
+	d.title:SetText(opts.title or "Tracked Auras")
+	local hdrY = 0
+	if opts.subtitle then
+		d.subtitle:SetText(opts.subtitle)
+		d.subtitle:Show()
+		hdrY = 18
+	else
+		d.subtitle:Hide()
+	end
+	p:SetHeight(470 + hdrY)
+
+	local band = d.band
+	local cf = opts.copyFrom
+	band.list:Hide()
+	if cf then
+		band:ClearAllPoints()
+		band:SetPoint("TOPLEFT", p, "TOPLEFT", 24, -68 - hdrY)
+		band:SetPoint("TOPRIGHT", p, "TOPRIGHT", -24, -68 - hdrY)
+		band.label:SetText(cf.label or "Copy From:")
+		band.dd.text:SetText("Select...")
+		band.dd.text:SetTextColor(1, 1, 1, 0.8)
+		band.chosen = nil
+		for i, choice in ipairs(cf.choices) do
+			local row = band.list.rows[i]
+			if not row then
+				row = CreateFrame("Button", nil, band.list)
+				row:SetHeight(22)
+				row:SetPoint("TOPLEFT", 1, -4 - (i - 1) * 22)
+				row:SetPoint("TOPRIGHT", -1, -4 - (i - 1) * 22)
+				row.hl = Solid(row, "BACKGROUND", 1, 1, 1, 0)
+				row.hl:SetAllPoints()
+				row.text = NewText(row, 12, 0.85)
+				row.text:SetPoint("LEFT", 8, 0)
+				row:SetScript("OnEnter", function(self) self.hl:SetTexture(1, 1, 1, 0.06) end)
+				row:SetScript("OnLeave", function(self) self.hl:SetTexture(1, 1, 1, 0) end)
+				band.list.rows[i] = row
+			end
+			row.text:SetText(choice.label)
+			row:SetScript("OnClick", function()
+				band.chosen = choice.key
+				band.dd.text:SetText(choice.label)
+				band.dd.text:SetTextColor(1, 1, 1, 1)
+				band.list:Hide()
+			end)
+			row:Show()
+		end
+		for i = #cf.choices + 1, #band.list.rows do
+			band.list.rows[i]:Hide()
+		end
+		band.list:SetHeight(#cf.choices * 22 + 8)
+		band:Show()
+	else
+		band:Hide()
+	end
+
+	local secY = (cf and -104 or -68) - hdrY
+	d.hdiv:ClearAllPoints()
+	d.hdiv:SetPoint("TOPLEFT", p, "TOPLEFT", 20, secY)
+	d.hdiv:SetPoint("TOPRIGHT", p, "TOPRIGHT", -20, secY)
+	d.vdiv:ClearAllPoints()
+	d.vdiv:SetPoint("TOP", p, "TOP", 0, secY - 8)
+	d.vdiv:SetPoint("BOTTOM", p, "BOTTOM", 0, 62)
+	d.inc:Place(secY)
+	d.exc:Place(secY)
+
+	local function Changed()
+		if opts.onChanged then
+			opts.onChanged()
+		end
+	end
+	local withMine = opts.includeMine
+	local function ScopeMap()
+		if not withMine then
+			return nil
+		end
+		if withMine.mineGet then
+			return withMine.mineGet()
+		end
+		return withMine.anyGet and withMine.anyGet()
+	end
+	local function MineOn(id)
+		local map = ScopeMap()
+		if withMine.mineGet then
+			return map ~= nil and map[id] == true
+		end
+		return not (map and map[id])
+	end
+
+	local RefreshBoth
+	local function Fill(col, listFn, otherFn, mine)
+		for _, row in ipairs(col.rows) do
+			row:Hide()
+		end
+		local list = listFn() or {}
+		local sorted = {}
+		for id, v in pairs(list) do
+			local name, icon = TrackedSpellInfo(id)
+			sorted[#sorted + 1] = { id = id, on = v == true, name = name or tostring(id), icon = icon }
+		end
+		table.sort(sorted, function(a, b) return a.name < b.name end)
+		for i, e in ipairs(sorted) do
+			local row = col:Row(i)
+			row.icon:SetTexture(e.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+			row.name:SetText(e.name .. " |cff808080(" .. e.id .. ")|r")
+			row.name:SetPoint("RIGHT", row, "RIGHT", mine and -52 or -24, 0)
+			row.chk:SetTexture(ACCENT[1], ACCENT[2], ACCENT[3], 1)
+			row.chk:SetShown(e.on)
+			if e.on then
+				row.boxBorder:SetColor(ACCENT[1], ACCENT[2], ACCENT[3], 0.8)
+			else
+				row.boxBorder:SetColor(0.4, 0.4, 0.4, 0.6)
+			end
+			row.icon:SetDesaturated(not e.on)
+			row.icon:SetAlpha(e.on and 1 or 0.45)
+			row.name:SetAlpha(e.on and 0.9 or 0.45)
+			if mine then
+				row.mine:Show()
+				if MineOn(e.id) then
+					row.mine.text:SetTextColor(ACCENT[1], ACCENT[2], ACCENT[3], e.on and 1 or 0.45)
+				else
+					row.mine.text:SetTextColor(0.6, 0.6, 0.6, e.on and 0.4 or 0.25)
+				end
+				row.mine:SetScript("OnClick", function()
+					local map = ScopeMap()
+					if map then
+						map[e.id] = (not map[e.id]) or nil
+					end
+					Changed()
+					RefreshBoth()
+				end)
+				row.mine:SetScript("OnEnter", function(self)
+					ShowTip(self, MineOn(e.id) and "Showing this aura from your casts only; click for any caster."
+						or "Showing this aura from any caster; click for your casts only.")
+				end)
+				row.mine:SetScript("OnLeave", HideTip)
+			else
+				row.mine:Hide()
+			end
+			row:SetScript("OnClick", function()
+				local l2 = listFn()
+				if l2 then
+					l2[e.id] = not (l2[e.id] == true)
+					Changed()
+					RefreshBoth()
+				end
+			end)
+			row.x:SetScript("OnClick", function()
+				local l2 = listFn()
+				if l2 then
+					l2[e.id] = nil
+				end
+				if mine then
+					local map = ScopeMap()
+					if map then
+						map[e.id] = nil
+					end
+				end
+				Changed()
+				RefreshBoth()
+			end)
+			row:Show()
+		end
+		col.child:SetHeight(max(1, #sorted * 29))
+		col.add:SetScript("OnClick", function()
+			ShowInputPopup({
+				title = "Add Spell ID",
+				message = col == d.inc and (opts.includePrompt or "Enter the spell ID to always show.")
+					or (opts.excludePrompt or "Enter the spell ID to exclude."),
+				text = "",
+				confirmText = "Add",
+				cancelText = "Cancel",
+				onConfirm = function(text)
+					local id = tonumber(text or "")
+					local l2 = id and id > 0 and listFn()
+					if l2 then
+						local other = otherFn()
+						if other then
+							other[id] = nil
+						end
+						l2[id] = true
+						Changed()
+						if d:IsShown() and d.opts == opts then
+							RefreshBoth()
+						end
+					end
+				end,
+			})
+		end)
+	end
+	RefreshBoth = function()
+		Fill(d.inc, opts.includeGet, opts.excludeGet, withMine)
+		Fill(d.exc, opts.excludeGet, opts.includeGet, nil)
+	end
+	if cf then
+		band.apply:SetScript("OnClick", function()
+			if band.chosen then
+				cf.apply(band.chosen)
+				RefreshBoth()
+			end
+		end)
+	end
+	d.inc.scroll:SetVerticalScroll(0)
+	d.exc.scroll:SetVerticalScroll(0)
+	RefreshBoth()
+	d:Show()
+end
+ns.ShowTrackedAurasPopup = ShowTrackedAurasPopup
+
+---------------------------------------------------------------------------
 -- Dropdown menu (one shared menu for all dropdowns)
 ---------------------------------------------------------------------------
 local menu, menuCatcher
@@ -4800,6 +5210,13 @@ ns.RefreshSettings = function()
 	if window and window:IsShown() then
 		RefreshAll()
 	end
+end
+
+-- Popups that change settings outside a page control (Tracked Auras): run
+-- every module's apply hook, then refresh the open page.
+ns.ApplySettingsChange = function()
+	ApplyModules()
+	ns.RefreshSettings()
 end
 
 ---------------------------------------------------------------------------

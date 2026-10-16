@@ -326,6 +326,21 @@ local function UnitNameShort(unit)
 	return name or ""
 end
 
+-- Name Format (retail <prefix>NameFormat): "first" = first word, "last" =
+-- last word, nil = the whole name.
+local function FormatName(name, mode)
+	if not name or name == "" or not mode then
+		return name
+	end
+	if mode == "first" then
+		return name:match("^(%S+)") or name
+	elseif mode == "last" then
+		return name:match("(%S+)$") or name
+	end
+	return name
+end
+UF.FormatName = FormatName
+
 local function LevelText(frame, unit, s)
 	local level = Fake(frame) and (frame.isBoss and -1 or UnitLevel("player")) or UnitLevel(unit)
 	local text = (level and level > 0) and tostring(level) or "??"
@@ -407,6 +422,8 @@ function UF.ContentText(frame, content, prefix)
 		pct = 0
 	end
 	local name = fake and UF.PreviewData(frame).name or UnitNameShort(unit)
+	local nameFormat = prefix and s[prefix .. "NameFormat"]
+	name = FormatName(name, nameFormat)
 	if content == "name" then
 		return name
 	elseif content == "level" then
@@ -453,7 +470,7 @@ function UF.ContentText(frame, content, prefix)
 		return ""
 	elseif content == "nametotarget" or content == "targetname" then
 		local tunit = unit .. "target"
-		local tname = (not fake and UnitExists(tunit)) and UnitName(tunit) or nil
+		local tname = (not fake and UnitExists(tunit)) and FormatName(UnitName(tunit), nameFormat) or nil
 		local sepColor
 		if s[prefix .. "TargetSepClassColor"] and tname then
 			sepColor = UF.Hex(UF.UnitColor(tunit))

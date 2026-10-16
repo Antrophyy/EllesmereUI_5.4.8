@@ -297,9 +297,101 @@ local AURA_ANCHOR = {
 local AURA_GROWTH = { { "auto", "Auto" }, { "up", "Up" }, { "down", "Down" }, { "left", "Left" }, { "right", "Right" } }
 local STACK_POS = { { "bottomright", "Bottom Right" }, { "bottomleft", "Bottom Left" }, { "topright", "Top Right" }, { "topleft", "Top Left" }, { "center", "Center" } }
 local DEBUFF_MODE = {
-	{ "all", "Show All" }, { "own", "Own Only" }, { "important", "Boss Debuffs Only" },
+	{ "all", "Show All" }, { "tracked", "Only Tracked Auras" }, { "own", "Own Only" }, { "important", "Boss Debuffs Only" },
 	{ "importantOwn", "Boss and Own" }, { "importantOrOwn", "Boss or Own" },
 }
+
+-- Tracked Auras popup (retail ns.UFOpt_ShowTrackedAuras): debuffInclude /
+-- debuffExclude on the unit's settings; boss includes default to your own
+-- casts (any-caster opt-outs in debuffIncludeAnyCaster), target / focus
+-- includes default to any caster (MINE opt-ins in debuffIncludeMine).
+local TRACKED_UNITS = { { key = "target", label = "Target" }, { key = "focus", label = "Focus" }, { key = "boss", label = "Boss" } }
+local function TrackedList(unit, field)
+	local s = S(unit)
+	s[field] = s[field] or {}
+	return s[field]
+end
+
+local function ShowTrackedAuras(unit)
+	local choices = {}
+	for _, u in ipairs(TRACKED_UNITS) do
+		if u.key ~= unit then
+			choices[#choices + 1] = u
+		end
+	end
+	local Changed = ns.ApplySettingsChange
+	local function Clone(t)
+		if not t then
+			return nil
+		end
+		local c = {}
+		for k, v in pairs(t) do
+			c[k] = v
+		end
+		return c
+	end
+	ns.ShowTrackedAurasPopup({
+		eyebrow = "UNIT FRAME AURA FILTERS",
+		title = (UF.UNIT_LABELS[unit] or "Boss") .. " Tracked Auras",
+		subtitle = "Included debuffs show in addition to your Debuff Filter selection (unless it is set to Only Tracked Auras).",
+		includeGet = function() return TrackedList(unit, "debuffInclude") end,
+		excludeGet = function() return TrackedList(unit, "debuffExclude") end,
+		includeMine = unit == "boss" and { anyGet = function() return TrackedList(unit, "debuffIncludeAnyCaster") end }
+			or { mineGet = function() return TrackedList(unit, "debuffIncludeMine") end },
+		includePrompt = "Enter the spell ID to always show on this frame.",
+		excludePrompt = "Enter the spell ID to exclude from this frame.",
+		onChanged = Changed,
+		copyFrom = {
+			label = "Copy Included/Excluded Spells From:",
+			choices = choices,
+			apply = function(srcKey)
+				local src, dst = S(srcKey), S(unit)
+				if not (src and dst) then
+					return
+				end
+				dst.debuffInclude = Clone(src.debuffInclude)
+				dst.debuffExclude = Clone(src.debuffExclude)
+				local srcBoss, dstBoss = srcKey == "boss", unit == "boss"
+				if srcBoss == dstBoss then
+					dst.debuffIncludeAnyCaster = Clone(src.debuffIncludeAnyCaster)
+					dst.debuffIncludeMine = Clone(src.debuffIncludeMine)
+				else
+					-- Opposite polarity per unit kind: invert so every entry keeps its scope.
+					local srcMap = srcBoss and src.debuffIncludeAnyCaster or src.debuffIncludeMine
+					local inv = {}
+					for id in pairs(src.debuffInclude or {}) do
+						if not (srcMap and srcMap[id]) then
+							inv[id] = true
+						end
+					end
+					if dstBoss then
+						dst.debuffIncludeAnyCaster, dst.debuffIncludeMine = inv, nil
+					else
+						dst.debuffIncludeMine, dst.debuffIncludeAnyCaster = inv, nil
+					end
+				end
+				Changed()
+			end,
+		},
+	})
+end
+
+-- Debuff Filter dropdown items: "Edit Tracked Auras" pinned action above the modes.
+local function DebuffModeItems(unit)
+	local items = { { name = "Edit Tracked Auras", action = function() ShowTrackedAuras(unit) end }, { separator = true } }
+	for _, it in ipairs(Items(DEBUFF_MODE)) do
+		items[#items + 1] = it
+	end
+	return items
+end
+
+-- Hide Exhaustion (retail HideExhaustionRow): nil = on.
+local function HideExhaustionRow(unit)
+	return { type = "toggle", label = "Hide Exhaustion",
+		tip = "Hides Sated, Exhaustion, Temporal Displacement and the other Bloodlust lockout debuffs.",
+		get = function() return S(unit).debuffHideExhaustion ~= false end,
+		set = function(v) S(unit).debuffHideExhaustion = (not v) and false or nil end }
+end
 local DISPEL_OVERLAY = { { "none", "None" }, { "fill", "Fill Overlay" }, { "full", "Full Overlay" }, { "gradient", "Gradient Overlay" }, { "gradient_sharp", "Gradient Sharp" } }
 local ABSORB_PLACEMENT = { { "overlay", "Overlay" }, { "right", "From Right Edge" }, { "left", "From Left Edge" } }
 local OVERSHIELD = { { "never", "Never" }, { "always", "Always" }, { "fromleft", "From Left" } }
@@ -459,6 +551,18 @@ local function BarTextureRow(p, unit, withInherit, sync)
 	end
 end
 
+-- Name Format cog row (retail ns.UF_NameFormatRows): first word, last word
+-- or the whole name (nil). Only for contents that show a name.
+local NAME_FORMAT = { { "first", "First Name" }, { "last", "Last Name" }, { "full", "First and Last" } }
+local HAS_NAME = { name = true, levelname = true, namelevel = true, nametotarget = true, targetname = true }
+local function NameFormatRow(unit, prefix)
+	return { type = "dropdown", label = "Name Format", tip = "Shorten names to their first or last word.",
+		items = function() return Items(NAME_FORMAT) end,
+		get = function() return S(unit)[prefix .. "NameFormat"] or "full" end,
+		set = function(v) S(unit)[prefix .. "NameFormat"] = (v ~= "full") and v or nil end,
+		disabled = function() return not HAS_NAME[S(unit)[prefix .. "Content"] or "none"] end }
+end
+
 -- One health bar text slot: dropdown + swatches + cog (+ sync).
 local function TextSlot(p, unit, slot, label, list, sync)
 	local prefix = slot .. "Text"
@@ -492,7 +596,7 @@ local function TextSlot(p, unit, slot, label, list, sync)
 	})
 	ModeSwatch(p, "Class Colored", PlayerClassColor, function() return S(unit)[prefix .. "ClassColor"] end,
 		function() S(unit)[prefix .. "ClassColor"] = true end, none)
-	local rows = {}
+	local rows = { NameFormatRow(unit, prefix) }
 	if slot == "extra" then
 		rows[#rows + 1] = CD("Alignment", ALIGN, unit, "extraTextAlign", "left")
 	end
@@ -978,9 +1082,9 @@ local function AuraRows(p, unit)
 			{ "BossAura", "Boss Debuffs" }, { "Dispellable", "Dispellable By You" }, { "DispelTyped", "Dispels" },
 			{ "NonPlayer", "Non-Player Auras" }, { "AnyPlayer", "From Any Player" },
 			{ "DispelMagic", "Magic" }, { "DispelCurse", "Curse" }, { "DispelPoison", "Poison" }, { "DispelDisease", "Disease" },
-			{ "MatchAll", "Match All Filters" },
+			{ "MatchAll", "Match All Filters" }, { "HideExhaustion", "Hide Exhaustion" },
 		}
-		p:MultiSelect(label .. " Debuff Filter", "All Debuffs shows every debuff. Otherwise only debuffs that match the checked filters (any of them, or all with Match All Filters).",
+		p:MultiSelect(label .. " Debuff Filter", "All Debuffs shows every debuff. Otherwise only debuffs that match the checked filters (any of them, or all with Match All Filters). Hide Exhaustion hides Sated and the other Bloodlust lockouts.",
 			function()
 				local items = {}
 				for i, c in ipairs(debuffClasses) do
@@ -992,6 +1096,8 @@ local function AuraRows(p, unit)
 				local s = S(unit)
 				if v == "ShowAll" then
 					return s.debuffShowAll ~= false
+				elseif v == "HideExhaustion" then
+					return s.debuffHideExhaustion ~= false
 				elseif v == "HasDuration" then
 					return s.debuffHasDuration
 				elseif v == "MatchAll" then
@@ -1007,6 +1113,8 @@ local function AuraRows(p, unit)
 					s.debuffHasDuration = not s.debuffHasDuration or nil
 				elseif v == "MatchAll" then
 					s.debuffFilterMatch = s.debuffFilterMatch ~= "all" and "all" or nil
+				elseif v == "HideExhaustion" then
+					s.debuffHideExhaustion = (s.debuffHideExhaustion ~= false) and false or nil
 				else
 					s["debuff" .. v] = not s["debuff" .. v] or nil
 				end
@@ -1051,13 +1159,14 @@ local function AuraRows(p, unit)
 				get = function() return S(unit).buffPurgeGlow or 0 end,
 				set = function(v) S(unit).buffPurgeGlow = v ~= 0 and v or nil end },
 		}, { disabled = buffOff })
-		p:Dropdown(label .. " Debuff Filter", "Which debuffs are shown. 5.4.8 has no 'important' flag: the Boss options use the boss debuff flag.",
-			function() return Items(DEBUFF_MODE) end,
+		p:Dropdown(label .. " Debuff Filter", "Which debuffs are shown. Tracked Auras always show in addition (Edit Tracked Auras at the top). 5.4.8 has no 'important' flag: the Boss options use the boss debuff flag.",
+			function() return DebuffModeItems(unit) end,
 			function() return UF.DebuffFilterMode(S(unit)) end,
 			function() return LabelOf(DEBUFF_MODE, UF.DebuffFilterMode(S(unit))) end,
 			function(v) S(unit).debuffFilterMode = v end, nil, debuffOff)
 		p:Cog("Debuff Filter", {
 			CT("Has Duration", unit, "debuffHasDuration", false, nil, "Only show debuffs that have a duration, excluding permanent ones."),
+			HideExhaustionRow(unit),
 		}, { disabled = debuffOff })
 	end
 
@@ -1443,6 +1552,7 @@ local function BuildTextBar(p, unit)
 			prefix .. "ColorR", prefix .. "ColorG", prefix .. "ColorB", prefix .. "Size", prefix .. "X", prefix .. "Y" })
 		local function none() return off() or (S(unit)[contentKey] or "none") == "none" end
 		p:Cog("BTB " .. label .. " Settings", {
+			NameFormatRow(unit, prefix),
 			CS("Size", 8, 100, 1, unit, prefix .. "Size", 11),
 			CS("X Offset", -50, 50, 1, unit, prefix .. "X", 0),
 			CS("Y Offset", -30, 30, 1, unit, prefix .. "Y", 0),
@@ -1930,11 +2040,11 @@ local function BuildBoss(p)
 		function(r, g, b, a) local s = S(unit) s.auraBorderR, s.auraBorderG, s.auraBorderB = r, g, b if a then s.auraBorderA = a end end,
 		{ alpha = true })
 	p:Dropdown("Boss Debuff Filter", "Which debuffs are shown. 5.4.8 has no 'important' flag: the Boss options use the boss debuff flag.",
-		function() return Items(DEBUFF_MODE) end,
+		function() return DebuffModeItems(unit) end,
 		function() return UF.DebuffFilterMode(S(unit)) end,
 		function() return LabelOf(DEBUFF_MODE, UF.DebuffFilterMode(S(unit))) end,
 		function(v) S(unit).debuffFilterMode = v end)
-	p:Cog("Debuff Filter", { CT("Has Duration", unit, "debuffHasDuration", false) })
+	p:Cog("Debuff Filter", { CT("Has Duration", unit, "debuffHasDuration", false), HideExhaustionRow(unit) })
 	local buffClasses = { { "DurOnly", "Has Duration" }, { "Stealable", "Stealable" }, { "Dispellable", "Dispellable" } }
 	p:MultiSelect("Boss Buff Filter", "Nothing checked shows every buff.",
 		function()

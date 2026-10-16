@@ -503,6 +503,7 @@ local function BuildAssignedDebuffs(p, cfg)
 			local items = {
 				{ value = "__allDebuffs", name = "All Debuffs", tip = "Show every debuff. Use the Hide lane below to remove specific filters." },
 				{ value = "__debuffHasDuration", name = "Has Duration", tip = "Only show debuffs that have a duration, excluding permanent ones. Combines with the filters below; checked alone it shows every timed debuff." },
+				{ value = "__hideExhaustion", name = "Hide Exhaustion", tip = "Hides Sated, Exhaustion, Temporal Displacement and the other Bloodlust lockout debuffs." },
 				{ header = true, name = "Match Mode" },
 				{ value = "__matchAny", name = "Match Any Filter", tip = "Shows debuffs that match any checked Show filter (the default).",
 				  locked = AllOn, lockedTip = MATCH_LOCK },
@@ -523,6 +524,7 @@ local function BuildAssignedDebuffs(p, cfg)
 		function(v)
 			if v == "__allDebuffs" then return AllOn() end
 			if v == "__debuffHasDuration" then return cfg.hasDuration == true end
+			if v == "__hideExhaustion" then return cfg.hideExhaustion == true end
 			if v == "__matchAny" then return cfg.debuffMatch ~= "all" end
 			if v == "__matchAll" then return cfg.debuffMatch == "all" end
 			return cfg.classFilters and cfg.classFilters[v] and true or false
@@ -532,6 +534,8 @@ local function BuildAssignedDebuffs(p, cfg)
 				cfg.showAllDebuffs = not AllOn()
 			elseif v == "__debuffHasDuration" then
 				cfg.hasDuration = not (cfg.hasDuration == true) or nil
+			elseif v == "__hideExhaustion" then
+				cfg.hideExhaustion = not (cfg.hideExhaustion == true) or nil
 			elseif v == "__matchAny" then
 				cfg.debuffMatch = nil
 			elseif v == "__matchAll" then

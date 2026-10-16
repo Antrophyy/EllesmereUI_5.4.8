@@ -843,6 +843,8 @@ end
 ---------------------------------------------------------------------------
 -- Content of one bar: ordered list of { rec, cat } (cat = group key)
 ---------------------------------------------------------------------------
+P.EXHAUSTION = { [57723] = true, [57724] = true, [80354] = true, [95809] = true }
+
 local function DurationOK(a, cap)
 	if not cap then
 		return true
@@ -892,7 +894,11 @@ local function DebuffContent(cfg, out, limit)
 		local c = P.CLASS_BY_SKEY[skey]
 		if v and c then hidden[#hidden + 1] = c.key end
 	end
+	-- Hide Exhaustion (retail cfg.hideExhaustion, off by default): Sated,
+	-- Exhaustion, Temporal Displacement, Insanity.
+	local hideExh = cfg.hideExhaustion == true
 	local function Hidden(a)
+		if hideExh and P.EXHAUSTION[a.id] then return true end
 		for _, k in ipairs(hidden) do
 			if ClassMatch(k, a) then return true end
 		end
