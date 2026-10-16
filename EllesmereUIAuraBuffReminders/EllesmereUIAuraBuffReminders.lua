@@ -1495,6 +1495,24 @@ local function CollectConsumables(missing, playerClass, specID, inInstance, inCo
 			missing[#missing + 1] = e
 		end
 	end
+	-- Custom spells (retail Add Custom Spell, f.customIDs): reminded whenever
+	-- that buff is missing. Click casts it when the spell is known.
+	if shows and not inCombat and type(co.customIDs) == "table" then
+		for _, id in ipairs(co.customIDs) do
+			local name = SpellName(id)
+			if name and not PlayerHasAura({ id }) and not PlayerHasAuraNamed(name) then
+				local e
+				if Known(id) then
+					e = AddSpell(missing, "consumable", "custom" .. id, id, ShortLabel(name))
+				else
+					e = AcquireEntry()
+					e.mode, e.texture, e.label = "texture", Tex(id), ShortLabel(name)
+					e.cat, e.dismissKey = "consumable", "consumable:custom" .. id
+					missing[#missing + 1] = e
+				end
+			end
+		end
+	end
 	-- Death Knight runeforge missing on a weapon.
 	if not inCombat and playerClass == "DEATHKNIGHT" and co.enabled.runeforge ~= false then
 		for _, slot in ipairs({ 16, 17 }) do

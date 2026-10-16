@@ -487,6 +487,40 @@ local function BuildReminders(p)
 			get = function() return CDB().rcManaWarnY or 0 end,
 			set = function(v) CDB().rcManaWarnY = v; EABR.RCWApplySettings() end },
 	}, { disabled = rcwOff })
+
+	-- CUSTOM SPELLS (retail Add Custom Spell, consumables.customIDs): a
+	-- reminder whenever that buff is missing (same Where to Show).
+	p:Section("CUSTOM SPELLS")
+	p:Button("Add Custom Spell", "Type a spell ID to be reminded whenever that buff is missing. Unknown IDs are ignored.", "Add Spell ID", function()
+		ns.ShowInputPopup({
+			title = "Add Custom Spell",
+			message = "Enter the spell ID of the buff to be reminded about.",
+			text = "",
+			confirmText = "Add",
+			cancelText = "Cancel",
+			onConfirm = function(text)
+				local id = tonumber((text or ""):match("^%s*(%d+)%s*$"))
+				if not (id and GetSpellInfo(id)) then return end
+				local c = CDB()
+				c.customIDs = c.customIDs or {}
+				for _, v in ipairs(c.customIDs) do
+					if v == id then return end
+				end
+				c.customIDs[#c.customIDs + 1] = id
+				EABR.RequestRefresh()
+				ns.RebuildSettingsPage()
+			end,
+		})
+	end)
+	for i, id in ipairs(CDB().customIDs or {}) do
+		local name, _, icon = GetSpellInfo(id)
+		p:Button(format("|T%s:16:16:0:0:64:64:5:59:5:59|t %s |cff808080(%d)|r", icon or "Interface\\Icons\\INV_Misc_QuestionMark", name or "?", id),
+			"Remove this custom reminder.", "Remove", function()
+				table.remove(CDB().customIDs, i)
+				EABR.RequestRefresh()
+				ns.RebuildSettingsPage()
+			end)
+	end
 end
 
 ---------------------------------------------------------------------------
