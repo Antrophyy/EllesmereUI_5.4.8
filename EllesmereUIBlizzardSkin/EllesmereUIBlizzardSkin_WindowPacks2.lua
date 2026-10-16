@@ -404,7 +404,7 @@ end
 -------------------------------------------------------------------------------
 --  Merchant (MerchantFrame). Shell + tabs + item tiles as flat cards with a
 --  squared rarity-bordered icon; repair icon buttons keep their pictures.
---  Retail "Show As List" is NOT ported (see the report / options note).
+--  Show As List (retail): one scrolling list, below.
 -------------------------------------------------------------------------------
 do
 local M = {}
@@ -541,11 +541,220 @@ function M.IconButton(btn)
 	end
 end
 
+-------------------------------------------------------------------------------
+--  Show As List (retail merchantShowAsList / merchantListRowHeight): every
+--  item in one scrolling list of MerchantItemTemplate rows (EUI_MerchantItem<i>,
+--  the item button's ID = the merchant index, so Blizzard's own click, tooltip
+--  and buy handlers work) in place of the 10-per-page grid. Reload to switch.
+-------------------------------------------------------------------------------
+function M.HideNativeGrid()
+	local function Kill(fr)
+		if fr and not GetFFD(fr).killed then
+			GetFFD(fr).killed = true
+			fr:SetAlpha(0)
+			fr:Hide()
+			hooksecurefunc(fr, "Show", function(self) self:Hide() end)
+		end
+	end
+	for i = 1, 12 do
+		Kill(_G["MerchantItem" .. i])
+	end
+	Kill(_G.MerchantPrevPageButton)
+	Kill(_G.MerchantNextPageButton)
+	Kill(_G.MerchantPageText)
+end
+
+function M.CreateList(f)
+	local sf = CreateFrame("ScrollFrame", "EUIMerchantScrollFrame", f, "UIPanelScrollFrameTemplate")
+	sf:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -70)
+	sf:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -32, 90)
+	local child = CreateFrame("Frame", "EUIMerchantScrollChild", sf)
+	child:SetSize(sf:GetWidth() > 0 and sf:GetWidth() or 300, 1)
+	sf:SetScrollChild(child)
+	sf.rows = {}
+	f.euiListSF, f.euiListChild = sf, child
+	return sf, child
+end
+
+function M.SkinListRow(row)
+	local name = row:GetName()
+	local d = GetFFD(row)
+	if not d.bg then
+		d.bg = row:CreateTexture(nil, "BACKGROUND", nil, -7)
+		d.bg:SetTexture(Theme.bgR, Theme.bgG, Theme.bgB, Theme.bgA)
+		d.bg:SetAllPoints(row)
+		WSkin.AddBorder(row)
+	end
+	local slot = _G[name .. "SlotTexture"]
+	local nameFrame = _G[name .. "NameFrame"]
+	if nameFrame then
+		nameFrame:Hide()
+	end
+	local h = row:GetHeight()
+	local btn = _G[name .. "ItemButton"]
+	if btn then
+		btn:ClearAllPoints()
+		btn:SetPoint("LEFT", row, "LEFT", 0, 0)
+		btn:SetSize(h, h)
+		H.ItemTile(btn)
+	end
+	if slot then
+		slot:Hide()
+	end
+	local nameFS = _G[name .. "Name"]
+	if nameFS then
+		WSkin.Font(nameFS)
+		nameFS:ClearAllPoints()
+		nameFS:SetPoint("LEFT", btn or row, "RIGHT", 8, 0)
+		nameFS:SetJustifyH("LEFT")
+		if nameFS.SetWordWrap then
+			nameFS:SetWordWrap(false)
+		end
+	end
+end
+
+-- Alt currency of one list row (5.4.8 MerchantFrame_UpdateAltCurrency with
+-- the frame name pointed at our row).
+function M.ListAltCurrency(index, row)
+	local frameName = row:GetName() .. "AltCurrencyFrame"
+	local used, width = 0, 0
+	local count = GetMerchantItemCostInfo(index) or 0
+	if count > 0 then
+		for i = 1, MAX_ITEM_COST or 3 do
+			local tex, value, link = GetMerchantItemCostItem(index, i)
+			local button = _G[frameName .. "Item" .. (used + 1)]
+			if tex and button then
+				used = used + 1
+				button.index, button.item, button.itemLink = index, i, link
+				AltCurrencyFrame_Update(frameName .. "Item" .. used, tex, value)
+				width = width + button:GetWidth() + (used > 1 and 4 or 0)
+				button:Show()
+			end
+		end
+	end
+	for i = used + 1, MAX_ITEM_COST or 3 do
+		local b = _G[frameName .. "Item" .. i]
+		if b then
+			b:Hide()
+		end
+	end
+	return width
+end
+
+function M.UpdateList()
+	local f = _G.MerchantFrame
+	local sf, child = f and f.euiListSF, f and f.euiListChild
+	if not (sf and f:IsVisible()) then
+		return
+	end
+	local buyback = (f.selectedTab or 1) == 2
+	local n = buyback and (GetNumBuybackItems() or 0) or (GetMerchantNumItems() or 0)
+	local rowH = BS.DB().merchantListRowHeight or 32
+	local w = sf:GetWidth()
+	child:SetWidth(w)
+	local money = GetMoney()
+	for i = 1, n do
+		local row = sf.rows[i]
+		if not row then
+			row = CreateFrame("Frame", "EUI_MerchantItem" .. i, child, "MerchantItemTemplate")
+			sf.rows[i] = row
+		end
+		row:ClearAllPoints()
+		row:SetPoint("TOPLEFT", child, "TOPLEFT", 0, -(i - 1) * (rowH + 4))
+		row:SetSize(w, rowH)
+		M.SkinListRow(row)
+		local rname = row:GetName()
+		local btn = _G[rname .. "ItemButton"]
+		local nameFS = _G[rname .. "Name"]
+		local moneyFrame = _G[rname .. "MoneyFrame"]
+		local alt = _G[rname .. "AltCurrencyFrame"]
+		local name, texture, price, quantity, numAvailable, isUsable, extendedCost
+		if buyback then
+			name, texture, price, quantity, numAvailable, isUsable = GetBuybackItemInfo(i)
+		else
+			name, texture, price, quantity, numAvailable, isUsable, extendedCost = GetMerchantItemInfo(i)
+		end
+		if name then
+			local link = buyback and GetBuybackItemLink(i) or GetMerchantItemLink(i)
+			nameFS:SetText(name)
+			SetItemButtonTexture(btn, texture)
+			SetItemButtonCount(btn, quantity)
+			SetItemButtonStock(btn, numAvailable)
+			btn:SetID(i)
+			btn.link, btn.name, btn.texture = link, name, texture
+			btn.price = ((extendedCost and (price or 0) > 0) or not extendedCost) and price or nil
+			btn.extendedCost = extendedCost or nil
+			btn.hasItem = true
+			WSkin.SetQualityColor(btn, link)
+			local q = link and select(3, GetItemInfo(link))
+			if q and GetItemQualityColor then
+				nameFS:SetTextColor(GetItemQualityColor(q))
+			else
+				nameFS:SetTextColor(1, 1, 1)
+			end
+			moneyFrame:ClearAllPoints()
+			alt:ClearAllPoints()
+			local altW = (not buyback and extendedCost) and M.ListAltCurrency(i, row) or 0
+			if altW > 0 then
+				alt:SetWidth(altW)
+				alt:SetPoint("RIGHT", row, "RIGHT", -10, 0)
+				alt:Show()
+			else
+				alt:Hide()
+			end
+			if (price or 0) > 0 then
+				MoneyFrame_Update(moneyFrame:GetName(), price)
+				SetMoneyFrameColor(moneyFrame:GetName(), money < price and "gray" or nil)
+				if altW > 0 then
+					moneyFrame:SetPoint("RIGHT", alt, "LEFT", -5, 0)
+				else
+					moneyFrame:SetPoint("RIGHT", row, "RIGHT", 3, 0)
+				end
+				moneyFrame:Show()
+				nameFS:SetPoint("RIGHT", moneyFrame, "LEFT", -10, 0)
+			else
+				moneyFrame:Hide()
+				nameFS:SetPoint("RIGHT", altW > 0 and alt or row, altW > 0 and "LEFT" or "RIGHT", -10, 0)
+			end
+			local icon = _G[btn:GetName() .. "IconTexture"]
+			if icon then
+				if not buyback and numAvailable == 0 then
+					icon:SetVertexColor(0.5, 0.5, 0.5)
+				elseif not isUsable then
+					icon:SetVertexColor(1, 0, 0)
+				else
+					icon:SetVertexColor(1, 1, 1)
+				end
+			end
+			row:Show()
+		else
+			row:Hide()
+		end
+	end
+	for i = n + 1, #sf.rows do
+		sf.rows[i]:Hide()
+	end
+	child:SetHeight(math.max(1, n * (rowH + 4)))
+end
+ns._Merchant_RefreshRowHeight = M.UpdateList
+
 local _hooked = false
 local function Skin_Merchant()
 	local f = _G.MerchantFrame
 	if not f then
 		return
+	end
+	if BS.DB().merchantShowAsList == true then
+		M.HideNativeGrid()
+		if not f.euiListSF then
+			M.CreateList(f)
+			for _, fn in ipairs({ "MerchantFrame_UpdateMerchantInfo", "MerchantFrame_UpdateBuybackInfo" }) do
+				if type(_G[fn]) == "function" then
+					hooksecurefunc(fn, M.UpdateList)
+				end
+			end
+		end
+		M.UpdateList()
 	end
 	WSkin.Shell("merchant", f)
 	WSkin.RemovePortrait(f)
@@ -623,6 +832,22 @@ WSkin.RegisterWindow({
 	elvui = "merchant",
 	apply = Skin_Merchant,
 	options = function(p, U)
+		p:Toggle("Show As List", "Shows the items as one scrolling list instead of pages. Needs a UI reload.",
+			function() return BS.DB().merchantShowAsList == true end,
+			function(v)
+				BS.DB().merchantShowAsList = v and true or false
+				ns.ShowConfirmPopup({
+					title = "Reload Required",
+					message = "Merchant Show As List setting requires a UI reload to fully apply.",
+					confirmText = "Reload Now",
+					cancelText = "Later",
+					reload = true,
+				})
+			end)
+		p:Slider("Row Height", "Height of each row in the merchant list.", 24, 40, 1,
+			function() return BS.DB().merchantListRowHeight or 32 end,
+			function(v) BS.DB().merchantListRowHeight = v; M.UpdateList() end,
+			function() return BS.DB().merchantShowAsList ~= true end)
 		p:Toggle("Show Item Level", "Shows the item level on weapons and armor a vendor sells.",
 			function() return BS.DB().merchantShowItemLevel == true end,
 			function(v)

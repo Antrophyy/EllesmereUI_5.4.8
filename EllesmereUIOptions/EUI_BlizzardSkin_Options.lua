@@ -189,9 +189,10 @@ local CHARACTER_SHEET_PAGE = {
 		local ITEM_DETAILS = {
 			{ key = "showItemLevel", text = "Item Level" },
 			{ key = "showUpgradeTrack", text = "Upgrade Level" },
+			{ key = "charSheetItemStats", text = "Stat Letters" },
 			{ key = "showGems", text = "Gems" },
 		}
-		p:MultiSelect("Item Details", "Choose what shows on each equipped item. Upgrade Level is the item upgrade (for example 1/2). Gems are not shown with Blizz Default.",
+		p:MultiSelect("Item Details", "Choose what shows on each equipped item. Upgrade Level is the item upgrade (for example 1/2). Stat Letters are the item's secondary stats (C Crit, H Haste, M Mastery, Hit, Exp, S Spirit, D Dodge, P Parry). Gems are not shown with Blizz Default.",
 			function() return KeyItems(ITEM_DETAILS) end,
 			function(key) return CS()[key] end,
 			function(key) CS()[key] = not CS()[key] end,
@@ -239,6 +240,8 @@ local CHARACTER_SHEET_PAGE = {
 			function() return off() or not CS().showEnchants or not CS().enchantUseColor end)
 		p:Toggle("Gear Flyout Item Levels", "Shows the item level on each item in the gear flyout (the popup of same-slot bag items next to an equipped slot), colored by quality.",
 			function() return CS().flyoutItemLevels end, function(v) CS().flyoutItemLevels = v end, off)
+		p:Toggle("Gear Flyout Item Stats", "Shows each item's secondary stat letters (C Crit, H Haste, M Mastery, ...) in the gear flyout.",
+			function() return CS().flyoutItemStats end, function(v) CS().flyoutItemStats = v end, off)
 		p:Toggle("Hide Slot Flyout Arrows", "Hide the arrows beside the equipment slots. The slot flyouts still work (hold Alt over a slot).",
 			function() return CS().hideSlotFlyoutArrows end, function(v) CS().hideSlotFlyoutArrows = v end, off)
 		p:Toggle("Show Item Durability", "Show the equipped durability (the lowest item), colored from green to red.",

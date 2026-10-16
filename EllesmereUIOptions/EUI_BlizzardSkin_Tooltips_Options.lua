@@ -305,6 +305,14 @@ local function Build(p)
 		function() return CoreDB().showSpellID or false end,
 		function(v) CoreDB().showSpellID = v end)
 	p:Cog("Spell ID", {
+		{ type = "dropdown", label = "Use Modifier", tip = "The ID lines only show while this modifier is held.",
+		  items = function() return KeyItems(MODIFIERS) end,
+		  get = function() return CoreDB().spellIDModifier or "none" end,
+		  set = function(v) CoreDB().spellIDModifier = v end,
+		  labelFn = function() return KeyLabel(MODIFIERS, CoreDB().spellIDModifier or "none") end },
+		{ type = "toggle", label = "Show Icon ID", tip = "Adds the icon's file name (5.4.8 has no icon IDs).",
+		  get = function() return CoreDB().showIconID ~= false end,
+		  set = function(v) CoreDB().showIconID = v end },
 		{ type = "toggle", label = "Show Item ID",
 		  get = function() return CoreDB().showItemID ~= false end,
 		  set = function(v) CoreDB().showItemID = v end },

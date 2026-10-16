@@ -2637,6 +2637,32 @@ local function UpdateGems(slotName, link)
 	end
 end
 
+-- Stat Letters (retail charSheetItemStats): the secondary stats an item has,
+-- as letters (C Crit, H Haste, M Mastery, Hit, Exp, S Spirit, D Dodge, P Parry,
+-- PvP Power, Res). GetItemStats reads the item's base stats (not reforges).
+local STAT_LETTERS = {
+	{ "ITEM_MOD_CRIT_RATING_SHORT", "C" }, { "ITEM_MOD_HASTE_RATING_SHORT", "H" },
+	{ "ITEM_MOD_MASTERY_RATING_SHORT", "M" }, { "ITEM_MOD_HIT_RATING_SHORT", "Hit" },
+	{ "ITEM_MOD_EXPERTISE_RATING_SHORT", "Exp" }, { "ITEM_MOD_SPIRIT_SHORT", "S" },
+	{ "ITEM_MOD_DODGE_RATING_SHORT", "D" }, { "ITEM_MOD_PARRY_RATING_SHORT", "P" },
+	{ "ITEM_MOD_PVP_POWER_SHORT", "PvP" }, { "ITEM_MOD_RESILIENCE_RATING_SHORT", "Res" },
+}
+local statScratch = {}
+function ns.ItemStatLetters(link)
+	wipe(statScratch)
+	local stats = GetItemStats(link, statScratch)
+	if not stats then
+		return nil
+	end
+	local out
+	for _, e in ipairs(STAT_LETTERS) do
+		if (stats[e[1]] or 0) > 0 then
+			out = out and (out .. " " .. e[2]) or e[2]
+		end
+	end
+	return out
+end
+
 local function UpdateSlotInfo(slotName)
 	local slot, data = _G[slotName], S.slots[slotName]
 	if not slot or not data or not data.itemLevel then
@@ -2658,9 +2684,13 @@ local function UpdateSlotInfo(slotName)
 		data.itemLevel:Hide()
 	end
 
-	-- Upgrade level "(1/2)" in place of the retail upgrade track.
-	if db.showUpgradeTrack and info and info.upCur and info.upMax and info.upMax > 0 then
-		data.upgrade:SetText("(" .. info.upCur .. "/" .. info.upMax .. ")")
+	-- Upgrade level "(1/2)" in place of the retail upgrade track, then the
+	-- Stat Letters (retail charSheetItemStats: the item's secondary stats).
+	local up = (db.showUpgradeTrack and info and info.upCur and info.upMax and info.upMax > 0)
+		and ("(" .. info.upCur .. "/" .. info.upMax .. ")") or nil
+	local letters = db.charSheetItemStats and link and ns.ItemStatLetters(link) or nil
+	if up or letters then
+		data.upgrade:SetText(up and letters and (up .. " " .. letters) or up or letters)
 		data.upgrade:SetTextColor(r, g, b, 0.8)
 		data.upgrade:Show()
 	else
@@ -2732,8 +2762,36 @@ end
 ---------------------------------------------------------------------------
 local flyoutText = setmetatable({}, { __mode = "k" })
 
+local flyoutStats = setmetatable({}, { __mode = "k" })
+
 local function PaintFlyoutButton(button)
 	local fs = flyoutText[button]
+	-- Show Item Stats (retail flyoutItemStats): the stat letters at the bottom.
+	local sfs = flyoutStats[button]
+	local statLink
+	if db.flyoutItemStats and button:IsShown() and button.location
+		and not (EQUIPMENTFLYOUT_FIRST_SPECIAL_LOCATION and button.location >= EQUIPMENTFLYOUT_FIRST_SPECIAL_LOCATION) then
+		local player, _, bags, voidStorage, slot, bag = EquipmentManager_UnpackLocation(button.location)
+		if bags then
+			statLink = GetContainerItemLink(bag, slot)
+		elseif player and slot and not voidStorage then
+			statLink = GetInventoryItemLink("player", slot)
+		end
+	end
+	local letters = statLink and ns.ItemStatLetters(statLink)
+	if letters then
+		if not sfs then
+			sfs = button:CreateFontString(nil, "OVERLAY")
+			SetFont(sfs, 9, "OUTLINE")
+			sfs:SetPoint("BOTTOM", button, "BOTTOM", 0, 2)
+			sfs:SetJustifyH("CENTER")
+			flyoutStats[button] = sfs
+		end
+		sfs:SetText(letters)
+		sfs:SetTextColor(1, 1, 1, 0.9)
+	elseif sfs then
+		sfs:SetText("")
+	end
 	if not db.flyoutItemLevels or not button:IsShown() then
 		if fs then
 			fs:SetText("")

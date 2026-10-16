@@ -395,12 +395,35 @@ local function HasLine(tooltip, tag)
 	return false
 end
 
+-- Use Modifier (retail spellIDModifier): the ID lines only while it is held.
+local MODIFIER_DOWN = { shift = IsShiftKeyDown, control = IsControlKeyDown, alt = IsAltKeyDown }
+local function ModifierOK()
+	local m = MODIFIER_DOWN[DB().spellIDModifier or "none"]
+	return not m or m()
+end
+
 local function AddID(tooltip, tag, id)
-	if not id or not DB().showSpellID or HasLine(tooltip, tag) then
+	if not id or not DB().showSpellID or not ModifierOK() or HasLine(tooltip, tag) then
 		return
 	end
 	tooltip:AddDoubleLine(tag, tostring(id), 1, 1, 1, 1, 1, 1)
 	tooltip:Show()
+end
+
+-- Show Icon ID (retail showIconID): 5.4.8 has no icon file IDs, so the line
+-- shows the icon's file name.
+local function AddIconID(tooltip, icon)
+	if type(icon) ~= "string" or DB().showIconID == false then
+		return
+	end
+	AddID(tooltip, "IconID", icon:match("([^\\/]+)$") or icon)
+end
+
+local function AddSpellID(tooltip, id)
+	AddID(tooltip, "SpellID", id)
+	if id and DB().showSpellID then
+		AddIconID(tooltip, (select(3, GetSpellInfo(id))))
+	end
 end
 
 local function HookTooltip(tooltip)
@@ -409,7 +432,7 @@ local function HookTooltip(tooltip)
 	end
 	tooltip.euiIDHooked = true
 	tooltip:HookScript("OnTooltipSetSpell", function(self)
-		AddID(self, "SpellID", select(3, self:GetSpell()))
+		AddSpellID(self, select(3, self:GetSpell()))
 	end)
 	tooltip:HookScript("OnTooltipSetItem", function(self)
 		if DB().showItemID == false then
@@ -417,15 +440,18 @@ local function HookTooltip(tooltip)
 		end
 		local _, link = self:GetItem()
 		AddID(self, "ItemID", link and tonumber(link:match("item:(%d+)")))
+		if link then
+			AddIconID(self, GetItemIcon(link))
+		end
 	end)
 	hooksecurefunc(tooltip, "SetUnitAura", function(self, unit, index, filter)
-		AddID(self, "SpellID", select(11, UnitAura(unit, index, filter)))
+		AddSpellID(self, select(11, UnitAura(unit, index, filter)))
 	end)
 	hooksecurefunc(tooltip, "SetUnitBuff", function(self, unit, index, filter)
-		AddID(self, "SpellID", select(11, UnitBuff(unit, index, filter)))
+		AddSpellID(self, select(11, UnitBuff(unit, index, filter)))
 	end)
 	hooksecurefunc(tooltip, "SetUnitDebuff", function(self, unit, index, filter)
-		AddID(self, "SpellID", select(11, UnitDebuff(unit, index, filter)))
+		AddSpellID(self, select(11, UnitDebuff(unit, index, filter)))
 	end)
 end
 
