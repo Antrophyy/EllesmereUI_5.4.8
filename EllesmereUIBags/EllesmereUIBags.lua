@@ -160,10 +160,11 @@ function EUI_Bags:ApplyWindowLayering()
         return
     end
     layerUpdateFrame:UnregisterEvent("PLAYER_REGEN_ENABLED")
-    local allowOtherWindows = BP().bagAllowWindowsOverBags ~= false
-    local strata = allowOtherWindows and "MEDIUM" or "HIGH"
+    -- Frame Strata (retail bagFrameStrata); unset reads Allow Windows Over Bags.
+    local p = BP()
+    local strata = p.bagFrameStrata or (p.bagAllowWindowsOverBags == false and "HIGH" or "MEDIUM")
     self:SetFrameStrata(strata)
-    self:SetFrameLevel(allowOtherWindows and 1 or 100)
+    self:SetFrameLevel(strata == "HIGH" and 100 or 1)
     EUI_BagsWindow:SetFrameStrata(strata)
     EUI_BagsReagent:SetFrameStrata(strata)
     local sf = self._scrollFrame
@@ -1754,6 +1755,24 @@ local function CreateHeader()
 
     EUI_Bags.Header = header
     EUI_Bags._bagsBtn = bagsBtn
+    EUI_Bags._searchBox = EUI_Bags._searchBox or search
+    EUI_Bags:SyncHeaderIcons()
+end
+
+-- Bag Top Bar Icons (retail SyncHeaderIcons): Sort Icon and Bags Icon on or
+-- off; the Bags icon moves next to the search box while Sort is hidden.
+function EUI_Bags:SyncHeaderIcons()
+    local sort, bags, search = self._sortBtn, self._bagsBtn, self._searchBox
+    if not (sort and bags and search) then return end
+    local p = BP()
+    sort:SetShown(p.bagShowSortIcon ~= false)
+    bags:SetShown(p.bagShowBagsIcon ~= false)
+    bags:ClearAllPoints()
+    if sort:IsShown() then
+        bags:SetPoint("RIGHT", sort, "LEFT", -6, 0)
+    else
+        bags:SetPoint("RIGHT", search, "LEFT", -13, 0)
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -4011,9 +4030,12 @@ end
 -------------------------------------------------------------------------------
 local _sidebarBtns = {}  -- array of sidebar button frames
 
+-- 0 while collapsed under Hide Sidebar Icons When Collapsed (retail; default
+-- off): the sidebar hides and its expand arrow sits left of the window title.
 local function GetSidebarWidth()
-    local collapsed = BP().bagSidebarCollapsed
-    return collapsed and SIDEBAR_W_COLLAPSED or SIDEBAR_W_EXPANDED
+    local p = BP()
+    if not p.bagSidebarCollapsed then return SIDEBAR_W_EXPANDED end
+    return p.bagHideSidebarIconsCollapsed == true and 0 or SIDEBAR_W_COLLAPSED
 end
 
 -------------------------------------------------------------------------------
@@ -4653,7 +4675,7 @@ local function CreateSidebar()
     local sidebar = CreateFrame("Frame", nil, EUI_Bags)
     sidebar:SetPoint("TOPLEFT", EUI_Bags, "TOPLEFT", 0, -(HEADER_H))
     sidebar:SetPoint("BOTTOMLEFT", EUI_Bags.Footer, "TOPLEFT", 0, 0)
-    sidebar:SetWidth(GetSidebarWidth())
+    sidebar:SetWidth(math.max(GetSidebarWidth(), 0.001))
     sidebar.bg = sidebar:CreateTexture(nil, "BACKGROUND", nil, 2)
     sidebar.bg:SetAllPoints()
     sidebar.bg:SetTexture(0, 0, 0, 0.25)
@@ -4670,6 +4692,31 @@ local function CreateSidebar()
     -- Sidebar header: "Categories" label + collapse arrow
     local sidebarHdr, collapseBtn, UpdateCollapseArrow = ns.CreateSidebarHeader(sidebar, EllesmereUI.L("Categories"), "bagSidebarCollapsed")
 
+    -- The expand arrow left of the window title, shown while a collapsed
+    -- sidebar hides (Hide Sidebar Icons When Collapsed; BuildSidebarButtons).
+    local titleArrow = CreateFrame("Button", nil, EUI_Bags.Header)
+    titleArrow:SetSize(12, 12)
+    titleArrow._icon = titleArrow:CreateTexture(nil, "OVERLAY")
+    titleArrow._icon:SetAllPoints()
+    titleArrow._icon:SetTexture("Interface\\AddOns\\EllesmereUIBags\\Media\\eui-arrow-left")
+    titleArrow._icon:SetAlpha(0.4)
+    titleArrow._icon:SetRotation(math.pi)
+    titleArrow:SetPoint("LEFT", EUI_Bags.Header, "LEFT", 8, 0)
+    titleArrow:SetScript("OnEnter", function(self)
+        self._icon:SetAlpha(0.9)
+        EUI.ShowWidgetTooltip(self, "Expand Sidebar")
+    end)
+    titleArrow:SetScript("OnLeave", function(self)
+        self._icon:SetAlpha(0.4)
+        EUI.HideWidgetTooltip()
+    end)
+    titleArrow:SetScript("OnClick", function()
+        EUI.HideWidgetTooltip()
+        collapseBtn:Click()
+    end)
+    titleArrow:Hide()
+    EUI_Bags._titleArrow = titleArrow
+
     collapseBtn:SetScript("OnClick", function()
         local center = EUI_Bags:GetCenter()
         local screenW = UIParent:GetWidth()
@@ -4679,7 +4726,7 @@ local function CreateSidebar()
 
         BP().bagSidebarCollapsed = not BP().bagSidebarCollapsed
         UpdateCollapseArrow()
-        sidebar:SetWidth(GetSidebarWidth())
+        sidebar:SetWidth(math.max(GetSidebarWidth(), 0.001))
         EUI_Bags:RefreshInventory()
 
         if onRightSide and oldRight and oldTop then
@@ -4696,7 +4743,7 @@ local function CreateSidebar()
     sidebarSF:SetPoint("BOTTOMRIGHT", sidebar, "BOTTOMRIGHT", 0, 0)
     sidebarSF:EnableMouseWheel(true)
     local sidebarChild = CreateFrame("Frame", nil, sidebarSF)
-    sidebarChild:SetWidth(GetSidebarWidth())
+    sidebarChild:SetWidth(math.max(GetSidebarWidth(), 1))
     sidebarSF:SetScrollChild(sidebarChild)
 
     local SIDEBAR_SCROLL_STEP = 28
@@ -4974,7 +5021,21 @@ local function BuildSidebarButtons(categoryCounts, totalCount)
     if not sidebar then return end
     local collapsed = BP().bagSidebarCollapsed
     local sidebarW = GetSidebarWidth()
-    sidebar:SetWidth(sidebarW)
+    sidebar:SetWidth(math.max(sidebarW, 0.001))
+    -- A collapsed sidebar with no icon strip hides; its expand arrow sits left
+    -- of the window title meanwhile.
+    local hidden = sidebarW == 0
+    if EUI_Bags._sidebarHidden ~= hidden then
+        EUI_Bags._sidebarHidden = hidden
+        sidebar:SetShown(not hidden)
+        local hdr = EUI_Bags.Header
+        if EUI_Bags._titleArrow then EUI_Bags._titleArrow:SetShown(hidden) end
+        if hdr and hdr.title then
+            hdr.title:ClearAllPoints()
+            hdr.title:SetPoint("LEFT", hdr, "LEFT", hidden and 24 or 8, 0)
+        end
+    end
+    if hidden then return end
 
     if EUI_Bags._sidebarHdr then
         if collapsed then EUI_Bags._sidebarHdr._label:Hide()
@@ -6163,26 +6224,34 @@ function EUI_Bags:RefreshInventory()
             if cat.isPinned then pinnedCatIdx = i end
         end
     end
-    local recentCount = 0
-    local showRecent = BP().bagShowRecentItems ~= false
-    if recentCatIdx and EUI_Bags._recentItems and showRecent then
-        for _, data in ipairs(tempItems) do
-            if data.info and data.info.itemID and EUI_Bags._recentItems[data.info.itemID] then
-                recentCount = recentCount + 1
-            end
-        end
-        categoryCounts[recentCatIdx] = recentCount
-    end
+    -- Hide from Other Categories (retail bagHidePinnedInCategories): pinned
+    -- items show only in Pinned Items.
     local showPinned = BP().bagShowPinnedItems ~= false
     local pinnedSet = EllesmereUIDB and EllesmereUIDB.bagPinnedItems
+    local hidePinned = BP().bagHidePinnedInCategories == true
     if pinnedCatIdx and pinnedSet and showPinned then
         local pinnedCount = 0
         for _, data in ipairs(tempItems) do
             if data.info and data.info.itemID and IsItemPinned(pinnedSet, data.itemLink, data.info.itemID) then
                 pinnedCount = pinnedCount + 1
+                if hidePinned then
+                    data._pinnedOnly = true
+                    local ci = data.categoryIndex
+                    if ci and categoryCounts[ci] then categoryCounts[ci] = categoryCounts[ci] - 1 end
+                end
             end
         end
         categoryCounts[pinnedCatIdx] = pinnedCount
+    end
+    local recentCount = 0
+    local showRecent = BP().bagShowRecentItems ~= false
+    if recentCatIdx and EUI_Bags._recentItems and showRecent then
+        for _, data in ipairs(tempItems) do
+            if not data._pinnedOnly and data.info and data.info.itemID and EUI_Bags._recentItems[data.info.itemID] then
+                recentCount = recentCount + 1
+            end
+        end
+        categoryCounts[recentCatIdx] = recentCount
     end
 
     -- 3. Update sidebar
@@ -6230,6 +6299,7 @@ function EUI_Bags:RefreshInventory()
         elseif filterSet then
             show = data.categoryIndex and filterSet[data.categoryIndex]
         end
+        if data._pinnedOnly and (isRecentView or filterSet) then show = false end
         if show and data.info and data.info.isFiltered then show = false end
         if show then displayItems[#displayItems + 1] = data end
     end
@@ -6949,6 +7019,23 @@ local function StartAddon()
             end
         end
     end
+
+    -- Open Bags with Character Window (retail ns.ToggleBagsWithCharacterFrame):
+    -- hooks installed once, on the first time the option is on.
+    local characterBagHooksInstalled = false
+    function EUI_Bags:HookCharacterFrame()
+        if not BP().bagOpenWithCharacter then return end
+        local frame = _G.CharacterFrame
+        if not frame or characterBagHooksInstalled then return end
+        characterBagHooksInstalled = true
+        frame:HookScript("OnShow", function()
+            if BP().bagOpenWithCharacter and not EUI_Bags:IsVisible() then ToggleEUI() end
+        end)
+        frame:HookScript("OnHide", function()
+            if BP().bagOpenWithCharacter and EUI_Bags:IsVisible() then ToggleEUI() end
+        end)
+    end
+    EUI_Bags:HookCharacterFrame()
 
     local _lastToggleTime = 0
     local function SmartToggleBags()

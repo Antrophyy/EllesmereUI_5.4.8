@@ -172,6 +172,7 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
         if btn.BindTypeText then btn.BindTypeText:SetText("") end
         if btn.SetNameText then btn.SetNameText:SetText("") end
         if btn.ProfessionQualityOverlay then btn.ProfessionQualityOverlay:Hide() end
+        if btn._junkCoin then btn._junkCoin:Hide() end
         if btn.IconBorder then btn.IconBorder:Hide() end
         if btn.NormalTexture then btn.NormalTexture:SetAlpha(0) end
         if btn._warbankDim then btn._warbankDim:Hide() end
@@ -188,6 +189,18 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
         local quality = data.info.quality or 1
         local isJunk = BP().bagDesaturateJunkItems and quality == 0
         SetItemButtonDesaturated(btn, data.info.isLocked or isJunk)
+        -- Junk Item Visuals: Show Coin Icon (retail bagShowJunkCoin) on grey items.
+        if quality == 0 and BP().bagShowJunkCoin == true then
+            if not btn._junkCoin then
+                btn._junkCoin = btn:CreateTexture(nil, "OVERLAY", nil, 6)
+                btn._junkCoin:SetTexture("Interface\\MoneyFrame\\UI-GoldIcon")
+                btn._junkCoin:SetSize(12, 12)
+                btn._junkCoin:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", -3, -3)
+            end
+            btn._junkCoin:Show()
+        elseif btn._junkCoin then
+            btn._junkCoin:Hide()
+        end
 
         local filtered = data.info.isFiltered
         btn:SetAlpha(filtered and 0.2 or 1)
@@ -814,7 +827,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
             local recentItems = {}
             if EUI_Bags._recentItems then
                 for _, d in ipairs(tempItems) do
-                    if d.info and d.info.itemID and EUI_Bags._recentItems[d.info.itemID] then
+                    if not d._pinnedOnly and d.info and d.info.itemID and EUI_Bags._recentItems[d.info.itemID] then
                         recentItems[#recentItems + 1] = d
                     end
                 end
@@ -1003,7 +1016,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
         for i = 1, #cats do itemsByCat[i] = {} end
         for _, data in ipairs(displayItems) do
             local ci = data.categoryIndex
-            if ci and itemsByCat[ci] then
+            if ci and itemsByCat[ci] and not data._pinnedOnly then
                 itemsByCat[ci][#itemsByCat[ci] + 1] = data
             end
         end
@@ -1266,7 +1279,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
                    and (BP().bagShowRecentItems ~= false) then
                     local recentItems = {}
                     for _, data in ipairs(displayItems) do
-                        if data.info and data.info.itemID and EUI_Bags._recentItems[data.info.itemID] then
+                        if not data._pinnedOnly and data.info and data.info.itemID and EUI_Bags._recentItems[data.info.itemID] then
                             recentItems[#recentItems + 1] = data
                         end
                     end

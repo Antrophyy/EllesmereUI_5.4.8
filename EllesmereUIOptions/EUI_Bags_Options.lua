@@ -234,14 +234,37 @@ local function BuildBags(p)
 		function() return P().bagStackSplitter == true end,
 		function(v) P().bagStackSplitter = v and true or false end)
 
-	p:Toggle("Allow Windows Over Bags", "Click another window, such as the Auction House, to bring it in front of the bags. Click the bags to bring them forward again.",
+	p:Toggle("Allow Windows Over Bags", "Click another window, such as the Auction House, to bring it in front of the bags. Click the bags to bring them forward again. Frame Strata overrides it once set.",
 		function() return P().bagAllowWindowsOverBags ~= false end,
 		function(v)
 			P().bagAllowWindowsOverBags = v and true or false
 			local b = Bags()
 			if b and b.ApplyWindowLayering then b:ApplyWindowLayering() end
 		end)
-	p:Blank()
+	local STRATA = { { "BACKGROUND", "Background" }, { "LOW", "Low" }, { "MEDIUM", "Medium" }, { "HIGH", "High" }, { "DIALOG", "Dialog" } }
+	local function CurStrata()
+		local q = P()
+		return q.bagFrameStrata or (q.bagAllowWindowsOverBags == false and "HIGH" or "MEDIUM")
+	end
+	p:Dropdown("Frame Strata", "Controls the order that overlapping elements display in. Set higher to show above other elements.",
+		Items(STRATA), CurStrata, function() return Label(STRATA, CurStrata()) end,
+		function(v)
+			P().bagFrameStrata = v
+			local b = Bags()
+			if b and b.ApplyWindowLayering then b:ApplyWindowLayering() end
+		end)
+	p:Toggle("Open Bags with Character Window", "The bags automatically open when the character window is opened and close again when the character window is closed.",
+		function() return P().bagOpenWithCharacter == true end,
+		function(v)
+			P().bagOpenWithCharacter = v and true or false
+			if _G.EUI_Bags and _G.EUI_Bags.HookCharacterFrame then _G.EUI_Bags:HookCharacterFrame() end
+		end)
+	p:Toggle("Hide Sidebar Icons When Collapsed", "Hides a collapsed sidebar; its expand arrow sits by the Inventory title.",
+		function() return P().bagHideSidebarIconsCollapsed == true end,
+		function(v)
+			P().bagHideSidebarIconsCollapsed = v and true or false
+			RefreshBags()
+		end)
 
 	p:Section("Items")
 	p:Slider("Icon Zoom", "Crops the border of every item icon in bags and bank. 0 shows the full icon.", 0, 0.20, 0.01,
@@ -259,6 +282,11 @@ local function BuildBags(p)
 			P().bagDesaturateJunkItems = v
 			RefreshBags()
 		end)
+	p:Cog("Junk Item Visuals", {
+		{ type = "toggle", label = "Show Coin Icon", tip = "Show a coin on the corner of each junk item's icon (grid view).",
+		  get = function() return P().bagShowJunkCoin == true end,
+		  set = function(v) P().bagShowJunkCoin = v and true or false; RefreshBags() end },
+	})
 
 	p:Section("Categories")
 	p:MultiSelect("Enabled Categories", "Turn sorting categories on or off. Items of a category that is off go to Miscellaneous.",
@@ -301,6 +329,9 @@ local function BuildBags(p)
 		{ type = "toggle", label = "Show in OneBag/MultiBag",
 		  get = function() return P().bagPinnedInOneBag ~= false end,
 		  set = function(v) P().bagPinnedInOneBag = v; RefreshBags() end },
+		{ type = "toggle", label = "Hide from Other Categories", tip = "Pinned items show only in Pinned Items, not in their categories or Recent Items.",
+		  get = function() return P().bagHidePinnedInCategories == true end,
+		  set = function(v) P().bagHidePinnedInCategories = v; RefreshBags() end },
 	}, { disabled = function() return P().bagShowPinnedItems == false end, disabledTip = "Show Pinned Items" })
 	p:Toggle("Show Recent Items", "Show the Recent Items category in the sidebar and content grid for newly acquired items.",
 		function() return P().bagShowRecentItems ~= false end,
@@ -475,26 +506,22 @@ local function BuildBags(p)
 	end
 
 	p:Section("Extras")
-	p:Toggle("Show Sort Icon", "Display the sort button in the bag header.",
-		function() return P().bagShowSortIcon ~= false end,
-		function(v)
-			P().bagShowSortIcon = v
+	-- Bag Top Bar Icons (retail): which header icons show.
+	local TOP_ICONS = { { value = "bagShowBagsIcon", name = "Bags Icon" }, { value = "bagShowSortIcon", name = "Sort Icon" } }
+	p:MultiSelect("Bag Top Bar Icons", "Choose which icons show in the bag window's top bar.",
+		function() return TOP_ICONS end,
+		function(k) return P()[k] ~= false end,
+		function(k)
+			P()[k] = P()[k] == false
 			local b = Bags()
-			if b and b._sortBtn then
-				if v then
-					b._sortBtn:Show()
-					if b._bagsBtn then
-						b._bagsBtn:ClearAllPoints()
-						b._bagsBtn:SetPoint("RIGHT", b._sortBtn, "LEFT", -6, 0)
-					end
-				else
-					b._sortBtn:Hide()
-					if b._bagsBtn and b._searchBox then
-						b._bagsBtn:ClearAllPoints()
-						b._bagsBtn:SetPoint("RIGHT", b._searchBox, "LEFT", -13, 0)
-					end
-				end
+			if b and b.SyncHeaderIcons then b:SyncHeaderIcons() end
+		end,
+		function()
+			local on = {}
+			for _, it in ipairs(TOP_ICONS) do
+				if P()[it.value] ~= false then on[#on + 1] = it.name end
 			end
+			return #on > 0 and table.concat(on, ", ") or "None"
 		end)
 	p:Cog("Sort Options", {
 		{ type = "toggle", label = "Sort to Bottom",
