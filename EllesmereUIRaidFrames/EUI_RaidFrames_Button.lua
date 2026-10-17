@@ -1988,6 +1988,9 @@ function RF.UpdateButton(btn)
 	if RF.AuraUpdate then
 		RF.AuraUpdate(btn)
 	end
+	if RF.MissingBuffsUpdate then
+		RF.MissingBuffsUpdate(btn)
+	end
 	if RF.BM_Update then
 		RF.BM_Update(btn)
 	end

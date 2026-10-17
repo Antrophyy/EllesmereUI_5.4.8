@@ -65,6 +65,16 @@ local DEFAULTS = {
 		frameHeight      = 60,
 		cellSpacing      = -1,
 		groupSpacing     = -1,
+		raidCompactMode  = false,
+		raidGridMode     = false,
+		partyCompactMode = false,
+		showMissingBuffs     = false,
+		missingBuffsSize     = 16,
+		missingBuffsPosition = "top",
+		missingBuffsOffsetX  = 0,
+		missingBuffsOffsetY  = 0,
+		missingBuffsGlow     = false,
+		missingBuffsOnlyOutOfCombat = true,
 		groupGrowth      = "RIGHT",  -- "DOWN", "UP", "RIGHT", "LEFT", "DOWNRIGHT" (grid: ns._RF_GRID_ROWS per column)
 		unitGrowth       = "DOWN",   -- any direction; same-axis as groupGrowth = one continuous line
 		sortMode         = "ROLE",   -- "INDEX" (by group) or "ROLE" (by assigned role)
@@ -688,6 +698,8 @@ do
 			"roleIconBehindBorder", "roleText", "roleTextTankColor", "roleTextHealerColor", "roleTextDPSColor",
 			"showRoleForTank", "showRoleForHealer", "showRoleForDPS",
 			"showRaidMarker", "raidMarkerSize", "raidMarkerPosition", "raidMarkerOffsetX", "raidMarkerOffsetY",
+			"showMissingBuffs", "missingBuffsSize", "missingBuffsPosition", "missingBuffsOffsetX", "missingBuffsOffsetY",
+			"missingBuffsGlow", "missingBuffsGlowColor", "missingBuffsOnlyOutOfCombat",
 			"showPingMarker", "pingMarkerSize", "pingMarkerPosition", "pingMarkerOffsetX", "pingMarkerOffsetY",
 			"showReadyCheck", "showSummonPending", "showIncomingRez",
 			"readyCheckSize", "readyCheckPosition", "readyCheckOffsetX", "readyCheckOffsetY",
@@ -793,13 +805,33 @@ RF._partyProxy = setmetatable({}, {
 	end,
 })
 
+-- Compact Mode / Grid Mode (retail raidCompactMode, partyCompactMode,
+-- raidGridMode): 5.4.8 borders are drawn inside the frame, so frames that
+-- overlap by the border size share one line between them (one outline per
+-- group with separators). Grid Mode does the same between raid groups.
+local function CompactOverlap(s)
+	local bs = s.borderSize or 1
+	return bs > 0 and -bs or nil
+end
+function RF.CellSpacing(s, party)
+	local on = party and s.partyCompactMode == true or (not party and s.raidCompactMode == true)
+	local o = on and CompactOverlap(s)
+	if o then return o end
+	if party then return s.partyCellSpacing or s.cellSpacing or 2 end
+	return s.cellSpacing or 2
+end
+function RF.GroupSpacing(s)
+	local o = s.raidCompactMode == true and s.raidGridMode == true and CompactOverlap(s)
+	return o or s.groupSpacing or 8
+end
+
 -- Party frame box: width (incl. an attached portrait's share), height,
 -- spacing, portrait share. EUI_RaidFrames_Extras.lua sets RF.RF_PtReserve.
 function RF.RF_PartyDims(s)
 	local w = s.partyFrameWidth or s.frameWidth or 125
 	local h = s.partyFrameHeight or s.frameHeight or 60
 	local res = RF.RF_PtReserve and RF.RF_PtReserve(s, h) or 0
-	return w + res, h, s.partyCellSpacing or s.cellSpacing or 2, res
+	return w + res, h, RF.CellSpacing(s, true), res
 end
 
 -------------------------------------------------------------------------------

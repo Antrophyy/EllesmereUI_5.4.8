@@ -387,8 +387,8 @@ end
 -- Returns the footprint.
 local function LayoutRaid(view, list, count, anchor, padX, padY, numbersHost, unitGrowth, groupGrowth, bw, bh)
 	local s = view
-	local cs = PixelSnap(s.cellSpacing or 2)
-	local gs = PixelSnap(s.groupSpacing or 8)
+	local cs = PixelSnap(RF.CellSpacing(s))
+	local gs = PixelSnap(RF.GroupSpacing(s))
 	local groupW, groupH
 	if unitGrowth == "RIGHT" or unitGrowth == "LEFT" then
 		groupW, groupH = 5 * bw + 4 * cs, bh
@@ -685,8 +685,8 @@ function RF.ShowSizePreview(tier)
 	local w, h = LayoutRaid(RF._pvSizeView, pvData, tier, host, 0, 0, host.numbers, ug, gg, bw, bh)
 	host:SetSize(max(w, 1), max(h, 1))
 	host:ClearAllPoints()
-	local cs = PixelSnap(s.cellSpacing or 2)
-	local gs = PixelSnap(s.groupSpacing or 8)
+	local cs = PixelSnap(RF.CellSpacing(s))
+	local gs = PixelSnap(RF.GroupSpacing(s))
 	local tw, th = RF._RFFootprint(w0, h0, ug, gg, cs, gs)
 	local x, y = RF._RFTierTopLeft(tw, th, ug, gg, (ov and ov.offsetX) or 0, (ov and ov.offsetY) or 0)
 	if x then

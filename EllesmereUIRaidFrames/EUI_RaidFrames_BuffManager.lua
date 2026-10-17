@@ -1478,15 +1478,36 @@ function RF.BM_Update(btn)
 		if set and kind then
 			if kind == "icon" or kind == "square" then
 				local shown = {}
-				for j = 1, nAuras do
-					local a = auras[j]
-					if #shown >= #set then
-						break
+				local order = v.ind.customOrder == true and type(v.ind.spellOrder) == "table" and v.ind.spellOrder
+				if order then
+					-- Custom Order (retail ind.customOrder / spellOrder): matched
+					-- buffs in the arranged order, unarranged ones after them.
+					local rank = {}
+					for k, id in ipairs(order) do rank[id] = k end
+					local hits = {}
+					for j = 1, nAuras do
+						local a = auras[j]
+						if Matches(v, a) then hits[#hits + 1] = a end
 					end
-					if Matches(v, a) then
+					for k, a in ipairs(hits) do a._ord = (a.id and rank[a.id] or 1000) * 100 + k end
+					table.sort(hits, function(x, y) return x._ord < y._ord end)
+					for _, a in ipairs(hits) do
+						if #shown >= #set then break end
 						local e = set[#shown + 1]
 						shown[#shown + 1] = e
 						ShowIcon(e, a)
+					end
+				else
+					for j = 1, nAuras do
+						local a = auras[j]
+						if #shown >= #set then
+							break
+						end
+						if Matches(v, a) then
+							local e = set[#shown + 1]
+							shown[#shown + 1] = e
+							ShowIcon(e, a)
+						end
 					end
 				end
 				for k = #shown + 1, #set do

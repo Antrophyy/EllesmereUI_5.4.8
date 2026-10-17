@@ -356,8 +356,8 @@ function RF._RFBaseTopLeft()
 	if not pos then
 		return nil
 	end
-	local cs = PixelSnap(s.cellSpacing or 2)
-	local gs = PixelSnap(s.groupSpacing or 8)
+	local cs = PixelSnap(RF.CellSpacing(s))
+	local gs = PixelSnap(RF.GroupSpacing(s))
 	local ug, gg = RF._RFEffectiveGrowth(s.unitGrowth or "DOWN", s.groupGrowth or "RIGHT", s.mergeGroups)
 	local w, h = RF._RFFootprint(s.frameWidth or 72, s.frameHeight or 46, ug, gg, cs, gs)
 	local l, t = RF._RFPosTopLeft(pos, w, h)
@@ -439,8 +439,8 @@ function RF._RFRebaseSavedCenter(cx, cy)
 	if not ov then
 		return cx, cy
 	end
-	local cs = PixelSnap(s.cellSpacing or 2)
-	local gs = PixelSnap(s.groupSpacing or 8)
+	local cs = PixelSnap(RF.CellSpacing(s))
+	local gs = PixelSnap(RF.GroupSpacing(s))
 	local bug, bgg = RF._RFEffectiveGrowth(s.unitGrowth or "DOWN", s.groupGrowth or "RIGHT", s.mergeGroups)
 	local bw, bh = RF._RFFootprint(s.frameWidth or 72, s.frameHeight or 46, bug, bgg, cs, gs)
 	local ug, gg = RF._RFEffectiveGrowth(ov.unitGrowth or s.unitGrowth or "DOWN",
@@ -491,8 +491,8 @@ function RF._NormalizeTierOffsetAnchors()
 	if ov._topLeftAnchored and ov._cornerAnchored then
 		return
 	end
-	local cs = PixelSnap(s.cellSpacing or 2)
-	local gs = PixelSnap(s.groupSpacing or 8)
+	local cs = PixelSnap(RF.CellSpacing(s))
+	local gs = PixelSnap(RF.GroupSpacing(s))
 	local pos = s.unlockPos
 	local bl, bt, bw, bh = RF._RFBaseTopLeft()
 	if not ov._topLeftAnchored then
@@ -556,8 +556,8 @@ function RF._ApplyTierOffset()
 		return
 	end
 	local _, ov = RF._RFResolveTierOverride(RF._GetEffectiveRaidSize())
-	local cs = PixelSnap(s.cellSpacing or 2)
-	local gs = PixelSnap(s.groupSpacing or 8)
+	local cs = PixelSnap(RF.CellSpacing(s))
+	local gs = PixelSnap(RF.GroupSpacing(s))
 	local fw = (ov and ov.width) or s.frameWidth or 72
 	local fh = (ov and ov.height) or s.frameHeight or 46
 	local ug, gg = RF._RFEffectiveGrowth((ov and ov.unitGrowth) or s.unitGrowth or "DOWN",
@@ -1147,7 +1147,7 @@ function RF._BuildHeaderSet(merge)
 	local bh = PixelSnap(RF._activeSizeH or s.frameHeight or 46)
 	local initConfig = InitConfig(bw, bh)
 	local iu, ig = RF._RFEffectiveGrowth(s.unitGrowth or "DOWN", s.groupGrowth or "RIGHT", merge)
-	local initPoint, initX, initY = RF._RFHeaderPoint(iu, PixelSnap(s.cellSpacing or 2))
+	local initPoint, initX, initY = RF._RFHeaderPoint(iu, PixelSnap(RF.CellSpacing(s)))
 
 	-- A header makes children only while visible: show the container around
 	-- the pre-spawn.
@@ -1200,7 +1200,7 @@ function RF._BuildHeaderSet(merge)
 		hdr:SetAttribute("showSolo", s.showWhenSolo or false)
 		hdr:SetAttribute("unitsPerColumn", 5)
 		hdr:SetAttribute("maxColumns", 8)
-		hdr:SetAttribute("columnSpacing", PixelSnap(s.groupSpacing or 8))
+		hdr:SetAttribute("columnSpacing", PixelSnap(RF.GroupSpacing(s)))
 		hdr:SetAttribute("columnAnchorPoint", RF._RFColAnchor(iu, ig))
 		hdr:SetAttribute("sortMethod", "INDEX")
 		hdr:SetAttribute("startingIndex", -39)
@@ -1338,8 +1338,8 @@ function RF._LayoutGroupsImpl()
 	unitGrowth, groupGrowth = RF._RFEffectiveGrowth(unitGrowth, groupGrowth, merged)
 	local bw = PixelSnap(RF._activeSizeW or s.frameWidth or 72)
 	local bh = PixelSnap(RF._activeSizeH or s.frameHeight or 46)
-	local cs = PixelSnap(s.cellSpacing or 2)
-	local gs = PixelSnap(s.groupSpacing or 8)
+	local cs = PixelSnap(RF.CellSpacing(s))
+	local gs = PixelSnap(RF.GroupSpacing(s))
 	local hdrPoint, hdrXOff, hdrYOff = RF._RFHeaderPoint(unitGrowth, cs)
 	local colAnchor = RF._RFColAnchor(unitGrowth, groupGrowth)
 	local groupW, groupH

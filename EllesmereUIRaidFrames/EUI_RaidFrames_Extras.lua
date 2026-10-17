@@ -1406,7 +1406,7 @@ PF.Geometry = function(ctx)
 		unitGrowth = PartyGrowth(p)
 		groupGrowth = (unitGrowth == "RIGHT" or unitGrowth == "LEFT") and "DOWN" or "RIGHT"
 	else
-		w, h, sp = s.frameWidth or 125, s.frameHeight or 60, s.cellSpacing or -1
+		w, h, sp = s.frameWidth or 125, s.frameHeight or 60, RF.CellSpacing(s)
 		unitGrowth, groupGrowth = s.unitGrowth or "DOWN", s.groupGrowth or "RIGHT"
 		if groupGrowth == "DOWNRIGHT" then
 			groupGrowth = "RIGHT"

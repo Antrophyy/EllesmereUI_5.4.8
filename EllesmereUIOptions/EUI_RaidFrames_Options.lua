@@ -904,7 +904,16 @@ end
 function O.BuildFrameDisplay(p, C)
 	p:Section("FRAME DISPLAY")
 	O.Slider(p, C, "Frame Spacing", nil, -1, 15, 1, "cellSpacing", 2)
+	p:Cog("Frame Spacing Settings", {
+		O.CT(C, "Compact Mode", "raidCompactMode", false,
+			"Frames overlap by the border size, so neighbours share one border line: each group reads as one outline with separators. Needs a border size above 0."),
+	})
 	O.Slider(p, C, "Group Spacing", nil, -1, 15, 1, "groupSpacing", 8)
+	p:Cog("Group Spacing Settings", {
+		O.CT(C, "Grid Mode", "raidGridMode", false,
+			"With Compact Mode on, the raid groups share their border lines too.",
+			function() return not C.Val("raidCompactMode", false) end),
+	})
 	-- Border Style: 5.4.8 has the Solid border only (no border texture registry).
 	p:Dropdown("Border Style", nil, function() return { { value = "solid", name = "Solid" } } end,
 		function() return "solid" end, function() return "Solid" end,
@@ -1582,6 +1591,20 @@ function O.BuildIndicators(p, C)
 	O.OffsetCog(p, C, "Marker Offset", "raidMarkerOffsetX", "raidMarkerOffsetY", -50, 50)
 	O.Slider(p, C, "Marker Size", nil, 8, 40, 1, "raidMarkerSize", 16,
 		function() return not C.Val("showRaidMarker", true) end)
+	-- Missing Buffs (retail showMissingBuffs on the MoP raid buffs) | Size
+	local function MissingOff() return not C.Val("showMissingBuffs", false) end
+	O.ShowPosDrop(p, C, "Missing Buffs",
+		"Shows the icon of each raid buff you can provide (stats, stamina, attack power, spell power, crit, mastery) that the member lacks from anyone.",
+		"showMissingBuffs", false, "missingBuffsPosition", "top")
+	p:Cog("Missing Buffs Settings", {
+		O.CS(C, "X Offset", "missingBuffsOffsetX", 0, -50, 50, 1),
+		O.CS(C, "Y Offset", "missingBuffsOffsetY", 0, -50, 50, 1),
+		O.CT(C, "Only Out of Combat", "missingBuffsOnlyOutOfCombat", true, "Hide the missing buff icons while you are in combat."),
+		O.CT(C, "Missing Buffs Glow", "missingBuffsGlow", false, "A pulsing glow around the missing buff icons."),
+		{ type = "color", label = "Glow Color", get = O.CGet(C, "missingBuffsGlowColor", 1, 0.82, 0),
+		  set = O.CSet(C, "missingBuffsGlowColor"), disabled = function() return not C.Val("missingBuffsGlow", false) end },
+	}, { disabled = MissingOff, disabledTip = "Choose a Missing Buffs position first." })
+	O.Slider(p, C, "Missing Buffs Size", nil, 8, 40, 1, "missingBuffsSize", 16, MissingOff)
 	-- Ready Check / Rez (+ cog) | Icon Size. 5.4.8 has no summon API: the
 	-- Incoming Summon row is left out.
 	O.Drop(p, C, "Ready Check / Summon / Rez", nil, O.POS, "readyCheckPosition", "center")
@@ -2485,6 +2508,12 @@ function O.BuildPartyFrames(p, C)
 			return v
 		end,
 		function(v) prof().partyCellSpacing = v end)
+	p:Cog("Party Frame Spacing Settings", {
+		{ type = "toggle", label = "Compact Mode",
+		  tip = "Party frames overlap by the border size, so neighbours share one border line. Needs a border size above 0.",
+		  get = function() return prof().partyCompactMode == true end,
+		  set = function(v) prof().partyCompactMode = v or nil end },
+	})
 	-- Frame Growth (view over the tri-state partyFlipGrowth) | Party Frames in Small Raids
 	local function Growth()
 		local v = prof().partyFlipGrowth

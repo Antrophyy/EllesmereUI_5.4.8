@@ -486,6 +486,49 @@ local function BuildGeneral(p, ind)
 		function() return LabelOf(SHOW_IN, (ind.showIn == "raid" or ind.showIn == "party") and ind.showIn or "both") end,
 		function(v) ind.showIn = (v == "raid" or v == "party") and v or nil end,
 		nil, function() return ind.anchorTo ~= nil end)
+	-- Custom Order (retail icon / square indicators): ind.spellOrder is the
+	-- arrangement; picking a buff in Buff Order moves it one place up.
+	if (ind.type or "icon") == "icon" or ind.type == "square" then
+		local function OrderList()
+			local resolved = RFT().BM2_ResolveSpells(ind) or {}
+			local present, seen, out = {}, {}, {}
+			for _, id in ipairs(resolved) do present[id] = true end
+			for _, id in ipairs(ind.spellOrder or {}) do
+				if present[id] and not seen[id] and GetSpellInfo(id) then seen[id] = true; out[#out + 1] = id end
+			end
+			for _, id in ipairs(resolved) do
+				if not seen[id] and GetSpellInfo(id) then seen[id] = true; out[#out + 1] = id end
+			end
+			return out
+		end
+		p:Toggle("Custom Order", "Show this indicator's buffs in the order you arrange in Buff Order; buffs not arranged follow after.",
+			function() return ind.customOrder == true end,
+			function(v)
+				ind.customOrder = v or nil
+				if v and not ind.spellOrder then ind.spellOrder = OrderList() end
+				Rebuild()
+			end)
+		p:Dropdown("Buff Order", "Pick a buff to move it one place up (the first one goes to the end).",
+			function()
+				local items = {}
+				for k, id in ipairs(OrderList()) do items[#items + 1] = { value = id, name = k .. ". " .. SpellLabel(id) } end
+				return items
+			end,
+			function() return nil end,
+			function() local n = #OrderList(); return n > 0 and (n .. " buffs") or "|cff888888None|r" end,
+			function(id)
+				local order = OrderList()
+				for k, o in ipairs(order) do
+					if o == id then
+						table.remove(order, k)
+						if k == 1 then order[#order + 1] = id else table.insert(order, k - 1, id) end
+						break
+					end
+				end
+				ind.spellOrder = order
+			end,
+			nil, function() return ind.customOrder ~= true end)
+	end
 end
 
 local function BuildPlaced(p, ind)

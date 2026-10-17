@@ -16,6 +16,8 @@ EUI_RaidFrames_Button.lua
 EUI_RaidFrames_Auras.lua
 # Buff Manager v2 indicators
 EUI_RaidFrames_BuffManager.lua
+# Missing raid buffs the player can provide
+EUI_RaidFrames_MissingBuffs.lua
 # Secure headers, sorting, layout, sizes, visibility, unlock mode
 EUI_RaidFrames_Headers.lua
 # Friendly boss, extra frames, pets, party targets, portrait, healer mana
