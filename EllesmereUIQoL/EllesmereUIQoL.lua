@@ -1110,6 +1110,8 @@ local RESET_ROOT = {
 	"targetDistanceEnabled", "targetDistanceFormat", "targetDistanceAlign",
 	"targetDistanceTextSize", "targetDistancePos", "targetDistanceStrata",
 	"hideTransforms", "hideTransformItems",
+	"potionAlertEnabled", "potionAlertTextSize", "potionAlertText", "potionAlertColor", "potionAlertUseClassColor",
+	"talentAlertEnabled", "talentAlertTextSize", "talentAlertText", "talentAlertColor", "talentAlertUseClassColor",
 }
 ns.ResetQoLSettings = function()
 	local root = R()

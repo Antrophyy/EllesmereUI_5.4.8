@@ -157,6 +157,47 @@ local function BuildGeneral(p)
 	local leaveEdit = p:TextInput("Combat Alert Leave Text", "Text shown when you leave combat.",
 		function() return DB().combatAlertLeaveText or "-Combat" end,
 		function(v) DB().combatAlertLeaveText = v end, "-Combat")
+	-- Potion Ready Alert | Unspent Talents Alert (retail Alerts; they follow the
+	-- Combat Alert position: talents above it, potion below it).
+	local function AlertRows(prefix, preview)
+		local D = Q.ALERT_DEFAULTS[prefix]
+		local function Off() return not DB()[prefix .. "Enabled"] end
+		return {
+			{ type = "input", label = "Text", inputWidth = 160, maxLetters = 40,
+			  get = function() return DB()[prefix .. "Text"] or D.text end,
+			  set = function(v)
+				  v = tostring(v or ""):gsub("|", "")
+				  DB()[prefix .. "Text"] = (v ~= "" and v ~= D.text) and v or nil
+				  preview()
+			  end },
+			{ type = "slider", label = "Text Size", min = 14, max = 64, step = 1,
+			  get = function() return DB()[prefix .. "TextSize"] or 22 end,
+			  set = function(v) DB()[prefix .. "TextSize"] = v; preview() end },
+			{ type = "color", label = "Color",
+			  disabled = function() return DB()[prefix .. "UseClassColor"] and true or false end,
+			  get = function() local c = DB()[prefix .. "Color"] or D.color; return c.r, c.g, c.b end,
+			  set = function(r, g, b) DB()[prefix .. "Color"] = { r = r, g = g, b = b }; preview() end },
+			{ type = "toggle", label = "Class Color",
+			  get = function() return DB()[prefix .. "UseClassColor"] and true or false end,
+			  set = function(v) DB()[prefix .. "UseClassColor"] = v; preview() end },
+		}, Off
+	end
+	local potRows, potOff = AlertRows("potionAlert", function() Q.AlertPreview("potionAlert") end)
+	p:Toggle("Potion Ready Alert", "Shows a short on-screen text when the potion you drank is off cooldown again. Shares the Combat Alert position (Unlock Mode: Alerts).",
+		Get("potionAlertEnabled"), function(v)
+			DB().potionAlertEnabled = v
+			Q.ApplyPotionAlert()
+			if v then Q.AlertPreview("potionAlert") end
+		end)
+	p:Cog("Potion Ready Alert Settings", potRows, { disabled = potOff, disabledTip = "Enable Potion Ready Alert first." })
+	local talRows, talOff = AlertRows("talentAlert", function() Q.TalentAlertPreview() end)
+	p:Toggle("Unspent Talents Alert", "Shows an on-screen text while you have unspent talent points. It goes away when you open the talent window and comes back on a level-up.",
+		Get("talentAlertEnabled"), function(v)
+			DB().talentAlertEnabled = v
+			Q.ApplyTalentAlert()
+		end)
+	p:Cog("Unspent Talents Alert Settings", talRows, { disabled = talOff, disabledTip = "Enable Unspent Talents Alert first." })
+
 	p:OnRefresh(function()
 		local a = caOff() and 0.3 or 1
 		if enterEdit then enterEdit:GetParent():SetAlpha(a) end
@@ -374,6 +415,34 @@ local function BuildExtras(p)
 				  if StatShown(key) then hidden[key] = true else hidden[key] = nil end
 				  XSet("secondaryStatsHidden", hidden)
 			  end } },
+		-- Reorder Shown Stats (retail reorder row): the list is the current
+		-- order; picking a stat moves it one place up (the first goes last).
+		{ type = "dropdown", label = "Reorder Shown Stats", items = function()
+			  local items = {}
+			  for i, item in ipairs(StatItems()) do
+				  items[#items + 1] = { value = item.value, name = i .. ". " .. item.name .. (StatShown(item.value) and "" or " (hidden)") }
+			  end
+			  return items
+		  end,
+		  get = function() return nil end,
+		  labelFn = function()
+			  local names = {}
+			  for _, key in ipairs(Q.StatOrder()) do
+				  if StatShown(key) then names[#names + 1] = Q.STAT_LABELS[key] end
+			  end
+			  return #names > 0 and table.concat(names, ", ") or "None"
+		  end,
+		  set = function(key)
+			  local order = Q.StatOrder()
+			  for i, k in ipairs(order) do
+				  if k == key then
+					  table.remove(order, i)
+					  if i == 1 then order[#order + 1] = key else table.insert(order, i - 1, key) end
+					  break
+				  end
+			  end
+			  XSet("secondaryStatsOrder", order)
+		  end },
 		{ type = "slider", label = "Scale", min = 50, max = 200, step = 5,
 		  get = function()
 			  local pos = XGet("secondaryStatsPos")

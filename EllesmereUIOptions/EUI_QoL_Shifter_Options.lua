@@ -90,6 +90,9 @@ ns.QoLO_BuildShifterPage = function(p)
 	p:Toggle("Move Loot Windows in Unlock Mode", "Adds Bonus Roll, Group Loot, and Alert Toast movers to Unlock Mode.",
 		function() return DB().shifterLootUnlock and true or false end,
 		function(v) DB().shifterLootUnlock = v end)
+	p:Toggle("Hide Unlock Mode Overlays", "Hides the loot window movers in Unlock Mode while keeping their saved positions applied.",
+		function() return DB().shifterLootHideOverlays and true or false end,
+		function(v) DB().shifterLootHideOverlays = v end, function() return not DB().shifterLootUnlock end)
 
 	local function topBarUnlockOff() return not DB().shifterTopBarUnlock end
 	p:Section("Blizzard Top Bar Event Text")

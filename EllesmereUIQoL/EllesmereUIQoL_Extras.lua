@@ -951,6 +951,7 @@ local function ApplyCAFrame()
 	caFrame:SetSize(size * 7, size + 14)
 	if not UnlockActive() then
 		PlaceFrom(caFrame, R().combatAlertPos, CA_DEFAULT_POS)
+		if Q.PlaceAlertLines then Q.PlaceAlertLines() end
 	end
 end
 local function CreateCAFrame()
@@ -991,6 +992,213 @@ function Q.ApplyCombatAlert()
 		caWatch:UnregisterAllEvents()
 	end
 	ApplyCAFrame()
+end
+
+---------------------------------------------------------------------------
+-- Potion Ready / Unspent Talents (retail Alerts: potionAlert*, talentAlert*)
+-- Lines that follow the Combat Alert position: Unspent Talents above it,
+-- Potion Ready below it. Potion Ready: the potion drunk is found from its
+-- on-use spell name (GetItemSpell), its cooldown read once, one timer at the
+-- end. Unspent Talents stays up while GetNumUnspentTalents() > 0, until the
+-- talent window opens; it comes back on a level-up.
+---------------------------------------------------------------------------
+Q.ALERT_DEFAULTS = {
+	potionAlert = { text = "Potion Ready", color = { r = 0.1, g = 1, b = 0.1 } },
+	talentAlert = { text = "Unspent talent points", color = { r = 1, g = 0.82, b = 0 } },
+}
+local alertLines = {}
+local function AlertColor(prefix)
+	local root = R()
+	if root[prefix .. "UseClassColor"] then return Q.ClassColor() end
+	local c = root[prefix .. "Color"] or Q.ALERT_DEFAULTS[prefix].color
+	return c.r, c.g, c.b
+end
+local function PlaceAlertLine(prefix)
+	local f = alertLines[prefix]
+	if not f then return end
+	local size = R()[prefix .. "TextSize"] or 22
+	f.text:SetFont(Q.Font(), size, Q.OutlineForced())
+	f:SetSize(size * 7, size + 14)
+	local pos = R().combatAlertPos
+	if type(pos) ~= "table" or not pos.point then pos = CA_DEFAULT_POS end
+	local caH = (R().combatAlertTextSize or 22) + 14
+	local dy = prefix == "talentAlert" and (caH / 2 + (size + 14) / 2 + 4) or -(caH / 2 + (size + 14) / 2 + 4)
+	f:ClearAllPoints()
+	f:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x or 0, (pos.y or 0) + dy)
+end
+local function AlertLine(prefix)
+	local f = alertLines[prefix]
+	if not f then
+		f = CreateFrame("Frame", nil, UIParent)
+		f:SetFrameStrata("HIGH")
+		f:SetFrameLevel(60)
+		f:EnableMouse(false)
+		f.text = f:CreateFontString(nil, "OVERLAY")
+		f.text:SetPoint("CENTER")
+		f:Hide()
+		alertLines[prefix] = f
+	end
+	PlaceAlertLine(prefix)
+	f.text:SetText(R()[prefix .. "Text"] or Q.ALERT_DEFAULTS[prefix].text)
+	f.text:SetTextColor(AlertColor(prefix))
+	return f
+end
+-- Short flash (also the preview of either alert).
+function Q.AlertPreview(prefix)
+	if UnlockActive() then return end
+	local f = AlertLine(prefix)
+	f.persistent = nil
+	Flash(f, 0.15, prefix == "potionAlert" and 3 or 1.2, 0.5)
+end
+local function AlertHide(prefix)
+	local f = alertLines[prefix]
+	if f then f:SetScript("OnUpdate", nil); f:Hide(); f.persistent = nil end
+end
+
+-- Potion Ready
+local potWatch = CreateFrame("Frame")
+local potionSub
+local spellToItem, potSeen = {}, {}
+local potTimerGen, potPending = 0, nil
+local function PotionSubclass()
+	if potionSub then return potionSub end
+	-- Consumable is auction class 4 in 5.4.8; Potion its 2nd subclass.
+	potionSub = (GetAuctionItemSubClasses and select(2, GetAuctionItemSubClasses(4))) or "Potion"
+	return potionSub
+end
+local function ScanPotionBags()
+	for bag = 0, NUM_BAG_SLOTS or 4 do
+		for slot = 1, GetContainerNumSlots(bag) or 0 do
+			local id = GetContainerItemID(bag, slot)
+			if id and potSeen[id] == nil then
+				local name, _, _, _, _, _, sub = GetItemInfo(id)
+				if name then
+					local spell = sub == PotionSubclass() and GetItemSpell(id)
+					if spell then spellToItem[spell] = id; potSeen[id] = true else potSeen[id] = false end
+				end
+			end
+		end
+	end
+end
+local function PotionReadyIn(itemID, delay)
+	potTimerGen = potTimerGen + 1
+	local gen = potTimerGen
+	potPending = itemID
+	Q.After(math.max(delay, 0), function()
+		if gen ~= potTimerGen or not R().potionAlertEnabled then return end
+		potPending = nil
+		if (GetItemCount(itemID) or 0) <= 0 then return end
+		local start, dur = GetItemCooldown(itemID)
+		if start and dur and dur > 1.5 then
+			local left = start + dur - GetTime()
+			if left > 0.5 then PotionReadyIn(itemID, left); return end
+		end
+		Q.AlertPreview("potionAlert")
+	end)
+end
+potWatch:SetScript("OnEvent", function(_, event, unit, spellName)
+	if event == "UNIT_SPELLCAST_SUCCEEDED" then
+		if unit ~= "player" then return end
+		local itemID = spellName and spellToItem[spellName]
+		if not itemID then return end
+		-- The item cooldown starts a moment after the cast event.
+		Q.After(0.3, function()
+			local start, dur = GetItemCooldown(itemID)
+			if start and dur and dur > 1.5 then
+				PotionReadyIn(itemID, start + dur - GetTime())
+			end
+		end)
+	elseif event == "BAG_UPDATE_COOLDOWN" then
+		-- A reset (encounter end) makes the potion ready early.
+		if potPending then
+			local start, dur = GetItemCooldown(potPending)
+			if start and dur and dur <= 1.5 then PotionReadyIn(potPending, 0) end
+		end
+	else
+		ScanPotionBags()
+	end
+end)
+function Q.ApplyPotionAlert()
+	potWatch:UnregisterAllEvents()
+	if R().potionAlertEnabled then
+		potWatch:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+		potWatch:RegisterEvent("BAG_UPDATE_DELAYED")
+		potWatch:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+		potWatch:RegisterEvent("BAG_UPDATE_COOLDOWN")
+		ScanPotionBags()
+	else
+		potTimerGen = potTimerGen + 1
+		potPending = nil
+		AlertHide("potionAlert")
+	end
+	PlaceAlertLine("potionAlert")
+end
+
+-- Unspent Talents
+local talWatch = CreateFrame("Frame")
+local talDismissed, talHad, talHooked = false, false, false
+local function TalentEvaluate()
+	if not R().talentAlertEnabled then return end
+	if InCombatLockdown() then Q.AfterCombat("talentAlert", TalentEvaluate); return end
+	local has = (GetNumUnspentTalents and GetNumUnspentTalents() or 0) > 0
+	if has then
+		if not talHad then talDismissed = false end
+		if not talDismissed and not UnlockActive() then
+			local f = AlertLine("talentAlert")
+			if not f.persistent then
+				f.persistent = true
+				f:SetScript("OnUpdate", nil)
+				f:SetAlpha(1)
+				f:Show()
+			end
+		end
+	else
+		talDismissed = false
+		AlertHide("talentAlert")
+	end
+	talHad = has
+end
+local function HookTalentFrame()
+	if talHooked or not PlayerTalentFrame then return end
+	talHooked = true
+	PlayerTalentFrame:HookScript("OnShow", function()
+		if R().talentAlertEnabled then
+			talDismissed = true
+			AlertHide("talentAlert")
+		end
+	end)
+end
+talWatch:SetScript("OnEvent", function(_, event, arg)
+	if event == "ADDON_LOADED" then
+		if arg == "Blizzard_TalentUI" then HookTalentFrame() end
+		return
+	end
+	if event == "PLAYER_LEVEL_UP" then talDismissed = false end
+	Q.After(0, TalentEvaluate)
+end)
+function Q.ApplyTalentAlert()
+	talWatch:UnregisterAllEvents()
+	if R().talentAlertEnabled then
+		for _, e in ipairs({ "PLAYER_ENTERING_WORLD", "PLAYER_TALENT_UPDATE", "PLAYER_SPECIALIZATION_CHANGED",
+			"PLAYER_LEVEL_UP", "ADDON_LOADED" }) do
+			talWatch:RegisterEvent(e)
+		end
+		HookTalentFrame()
+		talHad, talDismissed = false, false
+		TalentEvaluate()
+	else
+		AlertHide("talentAlert")
+	end
+	PlaceAlertLine("talentAlert")
+end
+function Q.PlaceAlertLines()
+	PlaceAlertLine("potionAlert")
+	PlaceAlertLine("talentAlert")
+end
+-- A live talent line gets its text and color refreshed; otherwise a sample.
+function Q.TalentAlertPreview()
+	local f = alertLines.talentAlert
+	if f and f.persistent then AlertLine("talentAlert") else Q.AlertPreview("talentAlert") end
 end
 
 ---------------------------------------------------------------------------
@@ -1239,8 +1447,8 @@ AddUnlock(PosElement("EUI_GroupDeathAlert", "Group Death Alert", 720,
 	function() CreateGDFrame(); return gdFrame end,
 	function() local s = R().groupDeathTextSize or 34; return s * 7, s + 14 end,
 	"groupDeathAlertPos", GD_DEFAULT_POS, ApplyGDFrame, true))
-AddUnlock(PosElement("EUI_CombatAlert", "Combat Alert", 721,
-	function() return not R().combatAlertEnabled end,
+AddUnlock(PosElement("EUI_CombatAlert", "Alerts", 721,
+	function() local r = R(); return not (r.combatAlertEnabled or r.potionAlertEnabled or r.talentAlertEnabled) end,
 	function() CreateCAFrame(); return caFrame end,
 	function() local s = R().combatAlertTextSize or 22; return s * 7, s + 14 end,
 	"combatAlertPos", CA_DEFAULT_POS, ApplyCAFrame, true))
@@ -1271,6 +1479,8 @@ tinsert(Q.applies, function()
 	Q.ApplyTargetDistance()
 	Q.ApplyCrosshair()
 	Q.ApplyCombatAlert()
+	Q.ApplyPotionAlert()
+	Q.ApplyTalentAlert()
 	Q.ApplyGroupDeaths()
 	Q.ApplyTransforms()
 end)

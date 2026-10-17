@@ -657,10 +657,10 @@ local function RegisterLootUnlockElements()
 			noAnchorTo = true,
 			noSizeMatchTarget = true,
 			moverBg = { r = 0.165, g = 0.11, b = 0.055 },
-			-- Always in Unlock Mode (user choice; retail could hide them with
-			-- shifterLootHideOverlays, which is ignored here).
+			-- "Hide Unlock Mode Overlays" (shifterLootHideOverlays): the movers
+			-- stay out of Unlock Mode, the saved positions keep applying.
 			isHidden = function()
-				return not LootEnabled() or not _G[info.name]
+				return not LootEnabled() or not _G[info.name] or DB().shifterLootHideOverlays and true or false
 			end,
 			getFrame = function() return EnsureLootProxy(info) end,
 			getSize = function()
