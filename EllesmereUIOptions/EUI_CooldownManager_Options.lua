@@ -1633,10 +1633,34 @@ local function BuildBars(p)
 	end
 	p:Toggle("Show Keybind", "Shows the key the spell is bound to on your action bars.",
 		function() return bd.showKeybind == true end, function(v) bd.showKeybind = v end, off)
+	local KB_ANCHORS = { { "TOPLEFT", "Top Left" }, { "TOP", "Top" }, { "TOPRIGHT", "Top Right" }, { "LEFT", "Left" }, { "CENTER", "Center" },
+		{ "RIGHT", "Right" }, { "BOTTOMLEFT", "Bottom Left" }, { "BOTTOM", "Bottom" }, { "BOTTOMRIGHT", "Bottom Right" } }
+	local KB_OUTLINE = { { "inherit", "CDM Outline" }, { "NONE", "None" }, { "OUTLINE", "Outline" }, { "THICKOUTLINE", "Thick Outline" } }
+	local function kbFonts()
+		return ns.OptionsUtil.FontItems({ { value = "__global", name = "CDM Font" } })
+	end
+	p:Cog("Keybind Text Settings", {
+		{ type = "dropdown", label = "Font", items = kbFonts,
+			get = function() return bd.keybindFont or "__global" end, set = function(v) bd.keybindFont = v end },
+		{ type = "dropdown", label = "Text Outline", items = function() return Items(KB_OUTLINE) end,
+			get = function() return bd.keybindOutline or "inherit" end, set = function(v) bd.keybindOutline = v end },
+		{ type = "slider", label = "Size", min = 6, max = 24, step = 1, get = function() return CDM.BV(bd, "keybindSize") end, set = function(v) bd.keybindSize = v end },
+		{ type = "dropdown", label = "Anchor", items = function() return Items(KB_ANCHORS) end,
+			get = function() return bd.keybindAnchor or ((bd.keybindAlign or "left") == "right" and "TOPRIGHT" or "TOPLEFT") end,
+			set = function(v) bd.keybindAnchor = v end },
+		{ type = "color", label = "Background Color", alpha = true, tip = "Set opacity to 0% for text without a background.",
+			get = function() return bd.keybindBackgroundR or 0, bd.keybindBackgroundG or 0, bd.keybindBackgroundB or 0, bd.keybindBackgroundA or 0 end,
+			set = function(r, g, b, a) bd.keybindBackgroundR, bd.keybindBackgroundG, bd.keybindBackgroundB, bd.keybindBackgroundA = r, g, b, a or 0 end },
+		{ type = "color", label = "Border Color", alpha = true, tip = "Set opacity to 0% to hide the keybind badge border.",
+			get = function() return bd.keybindBorderR or 1, bd.keybindBorderG or 1, bd.keybindBorderB or 1, bd.keybindBorderA or 0 end,
+			set = function(r, g, b, a) bd.keybindBorderR, bd.keybindBorderG, bd.keybindBorderB, bd.keybindBorderA = r, g, b, a or 0 end },
+		{ type = "slider", label = "Border Size", min = 0, max = 4, step = 1, get = function() return bd.keybindBorderSize or 1 end, set = function(v) bd.keybindBorderSize = v end },
+		{ type = "slider", label = "Background Padding", min = 0, max = 8, step = 1, get = function() return bd.keybindPadding or 2 end, set = function(v) bd.keybindPadding = v end },
+	}, { icon = "resize", disabled = function() return not bd.showKeybind end })
 	p:Cog("Keybind", {
 		{ type = "slider", label = "Size", min = 6, max = 24, step = 1, get = function() return CDM.BV(bd, "keybindSize") end, set = function(v) bd.keybindSize = v end },
 		{ type = "dropdown", label = "Align", items = function() return Items(ALIGN_LIST) end,
-			get = function() return bd.keybindAlign or "left" end, set = function(v) bd.keybindAlign = v end,
+			get = function() return bd.keybindAlign or "left" end, set = function(v) bd.keybindAlign = v; bd.keybindAnchor = nil end,
 			labelFn = function() return LabelOf(ALIGN_LIST, bd.keybindAlign or "left") end },
 		{ type = "slider", label = "Offset X", min = -20, max = 20, step = 1, get = function() return CDM.BV(bd, "keybindOffsetX") end, set = function(v) bd.keybindOffsetX = v end },
 		{ type = "slider", label = "Offset Y", min = -20, max = 20, step = 1, get = function() return CDM.BV(bd, "keybindOffsetY") end, set = function(v) bd.keybindOffsetY = v end },
@@ -1652,13 +1676,50 @@ local function BuildBars(p)
 		function() return cb.enabled ~= false end, function(v) cb.enabled = v end)
 	p:Toggle("Show Glows Only in Combat (global)", "Suppresses every CDM glow while out of combat.",
 		function() return cb.glowsOnlyInCombat == true end, function(v) cb.glowsOnlyInCombat = v end)
-	p:Toggle("Stable Keybinds", "Keybind text stays the same across action bar swaps (stealth, forms, stances).",
+	p:Toggle("Keep Keys on Bar Swap (global)", "Keybind text stays the same across action bar swaps (stealth, forms, stances).",
 		function() return cb.stableKeybinds ~= false end, function(v) cb.stableKeybinds = v; CDM._keysDirty = true end)
 	p:Toggle("Hide CDM Tooltips in Combat", "No spell tooltips on CDM icons while you are in combat (NaowhUI Gameplay setting).",
 		function() return cb.hideTooltipsInCombat == true end, function(v) cb.hideTooltipsInCombat = v end)
 	p:Toggle("Swap Combat Potions When Missing", "When your bags have none of one potion, its icon swaps to track another potion of the same kind you own.",
 		function() return cb.swapPotionsWhenMissing == true end, function(v) cb.swapPotionsWhenMissing = v end)
 	p:Blank()
+	-- Sync Generic CDs/Buffs (retail): racials, trinket slots, potions and other
+	-- items on every bar of this spec are copied to your other specs.
+	p:Button("Sync Generic CDs/Buffs", "Copies the racials, trinket slots, potions and items on every bar of this spec to the same bars in your other specs.", "Sync", function()
+		local function Generic(id)
+			return type(id) == "number" and ((id < 0 and id > -2000000000) or CDM.ALL_RACIALS[id])
+		end
+		for _, b in ipairs(PortedBars()) do
+			local src = CDM.BarSpellData(b.key).assignedSpells
+			for _, key in ipairs(LP.OtherSpecKeys()) do
+				local list = CDM.BarSpellData(b.key, key).assignedSpells
+				local have = {}
+				for _, v in ipairs(list) do have[v] = true end
+				for _, id in ipairs(src) do
+					if Generic(id) and not have[id] then list[#list + 1] = id end
+				end
+			end
+		end
+		CDM.Apply()
+	end)
+	-- Repopulate Bars (retail): the default bars of this spec go back to your
+	-- class defaults (spells you added yourself are dropped).
+	p:Button("Repopulate Bars", "Resets the Cooldowns, Utility and Buffs bars of the current spec to your class defaults.", "Repopulate", function()
+		ns.ShowConfirmPopup({
+			title = "Repopulate Bars",
+			message = "This resets the Cooldowns, Utility and Buffs bars of the current spec to your class defaults. Spells you added yourself are removed.",
+			confirmText = "Repopulate", cancelText = "Cancel",
+			onConfirm = function()
+				for _, key in ipairs({ "cooldowns", "utility", "buffs" }) do
+					local sd = CDM.BarSpellData(key)
+					wipe(sd.assignedSpells)
+					for _, id in ipairs(CDM.DefaultSpellList(key)) do sd.assignedSpells[#sd.assignedSpells + 1] = id end
+				end
+				CDM.Apply()
+				Rebuild()
+			end,
+		})
+	end)
 
 	-- Spells are edited in the live preview above (retail: no spell list on the page).
 end
@@ -1797,9 +1858,20 @@ local function BuildTracking(p)
 		function(r, gg, b, a) cfg.bgR, cfg.bgG, cfg.bgB, cfg.bgA = r, gg, b, a end, { alpha = true }, off)
 	p:Toggle("Show Name", nil, function() return cfg.showName ~= false and cfg.namePosition ~= "none" end,
 		function(v) cfg.showName = v; if v and cfg.namePosition == "none" then cfg.namePosition = "left" end end, off)
+	p:Cog("Name Text Settings", {
+		{ type = "toggle", label = "Text Wrap", tip = "Long names wrap to a second line instead of being cut.",
+			get = function() return cfg.nameWrap == true end, set = function(v) cfg.nameWrap = v or nil end },
+	})
 	p:Slider("Name Size", nil, 6, 24, 1, g("nameSize"), s("nameSize"), off)
 	p:Toggle("Show Timer", nil, function() return cfg.showTimer ~= false and cfg.timerPosition ~= "none" end,
 		function(v) cfg.showTimer = v; if v and cfg.timerPosition == "none" then cfg.timerPosition = "right" end end, off)
+	p:Cog("Duration Text Settings", {
+		{ type = "toggle", label = "Decimals", tip = "Show one decimal under the Decimal Threshold.",
+			get = function() return cfg.timerDecimals == true end, set = function(v) cfg.timerDecimals = v or nil end },
+		{ type = "slider", label = "Decimal Threshold", min = 1, max = 120, step = 1,
+			get = function() return cfg.timerDecimalThreshold or 10 end, set = function(v) cfg.timerDecimalThreshold = v end,
+			disabled = function() return not cfg.timerDecimals end },
+	})
 	p:Slider("Timer Size", nil, 6, 24, 1, g("timerSize"), s("timerSize"), off)
 	p:Dropdown("Icon", nil,
 		function() return Items({ { "none", "None" }, { "left", "Left" }, { "right", "Right" } }) end,
@@ -1811,8 +1883,47 @@ local function BuildTracking(p)
 	p:Toggle("Stack Based Bar", "The bar fills by stacks instead of time.", g("stackBasedBar"), s("stackBasedBar"), off)
 	p:Slider("Max Stacks", nil, 1, 50, 1, g("stackThresholdMax"),
 		function(v) cfg.stackThresholdMax = v; cfg.stackThresholdMaxEnabled = true end, function() return off() or not cfg.stackBasedBar end)
+	p:Button("Ticks at Stacks", "Comma separated stack counts to put a tick mark at (Stack Based Bar). Type all to mark every stack. Now: "
+		.. ((cfg.stackTicks and cfg.stackTicks ~= "") and cfg.stackTicks or "none") .. ".", "Edit", function()
+		ns.ShowInputPopup({
+			title = "Ticks at Stacks", message = "Comma separated stack counts (or all).", text = cfg.stackTicks or "",
+			confirmText = "Save", cancelText = "Cancel",
+			onConfirm = function(text)
+				cfg.stackTicks = (text and strtrim(text) ~= "") and strtrim(text) or nil
+				CDM.Apply()
+				Rebuild()
+			end,
+		})
+	end)
+	p:Toggle("Enable Stack Threshold", "Changes the bar's color while it has at least the chosen number of stacks.",
+		function() return cfg.stackThresholdEnabled == true end, function(v) cfg.stackThresholdEnabled = v or nil end, off)
+	p:Slider("Stack Threshold", nil, 0, 100, 1, function() return cfg.stackThreshold or 5 end, function(v) cfg.stackThreshold = v end,
+		function() return off() or not cfg.stackThresholdEnabled end)
+	p:Swatch("Stack Threshold Color",
+		function() return cfg.stackThresholdR or 1, cfg.stackThresholdG or 0.2, cfg.stackThresholdB or 0.2, cfg.stackThresholdA or 1 end,
+		function(r, gg, b, a) cfg.stackThresholdR, cfg.stackThresholdG, cfg.stackThresholdB, cfg.stackThresholdA = r, gg, b, a or 1 end,
+		{ alpha = true, disabled = function() return not cfg.stackThresholdEnabled end })
+	p:Toggle("Smooth Bars", "Eases bar movement instead of snapping. For all Tracking Bars.",
+		function() return DB().tbbSmoothBars == true end, function(v) DB().tbbSmoothBars = v or nil end)
 	p:Slider("Opacity", nil, 0, 100, 5, function() return floor((V(cfg, "opacity") or 1) * 100 + 0.5) end,
 		function(v) cfg.opacity = v / 100 end, off)
+	-- Add / Remove Bar to All Specs (retail): a copy of this bar in every other spec.
+	p:Button("Add Bar to All Specs", "Adds a copy of this bar to your other specs (skipped where a bar already tracks the spell).", "Add", function()
+		for _, key in ipairs(LP.OtherSpecKeys()) do
+			local t2 = CDM.TBB.Data(key)
+			local have = false
+			for _, b in ipairs(t2.bars) do if b.spellID == cfg.spellID then have = true break end end
+			if not have then t2.bars[#t2.bars + 1] = CDM.DeepCopy(cfg) end
+		end
+	end)
+	p:Button("Remove Bar from All Specs", "Removes the bars tracking this spell from your other specs.", "Remove", function()
+		for _, key in ipairs(LP.OtherSpecKeys()) do
+			local t2 = CDM.TBB.Data(key)
+			for i = #t2.bars, 1, -1 do
+				if t2.bars[i].spellID == cfg.spellID then table.remove(t2.bars, i) end
+			end
+		end
+	end)
 	p:Dropdown("Group", "Grouped bars stack under the group's first bar and move together. Independent bars have their own mover.",
 		function()
 			local items = { { value = 0, name = "Independent" } }

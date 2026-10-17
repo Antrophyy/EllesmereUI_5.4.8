@@ -234,13 +234,52 @@ function CDM.StyleIcon(f, bd, w, h)
 	f.countText:SetTextColor(BV(bd, "stackCountR"), BV(bd, "stackCountG"), BV(bd, "stackCountB"))
 	PlaceText(f.countText, f, BV(bd, "stackCountPosition"), BV(bd, "stackCountX"), BV(bd, "stackCountY"))
 
+	-- Keybind Text Settings (retail): font, outline, anchor, background badge.
 	ns.ApplyModuleFont(f.keyText, BV(bd, "keybindSize"), key)
+	if (bd.keybindFont and bd.keybindFont ~= "__global") or (bd.keybindOutline and bd.keybindOutline ~= "inherit") then
+		local path, size, flags = f.keyText:GetFont()
+		if bd.keybindFont and bd.keybindFont ~= "__global" and ns.ResolveFontName then
+			path = ns.ResolveFontName(bd.keybindFont) or path
+		end
+		if bd.keybindOutline and bd.keybindOutline ~= "inherit" then
+			flags = bd.keybindOutline == "NONE" and "" or bd.keybindOutline
+		end
+		if path then f.keyText:SetFont(path, size or BV(bd, "keybindSize"), flags or "") end
+	end
 	f.keyText:SetTextColor(bd.keybindR or 1, bd.keybindG or 1, bd.keybindB or 1, bd.keybindA or 0.9)
 	f.keyText:ClearAllPoints()
-	if (bd.keybindAlign or "left") == "right" then
-		f.keyText:SetPoint("TOPRIGHT", f, "TOPRIGHT", -(BV(bd, "keybindOffsetX") or 2), BV(bd, "keybindOffsetY") or -2)
-	else
-		f.keyText:SetPoint("TOPLEFT", f, "TOPLEFT", BV(bd, "keybindOffsetX") or 2, BV(bd, "keybindOffsetY") or -2)
+	local anchor = bd.keybindAnchor or ((bd.keybindAlign or "left") == "right" and "TOPRIGHT" or "TOPLEFT")
+	local kx = BV(bd, "keybindOffsetX") or 2
+	if anchor:find("RIGHT", 1, true) then kx = -kx end
+	f.keyText:SetPoint(anchor, f, anchor, kx, BV(bd, "keybindOffsetY") or -2)
+	local ba, bba = bd.keybindBackgroundA or 0, bd.keybindBorderA or 0
+	if ba > 0 or bba > 0 then
+		local kb = f.keyBadge
+		if not kb then
+			kb = { bg = f.textHost:CreateTexture(nil, "BACKGROUND") }
+			for i = 1, 4 do kb[i] = f.textHost:CreateTexture(nil, "BORDER") end
+			f.keyBadge = kb
+		end
+		local pad = bd.keybindPadding or 2
+		kb.bg:ClearAllPoints()
+		kb.bg:SetPoint("TOPLEFT", f.keyText, "TOPLEFT", -pad, pad)
+		kb.bg:SetPoint("BOTTOMRIGHT", f.keyText, "BOTTOMRIGHT", pad, -pad)
+		kb.bg:SetTexture(bd.keybindBackgroundR or 0, bd.keybindBackgroundG or 0, bd.keybindBackgroundB or 0, ba)
+		local s = bd.keybindBorderSize or 1
+		for i = 1, 4 do
+			kb[i]:SetTexture(bd.keybindBorderR or 1, bd.keybindBorderG or 1, bd.keybindBorderB or 1, bba)
+			kb[i]:ClearAllPoints()
+			kb[i]:SetShown(s > 0 and bba > 0)
+		end
+		kb[1]:SetPoint("TOPLEFT", kb.bg, "TOPLEFT"); kb[1]:SetPoint("TOPRIGHT", kb.bg, "TOPRIGHT"); kb[1]:SetHeight(s)
+		kb[2]:SetPoint("BOTTOMLEFT", kb.bg, "BOTTOMLEFT"); kb[2]:SetPoint("BOTTOMRIGHT", kb.bg, "BOTTOMRIGHT"); kb[2]:SetHeight(s)
+		kb[3]:SetPoint("TOPLEFT", kb.bg, "TOPLEFT"); kb[3]:SetPoint("BOTTOMLEFT", kb.bg, "BOTTOMLEFT"); kb[3]:SetWidth(s)
+		kb[4]:SetPoint("TOPRIGHT", kb.bg, "TOPRIGHT"); kb[4]:SetPoint("BOTTOMRIGHT", kb.bg, "BOTTOMRIGHT"); kb[4]:SetWidth(s)
+		kb.on = true
+	elseif f.keyBadge then
+		f.keyBadge.on = nil
+		f.keyBadge.bg:Hide()
+		for i = 1, 4 do f.keyBadge[i]:Hide() end
 	end
 	f:EnableMouse(bd.showTooltip and true or false)
 	-- Only Show Numbers / Charges/Stacks Only (retail onlyShowNumbers /
@@ -626,10 +665,13 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 		f.cdText:SetTextColor(BV(bd, "cooldownTextR"), BV(bd, "cooldownTextG"), BV(bd, "cooldownTextB"))
 	end
 	f.countText:SetText(count and tostring(count) or "")
-	if bd.showKeybind then
-		f.keyText:SetText(CDM.KeyFor(e))
-	else
-		f.keyText:SetText("")
+	local kt = bd.showKeybind and CDM.KeyFor(e) or ""
+	f.keyText:SetText(kt)
+	if f.keyBadge and f.keyBadge.on then
+		local vis = kt ~= ""
+		f.keyBadge.bg:SetShown(vis)
+		local s = (bd.keybindBorderSize or 1) > 0 and (bd.keybindBorderA or 0) > 0
+		for i = 1, 4 do f.keyBadge[i]:SetShown(vis and s) end
 	end
 	f._alpha = alpha
 	if glowStyle and glowsAllowed and alpha > 0 then

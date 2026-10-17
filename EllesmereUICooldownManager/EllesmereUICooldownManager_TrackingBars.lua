@@ -175,6 +175,9 @@ local function StyleBar(f, cfg)
 	PlaceText(f.timer, f.bar, cfg.timerPosition or "right", V(cfg, "timerX"), V(cfg, "timerY"))
 	PlaceText(f.stacks, iconOn and f.icon or f.bar, cfg.stacksPosition or "center", V(cfg, "stacksX"), V(cfg, "stacksY"))
 	local showName = cfg.showName ~= false and cfg.namePosition ~= "none"
+	-- Text Wrap (retail nameWrap): two lines within ~60 % of the bar.
+	f.name:SetWordWrap(cfg.nameWrap and true or false)
+	f.name:SetWidth(cfg.nameWrap and (vert and h or w) * 0.6 or 0)
 	f.name:SetShown(showName)
 	f.name:SetText(showName and (cfg.name or "") or "")
 	f.timer:SetShown(cfg.showTimer ~= false and cfg.timerPosition ~= "none")
@@ -184,6 +187,41 @@ local function StyleBar(f, cfg)
 	end
 	f.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
 	f:SetAlpha(V(cfg, "opacity") or 1)
+	-- Ticks at Stacks (retail stackTicks: "2, 5" or "all") on stack based bars.
+	f.ticks = f.ticks or {}
+	for _, t in ipairs(f.ticks) do t:Hide() end
+	local maxS = (cfg.stackThresholdMaxEnabled and cfg.stackThresholdMax) or 10
+	if cfg.stackBasedBar and type(cfg.stackTicks) == "string" and cfg.stackTicks ~= "" and maxS > 1 then
+		local list = {}
+		if cfg.stackTicks:lower() == "all" then
+			for n = 1, maxS - 1 do list[#list + 1] = n end
+		else
+			for n in cfg.stackTicks:gmatch("%d+") do list[#list + 1] = tonumber(n) end
+		end
+		local bw, bh = f.bar:GetWidth(), f.bar:GetHeight()
+		if bw <= 0 then bw = (vert and h or w) - 2 * bs end
+		if bh <= 0 then bh = (vert and w or h) - 2 * bs end
+		for i, n in ipairs(list) do
+			if n > 0 and n < maxS then
+				local t = f.ticks[i]
+				if not t then
+					t = f.text:CreateTexture(nil, "OVERLAY")
+					t:SetTexture(0, 0, 0, 0.8)
+					f.ticks[i] = t
+				end
+				t:ClearAllPoints()
+				if vert then
+					t:SetSize(bw, 1)
+					t:SetPoint("BOTTOM", f.bar, "BOTTOM", 0, bh * n / maxS)
+				else
+					t:SetSize(1, bh)
+					t:SetPoint("LEFT", f.bar, "LEFT", bw * n / maxS, 0)
+				end
+				t:Show()
+			end
+		end
+	end
+	f._fillR, f._fillG, f._fillB = r, g, b
 	f.cfg = cfg
 	f.entry = { spellID = cfg.spellID, name = cfg.spellID and GetSpellInfo(cfg.spellID) }
 end
@@ -275,9 +313,31 @@ function TBB.Update(force)
 				elseif a.dur and a.dur > 0 then
 					value = max(0, left / a.dur)
 				end
+				-- Smooth Bars (retail): ease toward the value.
+				if CDM.DB().tbbSmoothBars and f._val and math.abs(value - f._val) < 0.5 then
+					value = f._val + (value - f._val) * 0.5
+				end
+				f._val = value
 				f.bar:SetValue(value)
-				f.timer:SetText((a.dur and a.dur > 0 and left > 0) and FormatTime(left) or "")
+				-- Decimals (retail timerDecimals / timerDecimalThreshold).
+				local tt = ""
+				if a.dur and a.dur > 0 and left > 0 then
+					if cfg.timerDecimals and left < (cfg.timerDecimalThreshold or 10) then
+						tt = format("%.1f", left)
+					else
+						tt = FormatTime(left)
+					end
+				end
+				f.timer:SetText(tt)
 				f.stacks:SetText((a.count or 0) > 1 and tostring(a.count) or "")
+				-- Stack Threshold (retail stackThresholdEnabled): its own colour at N+ stacks.
+				if cfg.stackThresholdEnabled and (a.count or 0) >= (cfg.stackThreshold or 5) then
+					f.bar:SetStatusBarColor(cfg.stackThresholdR or 1, cfg.stackThresholdG or 0.2, cfg.stackThresholdB or 0.2, cfg.stackThresholdA or 1)
+					f._thrOn = true
+				elseif f._thrOn then
+					f._thrOn = nil
+					f.bar:SetStatusBarColor(f._fillR or 1, f._fillG or 1, f._fillB or 1, V(cfg, "fillA"))
+				end
 				if cfg.showSpark and value > 0 and value < 1 then
 					f.spark:ClearAllPoints()
 					if cfg.verticalOrientation then
