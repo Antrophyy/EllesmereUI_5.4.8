@@ -7,7 +7,8 @@
 --  the rested overlay; reputation by standing), the text in the module font,
 --  the Visibility checklist, Click Through and a tooltip.
 --  Not ported (retail-only or not in 5.4.8): House Favor bar, renown / paragon,
---  the XP bar art styles, dividers, text slots, quest XP overlay, XP per hour,
+--  the XP bar art styles (dividers, text slots, quest XP overlay and XP per
+--  hour are in EUI_ActionBars_XPBar.lua),
 --  textured border styles.
 -------------------------------------------------------------------------------
 local addonName, P = ...
@@ -159,6 +160,9 @@ local function LayoutDataBar(key)
 	elseif anchor == "right" then ap, padX = "RIGHT", -4 end
 	frame._text:SetPoint(ap, frame._textHost, ap, ox + padX, oy)
 	frame:EnableMouse(not s.clickThrough)
+	if key == "XPBar" and P.XP then
+		P.XP.Layout(frame, s)
+	end
 end
 
 -- Shown when the checklist allows it and the bar has something to show.
@@ -217,9 +221,16 @@ local function UpdateXPBar()
 	else
 		frame._restedBar:Hide()
 	end
-	frame._text:SetText(XPText(s, cur, mx, rested, level))
-	if frame._text:GetStringWidth() > frame:GetWidth() - 4 then
-		frame._text:SetText(format("%.0f%%", cur / mx * 100))
+	local center = P.XP and P.XP.Update(frame, s, cur, mx, rested, level)
+	if center then
+		frame._text:SetText(center)
+	elseif s.textSlotCenter == "none" then
+		frame._text:SetText("")
+	else
+		frame._text:SetText(XPText(s, cur, mx, rested, level))
+		if frame._text:GetStringWidth() > frame:GetWidth() - 4 then
+			frame._text:SetText(format("%.0f%%", cur / mx * 100))
+		end
 	end
 	frame._text:SetShown(s.hideText ~= true)
 	FinishShow("XPBar", frame, s, true)

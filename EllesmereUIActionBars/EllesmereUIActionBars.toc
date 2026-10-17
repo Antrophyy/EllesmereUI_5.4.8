@@ -17,6 +17,7 @@ EUI_ActionBars_Buttons.lua
 EUI_ActionBars_Bars.lua
 # XP and Reputation bars
 EUI_ActionBars_DataBars.lua
+EUI_ActionBars_XPBar.lua
 # Quick Keybind Mode (/kb)
 EUI_ActionBars_QuickKeybind.lua
 

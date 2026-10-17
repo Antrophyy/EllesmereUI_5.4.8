@@ -1168,6 +1168,125 @@ local function BuildXPBar(p)
 		end,
 		function(r, g, b, a) S().restedColor = { r = r, g = g, b = b, a = a or 1 } end, { alpha = true },
 		function() return S().showRested == false end)
+
+	-- Retail XP bar extras (EUI_ActionBars_XPBar.lua).
+	local XP = ns.EAB_XP
+	if not XP then return end
+	local function Col(key, r, g, b, a)
+		return function()
+			local c = S()[key]
+			if c then return c.r, c.g, c.b, c.a or a or 1 end
+			return r, g, b, a or 1
+		end, function(nr, ng, nb, na) S()[key] = { r = nr, g = ng, b = nb, a = na or 1 } end
+	end
+	p:Section("Dividers")
+	local DIVS = { { "", "None" }, { "4", "Quarters" }, { "5", "Fifths" }, { "10", "Tenths" }, { "20", "5% Lines" } }
+	p:Dropdown("Dividers", "Lines that split the bar into equal parts.",
+		function()
+			local items = {}
+			for _, d in ipairs(DIVS) do items[#items + 1] = { value = d[1], name = d[2] } end
+			return items
+		end,
+		function() return S().divider or "" end,
+		function()
+			for _, d in ipairs(DIVS) do if d[1] == (S().divider or "") then return d[2] end end
+			return "None"
+		end,
+		function(v) S().divider = (v ~= "") and v or nil end)
+	local function DivOff() return not S().divider end
+	local dg, ds = Col("dividerColor", 0, 0, 0, 0.8)
+	p:Swatch("Divider Color", dg, ds, { alpha = true, disabled = DivOff })
+	p:Toggle("Divider Text", "Labels each divider with its percent.", G("dividerText", false), W("dividerText"), DivOff)
+	p:Cog("Divider Text Settings", {
+		{ type = "slider", label = "Text Size", min = 6, max = 16, step = 1, get = G("dividerTextSize", 8), set = W("dividerTextSize") },
+		{ type = "slider", label = "X Offset", min = -30, max = 30, step = 1, get = G("dividerTextOffX", 0), set = W("dividerTextOffX") },
+		{ type = "slider", label = "Y Offset", min = -30, max = 30, step = 1, get = G("dividerTextOffY", 0), set = W("dividerTextOffY") },
+		{ type = "color", label = "Text Color",
+		  get = function() local c = S().dividerTextColor or { r = 1, g = 1, b = 1 }; return c.r, c.g, c.b end,
+		  set = function(r, g, b) S().dividerTextColor = { r = r, g = g, b = b } end },
+	}, { disabled = function() return DivOff() or not S().dividerText end })
+
+	p:Section("Text Slots")
+	local function SlotItems()
+		local items = { { value = "none", name = "None" } }
+		for _, it in ipairs(XP.ITEMS_TOP) do items[#items + 1] = { value = it[1], name = it[2] } end
+		for _, it in ipairs(XP.ITEMS_SOLO) do items[#items + 1] = { value = it[1], name = it[2] .. " (alone)" } end
+		return items
+	end
+	local SOLO = {}
+	for _, it in ipairs(XP.ITEMS_SOLO) do SOLO[it[1]] = true end
+	local function SlotRow(stem, label, tip)
+		local key = "textSlot" .. stem
+		local function Has(id)
+			local v = S()[key]
+			if id == "none" then return v == "none" or (stem ~= "Center" and (v == nil or v == "")) end
+			if type(v) ~= "string" then return false end
+			for x in v:gmatch("[^,]+") do if x == id then return true end end
+			return false
+		end
+		p:MultiSelect(label, tip, SlotItems, Has,
+			function(id)
+				local v = S()[key]
+				if id == "none" or SOLO[id] then
+					S()[key] = (Has(id) and stem == "Center") and nil or id
+					return
+				end
+				local list = {}
+				if type(v) == "string" and v ~= "none" and not SOLO[v] then
+					for x in v:gmatch("[^,]+") do if x ~= id then list[#list + 1] = x end end
+				end
+				if not Has(id) then list[#list + 1] = id end
+				S()[key] = #list > 0 and table.concat(list, ",") or nil
+			end,
+			function()
+				local v = S()[key]
+				if v == nil or v == "" then return stem == "Center" and "Classic Text" or "None" end
+				if v == "none" then return "None" end
+				local names = {}
+				for x in v:gmatch("[^,]+") do
+					for _, it in ipairs(SlotItems()) do if it.value == x then names[#names + 1] = it.name end end
+				end
+				return table.concat(names, " - ")
+			end)
+		p:Slider(label .. " Size", nil, 6, 24, 1, G(key .. "Size", S().textSize or 9), W(key .. "Size"),
+			function() return S()[key] == nil or S()[key] == "none" end)
+	end
+	SlotRow("Center", "Center Text", "Replaces the classic text with the picked items (none picked = the classic text).")
+	SlotRow("Left", "Left Text", "Items shown at the bar's left end. One item marked alone is shown by itself.")
+	SlotRow("Right", "Right Text", "Items shown at the bar's right end.")
+	p:Toggle("Text Background", "A dark band behind the bar texts.", G("showTextBg", false), W("showTextBg"))
+	local tg, ts = Col("textBgColor", 0, 0, 0, 0.5)
+	p:Swatch("Text Background Color", tg, ts, { alpha = true, disabled = function() return not S().showTextBg end })
+
+	p:Section("Fill")
+	local GRADS = { { "", "Flat Color" }, { "HORIZONTAL", "Gradient (Horizontal)" }, { "VERTICAL", "Gradient (Vertical)" } }
+	p:Dropdown("Fill Style", nil,
+		function()
+			local items = {}
+			for _, d in ipairs(GRADS) do items[#items + 1] = { value = d[1], name = d[2] } end
+			return items
+		end,
+		function() return S().fillGradient or "" end,
+		function()
+			for _, d in ipairs(GRADS) do if d[1] == (S().fillGradient or "") then return d[2] end end
+			return "Flat Color"
+		end,
+		function(v) S().fillGradient = (v ~= "") and v or nil end)
+	local function GradOff() return not S().fillGradient end
+	local g1, s1 = Col("fillGradStart", 0.60, 0.40, 0.85, 1)
+	local g2, s2 = Col("fillGradEnd", 0.00, 0.44, 0.87, 1)
+	p:Swatch("Gradient Start", g1, s1, { alpha = true, disabled = GradOff })
+	p:Swatch("Gradient End", g2, s2, { alpha = true, disabled = GradOff })
+
+	p:Section("Quest XP Overlay")
+	local function QOff() return not S().questOverlay end
+	p:Toggle("Quest XP Overlay", "Shows the XP of the quests in your log ahead of the fill.", G("questOverlay", false), W("questOverlay"))
+	p:Toggle("Completed Quests Only", nil, G("questOverlayCompleted", false), W("questOverlayCompleted"), QOff)
+	p:Toggle("Current Zone Only", "Only the quests listed under the zone you are in.", G("questOverlayZone", false), W("questOverlayZone"), QOff)
+	local qg, qs = Col("questOverlayColor", 1, 0.82, 0, 0.45)
+	p:Swatch("Overlay Color", qg, qs, { alpha = true, disabled = QOff })
+	local dg2, ds2 = Col("questOverlayDoneColor", 1, 0.82, 0, 0.6)
+	p:Swatch("Completed Overlay Color", dg2, ds2, { alpha = true, disabled = function() return QOff() or not S().questOverlayCompleted end })
 end
 
 ---------------------------------------------------------------------------
