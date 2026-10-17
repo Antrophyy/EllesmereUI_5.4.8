@@ -1141,6 +1141,9 @@ local function TypeRows(cfg, b, s)
 				return #on == 0 and "None" or table.concat(on, ", ")
 			  end },
 			Toggle(s, "abbreviate", "Abbreviate Amount", "Shows large amounts using K/M suffixes (284,208g becomes 284.2Kg) instead of the full grouped number. The tooltip always shows the exact amount."),
+			{ type = "toggle", label = "Gold Tracking and History", tip = "Track and display gold amounts from all your characters on hover (account-wide).",
+			  get = function() return not (EllesmereUIDB and EllesmereUIDB.goldTracking == false) end,
+			  set = function(v) EllesmereUIDB.goldTracking = (not v) and false or nil end },
 		}
 	elseif t == "profession" or t == "profession2" then
 		local TD = { { "name", "Name and Bar" }, { "values", "Values" } }
@@ -1180,6 +1183,7 @@ local function TypeRows(cfg, b, s)
 				return LabelOf(HearthstoneList(s), c)
 			  end,
 			  set = function(v) s.hsChoice = v; s.randomizeHs = (v == "random") end },
+			Toggle(s, "clickableTeleports", "Show Challenge Mode Portals", "Show the Challenge Mode teleport section in the tooltip. Ready rows are click-to-teleport.", true),
 		}
 	elseif t == "micromenu" then
 		local AL

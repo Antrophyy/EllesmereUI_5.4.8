@@ -65,6 +65,8 @@ local function GoldForgetCharacter(key)
 end
 
 local function GoldSaveCurrentMoney(money)
+    -- Gold Tracking and History off (retail goldLedger.tracking = false): nothing is written.
+    if type(EllesmereUIDB) == "table" and EllesmereUIDB.goldTracking == false then return end
     local store = GoldStore()
     local _, class = UnitClass("player")
     store[GoldCharKey()] = { currentMoney = money, class = class, realm = GetRealmName(), name = UnitName("player") }
@@ -328,7 +330,7 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
         local ci = D().coinIcons == true
         -- Show Tooltip Data checklist: each section defaults ON.
         local showSession = D().tipSession ~= false
-        local showChars   = D().tipCharacters ~= false
+        local showChars   = D().tipCharacters ~= false and not (EllesmereUIDB and EllesmereUIDB.goldTracking == false)
         local showToken   = D().tipToken ~= false
         local ar, ag, ab = 1, 1, 1
         ns.Tip_Begin(goldButton)
