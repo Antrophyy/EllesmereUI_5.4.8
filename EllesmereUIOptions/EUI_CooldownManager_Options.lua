@@ -723,6 +723,98 @@ function LP.ColorRow(bd, id, label, modeKey, prefix)
 	return LP.SubRow(bd, id, label, modeKey, items)
 end
 
+-- A checked toggle row bound to a boolean settings key (nil = off).
+function LP.ToggleRow(bd, id, label, key, tip)
+	local on = LP.Get(bd, id, key) and true or false
+	return {
+		text = label, tip = tip, checked = on,
+		onClick = function()
+			LP.SetOwn(bd, id, key, (not (LP.Get(bd, id, key) and true or false)) or nil)
+			if LP.menu and LP.menu.rebuild then LP.menu.rebuild() end
+		end,
+	}
+end
+
+-- Asks for a number and writes it to key (empty = cleared).
+function LP.NumberRow(bd, id, label, key, prompt, fmt)
+	local v = LP.Get(bd, id, key)
+	return {
+		text = label, value = v and (fmt and fmt(v) or tostring(v)) or "Off",
+		onClick = function()
+			LP.CloseMenus()
+			ns.ShowInputPopup({
+				title = label, message = prompt, text = v and tostring(v) or "",
+				confirmText = "Save", cancelText = "Cancel",
+				onConfirm = function(text)
+					local n = tonumber(text and strtrim(text) or "")
+					LP.SetOwn(bd, id, key, (n and n > 0) and n or nil)
+				end,
+			})
+		end,
+	}
+end
+
+-- Copy to / Remove from Other Specs (retail): this entry on the same bar in
+-- every other spec of your class, with its settings.
+function LP.OtherSpecKeys()
+	local cur, out = CDM.SpecKey(), {}
+	for i = 1, (GetNumSpecializations and GetNumSpecializations() or 0) do
+		local sid = GetSpecializationInfo(i)
+		if sid and tostring(sid) ~= cur then out[#out + 1] = tostring(sid) end
+	end
+	return out
+end
+
+function LP.CopyToOtherSpecs(bd, id)
+	local storeKey = CDM.IsBuffBar(bd) and "spellSettingsBuff" or "spellSettingsCD"
+	local own = CDM.SpecProfile()[storeKey]
+	own = own and own[id]
+	for _, key in ipairs(LP.OtherSpecKeys()) do
+		local list = CDM.BarSpellData(bd.key, key).assignedSpells
+		local have = false
+		for _, v in ipairs(list) do if v == id then have = true break end end
+		if not have then list[#list + 1] = id end
+		if own then
+			local sp = CDM.SpecProfile(key)
+			sp[storeKey] = sp[storeKey] or {}
+			sp[storeKey][id] = CDM.DeepCopy(own)
+		end
+	end
+	CDM.Apply()
+end
+
+function LP.RemoveFromOtherSpecs(bd, id)
+	local storeKey = CDM.IsBuffBar(bd) and "spellSettingsBuff" or "spellSettingsCD"
+	for _, key in ipairs(LP.OtherSpecKeys()) do
+		local list = CDM.BarSpellData(bd.key, key).assignedSpells
+		for i = #list, 1, -1 do
+			if list[i] == id then table.remove(list, i) end
+		end
+		local sp = CDM.SpecProfile(key)
+		if sp[storeKey] then sp[storeKey][id] = nil end
+	end
+	CDM.Apply()
+end
+
+-- Threshold rows (retail per-spell Threshold Text).
+function LP.ThresholdRows(bd, id, rows)
+	rows[#rows + 1] = LP.NumberRow(bd, id, "Threshold Seconds", "thresholdSeconds",
+		"At or below this many seconds the timer turns the Threshold Color. Empty turns it off.")
+	rows[#rows + 1] = {
+		text = "Threshold Color", value = LP.Get(bd, id, "thresholdColorR") and "Custom" or "Red",
+		onClick = function()
+			LP.PickColor(LP.Get(bd, id, "thresholdColorR") or 1, LP.Get(bd, id, "thresholdColorG") or 0.2, LP.Get(bd, id, "thresholdColorB") or 0.2,
+				function(r, g, b)
+					local ss = LP.Store(bd, id, true)
+					ss.thresholdColorR, ss.thresholdColorG, ss.thresholdColorB = r, g, b
+					ss.thresholdColorEnabled = true
+					CDM.Apply()
+				end)
+		end,
+	}
+	rows[#rows + 1] = LP.ToggleRow(bd, id, "Threshold Decimals", "thresholdDecimals", "Under the threshold the timer shows one decimal.")
+end
+
 function LP.SpellMenuRows(bd, idx)
 	local sd = CDM.BarSpellData(bd.key)
 	local id = sd.assignedSpells[idx]
@@ -755,6 +847,26 @@ function LP.SpellMenuRows(bd, idx)
 		rows[#rows + 1] = LP.SubRow(bd, id, "Reverse Swipe", "reverseSwipe", function()
 			return { { val = nil, label = "Off" }, { val = true, label = "Reverse Swipe" } }
 		end, { read = function(v) return v and true or nil end, fallback = "Off" })
+		-- Stack Text and Glows (retail): Glow at Stacks, Show Stack Text.
+		rows[#rows + 1] = { header = true, text = "STACK TEXT AND GLOWS" }
+		rows[#rows + 1] = LP.ToggleRow(bd, id, "Glow at Stacks", "buffGlowStackEnabled",
+			"Replaces Buff Glow: the icon glows when its stack count matches the comparison, in this buff's Buff Glow style.")
+		if LP.Get(bd, id, "buffGlowStackEnabled") then
+			rows[#rows + 1] = LP.SubRow(bd, id, "Comparison", "buffGlowStackOperator", function()
+				return { { val = "lt", label = "Below (<)" }, { val = "lte", label = "At Most (<=)" }, { val = "eq", label = "Exactly (=)" },
+					{ val = nil, label = "At Least (>=)" }, { val = "gt", label = "Above (>)" } }
+			end, { fallback = "At Least (>=)" })
+			rows[#rows + 1] = LP.NumberRow(bd, id, "Stack Count", "buffGlowStackThreshold", "The stack count to compare against.")
+		end
+		rows[#rows + 1] = LP.SubRow(bd, id, "Show Stack Text", "showChargeStackText", function()
+			return { { val = nil, label = "Default" }, { val = true, label = "Show" }, { val = false, label = "Hide" } }
+		end)
+		LP.ThresholdRows(bd, id, rows)
+		rows[#rows + 1] = { divider = true }
+		rows[#rows + 1] = { text = "Copy to Other Specs", tip = "Adds this buff, with its settings, to this bar in your other specs.",
+			onClick = function() LP.CloseMenus(); LP.CopyToOtherSpecs(bd, id) end }
+		rows[#rows + 1] = { text = "Remove from Other Specs", tip = "Removes this buff and its settings from this bar in your other specs.",
+			onClick = function() LP.CloseMenus(); LP.RemoveFromOtherSpecs(bd, id) end }
 		return rows
 	end
 	if not isItem then
@@ -812,6 +924,26 @@ function LP.SpellMenuRows(bd, idx)
 	rows[#rows + 1] = LP.SubRow(bd, id, "Audio Effect on CD Ready", "cdReadySoundKey", SoundItems,
 		{ read = function(v) return v or "none" end, write = function(v) LP.SetOwn(bd, id, "cdReadySoundKey", (v ~= "none" and v) or nil) end, fallback = "None" })
 	rows[#rows + 1] = LP.ColorRow(bd, id, "Glow Effect Color", "glowColor", "glowColor")
+	-- Charges / swipe / colouring (retail per-spell options).
+	rows[#rows + 1] = { header = true, text = "SWIPE AND CHARGES" }
+	rows[#rows + 1] = LP.ToggleRow(bd, id, "Hide CD Swipe", "hideCDSwipe", "No cooldown swipe on this icon.")
+	rows[#rows + 1] = LP.ToggleRow(bd, id, "Suppress GCD", "suppressGCD", "No swipe for the global cooldown on this icon.")
+	rows[#rows + 1] = LP.ToggleRow(bd, id, "Hide Charge Text", "hideChargeText")
+	rows[#rows + 1] = LP.ToggleRow(bd, id, "Hide Swipe (Charges)", "chargeHideSwipe", "No recharge swipe while a charge is banked.")
+	rows[#rows + 1] = LP.ToggleRow(bd, id, "Hide Duration (Charges > 0)", "chargeHideCdText", "No recharge timer while a charge is banked.")
+	rows[#rows + 1] = LP.ToggleRow(bd, id, "Stay Hidden While Charges Remain", "chargeHideUntilSpent", "The icon only shows once every charge is spent.")
+	if not isItem then
+		rows[#rows + 1] = LP.ToggleRow(bd, id, "Color Out of Range", "outOfRangeColoring", "Tints this icon red while the target is out of range.")
+		rows[#rows + 1] = LP.ToggleRow(bd, id, "Ignore Resource Cost", "noResourceTint", "Keeps the icon in full color while you lack the resource to cast it.")
+	end
+	LP.ThresholdRows(bd, id, rows)
+	if not isItem then
+		rows[#rows + 1] = { divider = true }
+		rows[#rows + 1] = { text = "Copy to Other Specs", tip = "Adds this spell, with its settings, to this bar in your other specs.",
+			onClick = function() LP.CloseMenus(); LP.CopyToOtherSpecs(bd, id) end }
+		rows[#rows + 1] = { text = "Remove from Other Specs", tip = "Removes this spell and its settings from this bar in your other specs.",
+			onClick = function() LP.CloseMenus(); LP.RemoveFromOtherSpecs(bd, id) end }
+	end
 	return rows
 end
 
@@ -1356,6 +1488,19 @@ local function BuildBars(p)
 	Sync(p, "Icon Size", { "iconSize" })
 	p:Slider("Icon Spacing", nil, -2, 20, 1, Get("spacing"), Set("spacing"), off)
 	Sync(p, "Icon Spacing", { "spacing" })
+	-- Max Icons + Overflow To (retail maxIcons / overflowTarget).
+	p:Slider("Max Icons (0 = Off)", "Caps the icons on this bar; the rest move to the Overflow To bar (or are not shown).", 0, 20, 1,
+		function() return bd.maxIcons or 0 end, function(v) bd.maxIcons = (v > 0) and v or nil end, off)
+	local ofList = { { "none", "None" } }
+	for _, b in ipairs(PortedBars()) do
+		if b ~= bd then ofList[#ofList + 1] = { b.key, "CDM: " .. (b.name or b.key) } end
+	end
+	p:Dropdown("Overflow To", "The bar that shows the icons past Max Icons.",
+		function() return Items(ofList) end,
+		function() return bd.overflowTarget or "none" end,
+		function() return LabelOf(ofList, bd.overflowTarget or "none", "None") end,
+		function(v) bd.overflowTarget = (v ~= "none") and v or nil end, nil,
+		function() return off() or not (bd.maxIcons and bd.maxIcons > 0) end)
 	p:Dropdown("Bar Strata", nil,
 		function() return Items(STRATA_LIST) end, Get("barStrata"),
 		function() return LabelOf(STRATA_LIST, CDM.BV(bd, "barStrata")) end, Set("barStrata"), nil, off)
@@ -1396,7 +1541,12 @@ local function BuildBars(p)
 		function() return bd.iconShape or "none" end,
 		function() return LabelOf(SHAPE_LIST, bd.iconShape or "none", "None") end,
 		function(v) bd.iconShape = v end, nil, off)
-	Sync(p, "Icon Shape", { "iconShape", "iconZoom", "borderSize" })
+	p:Cog("Cropped Shape", {
+		{ type = "slider", label = "Adjust Crop", min = 5, max = 25, step = 1,
+			tip = "How much is trimmed from the icon's top and bottom, as a percentage per side. 10% is the classic cropped look.",
+			get = function() return CDM.CropPercent(bd) end, set = function(v) bd.iconCropPercent = v end },
+	}, { disabled = function() return bd.iconShape ~= "cropped" end })
+	Sync(p, "Icon Shape", { "iconShape", "iconZoom", "borderSize", "iconCropPercent" })
 	p:Toggle("Show Cooldown Text", nil, function() return bd.showCooldownText ~= false end, function(v) bd.showCooldownText = v end, off)
 	p:Slider("Duration Size", nil, 6, 30, 1, Get("cooldownFontSize"), Set("cooldownFontSize"), off)
 	p:Cog("Duration Text", {
@@ -1410,6 +1560,9 @@ local function BuildBars(p)
 	})
 	p:Slider("Charge/Stack Size", nil, 6, 30, 1, Get("stackCountSize"), Set("stackCountSize"), off)
 	p:Cog("Charges / Stacks", {
+		{ type = "toggle", label = "Show Charge/Stack Text", tip = "Show the charge and stack counters on this bar's icons.",
+			get = function() return bd.showChargeStackText ~= false end,
+			set = function(v) bd.showChargeStackText = (not v) and false or nil end },
 		{ type = "dropdown", label = "Position", items = function() return Items(POS_LIST) end,
 			get = function() return CDM.BV(bd, "stackCountPosition") end, set = function(v) bd.stackCountPosition = v end,
 			labelFn = function() return LabelOf(POS_LIST, CDM.BV(bd, "stackCountPosition")) end },
@@ -1418,7 +1571,15 @@ local function BuildBars(p)
 		{ type = "color", label = "Color", get = function() return bd.stackCountR or 1, bd.stackCountG or 1, bd.stackCountB or 1, 1 end,
 			set = function(r, g, b) bd.stackCountR, bd.stackCountG, bd.stackCountB = r, g, b end },
 	})
+	p:Toggle("Only Show Numbers", "Hide this bar's icons and show only the duration text.",
+		function() return bd.onlyShowNumbers == true end, function(v) bd.onlyShowNumbers = v and true or nil end, off)
+	p:Toggle("Charges/Stacks Only (No Icon)", "Hide this bar's icon art, cooldown swipe and cooldown text, leaving only the charge or stack count.",
+		function() return bd.chargesOnly == true end, function(v) bd.chargesOnly = v and true or nil end, off)
 	if isBuff then
+		p:Toggle("Keep Buffs in Same Place", "Inactive buffs keep their empty slot, so the other icons do not shift.",
+			function() return bd.hidePlaceholderIcon == true end, function(v) bd.hidePlaceholderIcon = v end,
+			function() return off() or bd.showInactiveBuffIcons == true end)
+		p:Blank()
 		p:Toggle("Always Show Buffs", "Shows a greyed placeholder icon for each tracked buff that is not active.",
 			function() return bd.showInactiveBuffIcons == true end, function(v) bd.showInactiveBuffIcons = v end, off)
 		p:Toggle("Desaturate Inactive Buffs", nil,
@@ -1462,6 +1623,8 @@ local function BuildBars(p)
 			function() return bd.hideItemsIfMissing == true end, function(v) bd.hideItemsIfMissing = v end, off)
 		p:Toggle("Show Non-On Use Trinkets", "Trinket slots also show trinkets without a use effect.",
 			function() return bd.showPassiveTrinkets ~= false end, function(v) bd.showPassiveTrinkets = v end, off)
+		p:Toggle("Mirror Key Presses", "When you press an ability's keybind, its icon on this bar shows a pushed-down look, even while the ability is on cooldown.",
+			function() return bd.pressMirror == true end, function(v) bd.pressMirror = v or nil end, off)
 		p:Dropdown("Active State", "While the spell's own aura is up the icon shows the aura timer (reverse swipe).",
 			function() return Items({ { "blizzard", "Show Active State" }, { "none", "Hide Active State" } }) end,
 			function() return bd.activeStateAnim == "none" and "none" or "blizzard" end,
@@ -1493,6 +1656,9 @@ local function BuildBars(p)
 		function() return cb.stableKeybinds ~= false end, function(v) cb.stableKeybinds = v; CDM._keysDirty = true end)
 	p:Toggle("Hide CDM Tooltips in Combat", "No spell tooltips on CDM icons while you are in combat (NaowhUI Gameplay setting).",
 		function() return cb.hideTooltipsInCombat == true end, function(v) cb.hideTooltipsInCombat = v end)
+	p:Toggle("Swap Combat Potions When Missing", "When your bags have none of one potion, its icon swaps to track another potion of the same kind you own.",
+		function() return cb.swapPotionsWhenMissing == true end, function(v) cb.swapPotionsWhenMissing = v end)
+	p:Blank()
 
 	-- Spells are edited in the live preview above (retail: no spell list on the page).
 end

@@ -297,8 +297,8 @@ local AURA_ANCHOR = {
 local AURA_GROWTH = { { "auto", "Auto" }, { "up", "Up" }, { "down", "Down" }, { "left", "Left" }, { "right", "Right" } }
 local STACK_POS = { { "bottomright", "Bottom Right" }, { "bottomleft", "Bottom Left" }, { "topright", "Top Right" }, { "topleft", "Top Left" }, { "center", "Center" } }
 local DEBUFF_MODE = {
-	{ "all", "Show All" }, { "tracked", "Only Tracked Auras" }, { "own", "Own Only" }, { "important", "Boss Debuffs Only" },
-	{ "importantOwn", "Boss and Own" }, { "importantOrOwn", "Boss or Own" },
+	{ "all", "Show All" }, { "tracked", "Only Tracked Auras" }, { "own", "Own Only" }, { "important", "Important Only" },
+	{ "importantOwn", "Important and Own" }, { "importantOrOwn", "Important or Own" },
 }
 
 -- Tracked Auras popup (retail ns.UFOpt_ShowTrackedAuras): debuffInclude /
@@ -1187,7 +1187,7 @@ local function AuraRows(p, unit)
 				get = function() return S(unit).buffPurgeGlow or 0 end,
 				set = function(v) S(unit).buffPurgeGlow = v ~= 0 and v or nil end },
 		}, { disabled = buffOff })
-		p:Dropdown(label .. " Debuff Filter", "Which debuffs are shown. Tracked Auras always show in addition (Edit Tracked Auras at the top). 5.4.8 has no 'important' flag: the Boss options use the boss debuff flag.",
+		p:Dropdown(label .. " Debuff Filter", "Which debuffs are shown. Tracked Auras always show in addition (Edit Tracked Auras at the top). 5.4.8 has no 'important' flag: Important means debuffs flagged as boss debuffs.",
 			function() return DebuffModeItems(unit) end,
 			function() return UF.DebuffFilterMode(S(unit)) end,
 			function() return LabelOf(DEBUFF_MODE, UF.DebuffFilterMode(S(unit))) end,
@@ -2100,7 +2100,7 @@ local function BuildBoss(p)
 		function() local s = S(unit) return s.auraBorderR or 0, s.auraBorderG or 0, s.auraBorderB or 0, s.auraBorderA or 1 end,
 		function(r, g, b, a) local s = S(unit) s.auraBorderR, s.auraBorderG, s.auraBorderB = r, g, b if a then s.auraBorderA = a end end,
 		{ alpha = true })
-	p:Dropdown("Boss Debuff Filter", "Which debuffs are shown. 5.4.8 has no 'important' flag: the Boss options use the boss debuff flag.",
+	p:Dropdown("Boss Debuff Filter", "Which debuffs are shown. 5.4.8 has no 'important' flag: Important means debuffs flagged as boss debuffs.",
 		function() return DebuffModeItems(unit) end,
 		function() return UF.DebuffFilterMode(S(unit)) end,
 		function() return LabelOf(DEBUFF_MODE, UF.DebuffFilterMode(S(unit))) end,

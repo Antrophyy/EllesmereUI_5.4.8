@@ -437,6 +437,20 @@ CDM.ITEM_PRESETS = {
 	{ key = "healthstone", name = "Healthstone", itemID = 5512 },
 }
 
+-- Combat potions by kind (Swap Combat Potions When Missing): Mists, then
+-- Cataclysm potions of the same kind.
+do
+	local groups = {
+		{ 76095, 76089, 76093, 58146, 58145, 58091 },   -- stat: Mogu Power, Virmen's Bite, Jade Serpent, Golemblood, Tol'vir, Volcanic
+		{ 76097, 57191, 33447 },                        -- healing: Master, Mythical, Runic
+		{ 76098, 57192, 33448 },                        -- mana: Master, Mythical, Runic
+	}
+	CDM.POTION_GROUP = {}
+	for _, g in ipairs(groups) do
+		for _, id in ipairs(g) do CDM.POTION_GROUP[id] = g end
+	end
+end
+
 -- Bloodlust family: any of these buffs lights a lust entry.
 CDM.LUST_IDS = { 2825, 32182, 80353, 90355 }
 CDM.LUST_SET = { [2825] = true, [32182] = true, [80353] = true, [90355] = true }
@@ -490,6 +504,16 @@ function CDM.ResolveEntry(bd, id, sd)
 		local remap = CDM.ITEM_REMAP[n]
 		if remap then n = remap() end
 		if not n then return nil end
+		-- Swap Combat Potions When Missing (retail cdmBars.swapPotionsWhenMissing):
+		-- with none of this potion in the bags, track another of its kind you own.
+		if CDM.DB().cdmBars.swapPotionsWhenMissing and (GetItemCount(n) or 0) == 0 then
+			local group = CDM.POTION_GROUP[n]
+			if group then
+				for _, alt in ipairs(group) do
+					if alt ~= n and (GetItemCount(alt) or 0) > 0 then n = alt; break end
+				end
+			end
+		end
 		e.kind, e.itemID = "item", n
 		e.name = GetItemInfo(n)
 		e.icon = GetItemIcon(n)

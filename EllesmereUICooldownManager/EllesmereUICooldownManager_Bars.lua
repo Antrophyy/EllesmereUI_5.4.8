@@ -148,13 +148,35 @@ function CDM.BuildAll()
 	local p = CDM.DB()
 	local enabled = p.cdmBars.enabled ~= false
 	local live = {}
+	-- Pass 1: each bar's entries (with their settings from the bar they belong to).
+	local lists = {}
+	for _, bd in ipairs(CDM.Bars()) do
+		if CDM.IsPortedBar(bd) and bd.key then
+			local list = (enabled and bd.enabled ~= false) and BarEntries(bd) or {}
+			for _, e in ipairs(list) do e._ss = CDM.SpellSettings(bd, e.id) end
+			lists[bd.key] = list
+		end
+	end
+	-- Pass 2: Max Icons + Overflow To (retail maxIcons / overflowTarget): the
+	-- entries past the cap move to the end of the target bar (or are dropped).
+	for _, bd in ipairs(CDM.Bars()) do
+		local list = lists[bd.key]
+		local cap = tonumber(bd.maxIcons) or 0
+		if list and cap > 0 and #list > cap then
+			local target = bd.overflowTarget and bd.overflowTarget ~= bd.key and lists[bd.overflowTarget]
+			for i = cap + 1, #list do
+				if target then target[#target + 1] = list[i] end
+				list[i] = nil
+			end
+		end
+	end
 	for _, bd in ipairs(CDM.Bars()) do
 		if CDM.IsPortedBar(bd) and bd.key then
 			live[bd.key] = true
 			local f = GetBarFrame(bd)
 			f.bd = bd
 			f:SetFrameStrata(BV(bd, "barStrata"))
-			local entries = (enabled and bd.enabled ~= false) and BarEntries(bd) or {}
+			local entries = lists[bd.key] or {}
 			f.entries = entries
 			local iw, ih = CDM.IconDims(bd)
 			for i, e in ipairs(entries) do
@@ -164,7 +186,7 @@ function CDM.BuildAll()
 					f.icons[i] = icon
 				end
 				CDM.StyleIcon(icon, bd, iw, ih)
-				CDM.SetIconEntry(icon, e, CDM.SpellSettings(bd, e.id))
+				CDM.SetIconEntry(icon, e, e._ss)
 			end
 			for i = #entries + 1, #f.icons do
 				local icon = f.icons[i]
@@ -411,6 +433,77 @@ function CDM.SetPreview(on)
 end
 
 -------------------------------------------------------------------------------
+--  Mirror Key Presses (retail pressMirror): pressing an ability's key shows
+--  the pushed look on its icon (bars with the option on). A keyboard frame
+--  that passes every key on; built out of combat once a bar asks for it.
+-------------------------------------------------------------------------------
+local pressFrame
+local pressed = {}
+local function PushOverlay(icon, on)
+	if on and not icon.push then
+		icon.push = icon.textHost:CreateTexture(nil, "BACKGROUND")
+		icon.push:SetAllPoints(icon.tex)
+		icon.push:SetTexture(0, 0, 0, 0.45)
+	end
+	if icon.push then icon.push:SetShown(on and true or false) end
+end
+
+local function KeyText(key)
+	local mods = (IsAltKeyDown() and "ALT-" or "") .. (IsControlKeyDown() and "CTRL-" or "") .. (IsShiftKeyDown() and "SHIFT-" or "")
+	return CDM.FormatKey(mods .. key), CDM.FormatKey(key)
+end
+
+local function OnPress(_, key)
+	local full, bare = KeyText(key)
+	for _, f in pairs(barFrames) do
+		local bd = f.bd
+		if bd and bd.pressMirror and f:IsShown() then
+			for _, icon in ipairs(f.icons) do
+				local kt = icon._entry and CDM.KeyFor(icon._entry)
+				if kt and kt ~= "" and (kt == full or kt == bare) then
+					PushOverlay(icon, true)
+					pressed[icon] = key
+				end
+			end
+		end
+	end
+end
+
+local function OnRelease(_, key)
+	for icon, k in pairs(pressed) do
+		if k == key then
+			PushOverlay(icon, false)
+			pressed[icon] = nil
+		end
+	end
+end
+
+function CDM.UpdatePressMirror()
+	local want = false
+	for _, bd in ipairs(CDM.Bars()) do
+		if bd.pressMirror then want = true break end
+	end
+	if want and not pressFrame then
+		if InCombatLockdown() then
+			CDM.OutOfCombat("pressMirror", CDM.UpdatePressMirror)
+			return
+		end
+		pressFrame = CreateFrame("Frame", nil, UIParent)
+		pressFrame:EnableKeyboard(true)
+		pressFrame:SetPropagateKeyboardInput(true)
+		pressFrame:SetScript("OnKeyDown", OnPress)
+		pressFrame:SetScript("OnKeyUp", OnRelease)
+	end
+	if pressFrame then
+		pressFrame:SetShown(want)
+		if not want then
+			for icon in pairs(pressed) do PushOverlay(icon, false) end
+			wipe(pressed)
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
 --  Unlock Mode ("CDM_" .. key movers, group "Cooldown Manager")
 -------------------------------------------------------------------------------
 function CDM.RegisterUnlock()
@@ -485,6 +578,7 @@ end
 function CDM.Apply()
 	if not CDM.ready then return end
 	CDM.BuildAll()
+	CDM.UpdatePressMirror()
 	if CDM.TBB and CDM.TBB.Build then CDM.TBB.Build() end
 	if CDM.BarGlows and CDM.BarGlows.Refresh then CDM.BarGlows.Refresh() end
 end

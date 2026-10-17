@@ -243,6 +243,16 @@ function CDM.StyleIcon(f, bd, w, h)
 		f.keyText:SetPoint("TOPLEFT", f, "TOPLEFT", BV(bd, "keybindOffsetX") or 2, BV(bd, "keybindOffsetY") or -2)
 	end
 	f:EnableMouse(bd.showTooltip and true or false)
+	-- Only Show Numbers / Charges/Stacks Only (retail onlyShowNumbers /
+	-- chargesOnly): no icon art, border or background; chargesOnly also drops
+	-- the swipe (its text is cleared per update).
+	local bare = bd.onlyShowNumbers or bd.chargesOnly
+	f.tex:SetAlpha(bare and 0 or 1)
+	f.bg:SetShown(not bare)
+	if bare then
+		for i = 1, 4 do b[i]:Hide() end
+	end
+	f.cd:SetAlpha(bd.chargesOnly and 0 or (BV(bd, "swipeAlpha") or 0.7))
 	f._glowSig = nil
 	StopGlow(f)
 end
@@ -327,6 +337,34 @@ local function FormatTime(s)
 	return format("%.1f", s)
 end
 
+-- Threshold text (retail per-spell thresholdSeconds / thresholdColor* /
+-- thresholdDecimals): at or under N seconds the timer takes the colour and
+-- one decimal. Returns text, r, g, b (nil colour = the bar's).
+local function ThresholdText(left, ss)
+	local n = ss and tonumber(ss.thresholdSeconds)
+	if n and n > 0 and left <= n then
+		local text = ss.thresholdDecimals and format("%.1f", left) or FormatTime(left)
+		if ss.thresholdColorEnabled ~= false then
+			return text, ss.thresholdColorR or 1, ss.thresholdColorG or 0.2, ss.thresholdColorB or 0.2
+		end
+		return text
+	end
+	return FormatTime(left)
+end
+
+-- Glow at Stacks (retail buffGlowStackEnabled / Operator / Threshold).
+local STACK_CMP = {
+	lt = function(a, b) return a < b end, lte = function(a, b) return a <= b end,
+	eq = function(a, b) return a == b end, gte = function(a, b) return a >= b end,
+	gt = function(a, b) return a > b end,
+}
+local function StackGlowMatch(ss, stacks)
+	if not (ss and ss.buffGlowStackEnabled) then return nil end
+	local cmp = STACK_CMP[ss.buffGlowStackOperator or "gte"] or STACK_CMP.gte
+	local n = tonumber(ss.buffGlowStackThreshold) or 2
+	return cmp(math.max(stacks or 0, 1), n)
+end
+
 local function SetSwipe(f, start, dur, reverse)
 	local cd = f.cd
 	if not start or not dur or dur <= 0 then
@@ -375,6 +413,7 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 	if not e or not bd then return false end
 	now = now or GetTime()
 	local text, count = "", nil
+	local textR, textG, textB
 	local desat, alpha, tintR, tintG, tintB = false, 1, 1, 1, 1
 	local glowStyle, gr, gg, gb
 	local show = true
@@ -400,11 +439,19 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 			SetSwipe(f, start, dur, not (ss and ss.reverseSwipe))
 			if dur and bd.showCooldownText ~= false then
 				local left = start + dur - now
-				if left > 0 then text = FormatTime(left) end
+				if left > 0 then text, textR, textG, textB = ThresholdText(left, ss) end
 			end
 			if stacks and stacks > 1 then count = stacks end
+			-- Glow at Stacks replaces the Buff Glow: glows only while the stack
+			-- count matches (the spell's Buff Glow style, else Pixel Glow).
+			local stackMatch = StackGlowMatch(ss, stacks)
+			if stackMatch ~= nil then
+				if stackMatch then
+					glowStyle = (ss.buffGlow and ss.buffGlow > 0) and ss.buffGlow or 1
+					gr, gg, gb = SettingColor(ss, "buffGlow", 1, 0.82, 0.1)
+				end
 			-- Buff glow (per spell), else the bar's custom buff glow.
-			if ss and ss.buffGlow and ss.buffGlow > 0 then
+			elseif ss and ss.buffGlow and ss.buffGlow > 0 then
 				glowStyle = ss.buffGlow
 				gr, gg, gb = SettingColor(ss, "buffGlow", 1, 0.82, 0.1)
 			elseif bd.buffGlowMode == "custom" and (bd.buffGlowType or 0) > 0 then
@@ -435,6 +482,10 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 				if dz == "on" or (dz ~= "off" and bd.desaturateInactiveBuffs ~= false) then desat = true end
 				alpha = 0.5
 				f._placeholder = true
+			elseif bd.hidePlaceholderIcon == true and CDM.IsBuffBar(bd) then
+				-- Keep Buffs in Same Place: the slot stays, empty.
+				alpha = 0
+				f._placeholder = true
 			else
 				show = false
 			end
@@ -446,13 +497,18 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 		local isGCD = d > 0 and gd > 0 and s == gs and d == gd
 		local onCD = d > 1.5 and not isGCD
 		local recharging = charges and maxCharges and maxCharges > 1 and charges < maxCharges
+		local hasCharges = maxCharges and maxCharges > 1 and charges and charges > 0
 		if maxCharges and maxCharges > 1 then
 			-- Charges: the swipe shows the recharge; "on cooldown" = no charge left.
 			onCD = charges == 0
-			if bd.showCharges ~= false then
+			if bd.showCharges ~= false and not (ss and ss.hideChargeText) then
 				if charges > 0 or not bd.hideZeroChargeText then count = charges end
 			end
 		end
+		-- Per-spell swipe / text switches (retail charge and swipe options).
+		local hideSwipe = ss and ss.hideCDSwipe
+		local hideRechargeSwipe = hideSwipe or (ss and ss.chargeHideSwipe and hasCharges)
+		local hideRechargeText = ss and ss.chargeHideCdText and hasCharges
 		-- Active state (the spell's own aura is up).
 		local aura = e.kind == "spell" and FindOwnAura(e) or nil
 		local activeSwipe = aura and (ss == nil or ss.activeSwipeMode ~= "none") and bd.activeStateAnim ~= "none"
@@ -460,24 +516,30 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 			SetSwipe(f, aura.exp - aura.dur, aura.dur, true)
 			if bd.showCooldownText ~= false then
 				local left = aura.exp - now
-				if left > 0 then text = FormatTime(left) end
+				if left > 0 then text, textR, textG, textB = ThresholdText(left, ss) end
 			end
 		elseif onCD then
-			SetSwipe(f, s, d, ss and ss.reverseSwipe)
+			if hideSwipe then SetSwipe(f) else SetSwipe(f, s, d, ss and ss.reverseSwipe) end
 			if bd.showCooldownText ~= false then
 				local left = s + d - now
-				if left > 0 then text = FormatTime(left) end
+				if left > 0 then text, textR, textG, textB = ThresholdText(left, ss) end
 			end
 		elseif recharging and cs and cdur and cdur > 0 then
-			SetSwipe(f, cs, cdur, ss and ss.reverseSwipe)
-			if bd.showCooldownText ~= false then
+			if hideRechargeSwipe then SetSwipe(f) else SetSwipe(f, cs, cdur, ss and ss.reverseSwipe) end
+			if bd.showCooldownText ~= false and not hideRechargeText then
 				local left = cs + cdur - now
-				if left > 0 then text = FormatTime(left) end
+				if left > 0 then text, textR, textG, textB = ThresholdText(left, ss) end
 			end
-		elseif isGCD and not bd.suppressGCD then
+		elseif isGCD and not bd.suppressGCD and not (ss and ss.suppressGCD) and not hideSwipe then
 			SetSwipe(f, s, d)
 		else
 			SetSwipe(f)
+		end
+		-- Stay Hidden While Charges Remain (retail chargeHideUntilSpent): the
+		-- slot stays empty while a charge is banked.
+		if ss and ss.chargeHideUntilSpent and hasCharges then
+			alpha = 0
+			f._placeholder = true
 		end
 		if onCD and bd.desaturateOnCD ~= false and not (ss and ss.noDesatOnCD) then desat = true end
 		-- Non Active State: desaturated while the spell's own aura is not up.
@@ -486,12 +548,13 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 		-- Usable / range colouring.
 		if e.kind == "spell" then
 			local usable, noMana = IsUsableSpell(e.spellID)
-			if noMana then
+			-- Ignore Resource Cost (retail noResourceTint): full colour without the resource.
+			if noMana and not (ss and ss.noResourceTint) then
 				tintR, tintG, tintB = 0.5, 0.5, 1
-			elseif not usable and not onCD then
+			elseif not usable and not onCD and not noMana then
 				tintR, tintG, tintB = 0.4, 0.4, 0.4
 			end
-			if bd.outOfRangeOverlay and e.name and UnitExists("target") then
+			if (bd.outOfRangeOverlay or (ss and ss.outOfRangeColoring)) and e.name and UnitExists("target") then
 				if IsSpellInRange(e.name, "target") == 0 then tintR, tintG, tintB = 0.8, 0.1, 0.1 end
 			end
 		elseif e.kind == "item" then
@@ -550,7 +613,18 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 	-- Paint.
 	f.tex:SetDesaturated(desat)
 	f.tex:SetVertexColor(tintR, tintG, tintB)
+	-- Show Charge/Stack Text (bar showChargeStackText, per-spell override).
+	local showCount = bd.showChargeStackText ~= false
+	if ss and ss.showChargeStackText ~= nil then showCount = ss.showChargeStackText end
+	if not showCount then count = nil end
+	-- Only Show Numbers: the timer alone. Charges/Stacks Only: the count alone.
+	if bd.chargesOnly then text = "" end
 	f.cdText:SetText(text)
+	if textR then
+		f.cdText:SetTextColor(textR, textG, textB)
+	else
+		f.cdText:SetTextColor(BV(bd, "cooldownTextR"), BV(bd, "cooldownTextG"), BV(bd, "cooldownTextB"))
+	end
 	f.countText:SetText(count and tostring(count) or "")
 	if bd.showKeybind then
 		f.keyText:SetText(CDM.KeyFor(e))
