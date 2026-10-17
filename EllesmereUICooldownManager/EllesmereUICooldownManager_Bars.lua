@@ -72,6 +72,10 @@ end
 -- the fixed edge), or next to the bar it is anchored to.
 local function ApplyPosition(bd, f)
 	local w, h = f:GetWidth() or 0, f:GetHeight() or 0
+	-- FocusKick rides the focus (or target) nameplate.
+	if bd.key == "focuskick" and CDM.FocusKick and not ns._unlockActive then
+		if CDM.FocusKick.ApplyAnchor(bd, f) then return end
+	end
 	f:ClearAllPoints()
 	-- Anchored to another CDM bar (retail anchorTo = bar key).
 	local target = bd.anchorTo and bd.anchorTo ~= "none" and barFrames[bd.anchorTo]
@@ -333,6 +337,10 @@ CDM.LayoutBar = LayoutBar
 local function BarVisible(bd)
 	if bd.enabled == false or CDM.DB().cdmBars.enabled == false then return false end
 	if ns._unlockActive or preview then return true end
+	if bd.key == "focuskick" then
+		local unit = bd.focusKickUseTarget and "target" or "focus"
+		return UnitExists(unit) and UnitCanAttack("player", unit) and not UnitIsDead(unit)
+	end
 	local mode = bd.barVisibility or "always"
 	if mode == "never" or mode == "show_dragonriding" then return false end
 	if mode == "in_combat" and not inCombat then return false end
@@ -514,7 +522,7 @@ function CDM.RegisterUnlock()
 	for _, bd in ipairs(CDM.Bars()) do
 		if bd.anchorTo == "mouse" then anyMouse = true end
 		local key = bd.key
-		if CDM.IsPortedBar(bd) and key and bd.enabled ~= false and bd.anchorTo ~= "mouse"
+		if CDM.IsPortedBar(bd) and key and key ~= "focuskick" and bd.enabled ~= false and bd.anchorTo ~= "mouse"
 			and not (bd.anchorTo and bd.anchorTo ~= "none" and CDM.BarByKey(bd.anchorTo)) then
 			local isBuff = CDM.IsBuffBar(bd)
 			elements[#elements + 1] = MK({
@@ -596,6 +604,7 @@ CDM.eventFrame = ev
 local function SpecChanged()
 	CDM._myRacial = nil
 	CDM.SeedSpecDefaults()
+	if CDM.FocusKick then CDM.FocusKick.SeedSpells() end
 	CDM._keysDirty = true
 	CDM.Apply()
 end
@@ -619,6 +628,10 @@ ev:SetScript("OnEvent", function(self, event, arg1, _, _, _, arg5)
 	elseif event == "PLAYER_LOGIN" then
 		CDM.ready = true
 		CDM.SeedSpecDefaults()
+		if CDM.FocusKick then
+			CDM.FocusKick.EnsureBar()
+			CDM.FocusKick.SeedSpells()
+		end
 		CDM._keysDirty = true
 		CDM.RebuildKeybinds()
 		CDM.Apply()

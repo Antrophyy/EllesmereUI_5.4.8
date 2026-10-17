@@ -258,7 +258,7 @@ function CDM.Bars()
 end
 
 function CDM.IsPortedBar(bd)
-	return bd and not bd.isGhostBar and bd.key ~= "focuskick" and bd.key ~= "__ghost_cd"
+	return bd and not bd.isGhostBar and bd.key ~= "__ghost_cd"
 end
 
 function CDM.BarByKey(key)

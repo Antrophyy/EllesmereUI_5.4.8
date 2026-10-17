@@ -1402,6 +1402,57 @@ local function BuildBars(p)
 	local isBuff = CDM.IsBuffBar(bd)
 	local function off() return bd.enabled == false end
 
+	-- FocusKick (retail FocusKick Options): the bar sits on the focus nameplate.
+	if bd.key == "focuskick" and CDM.FocusKick then
+		local FK = CDM.FocusKick
+		p:Section("FocusKick Options")
+		p:Toggle("Enable FocusKick", "Shows your interrupt on your focus target's nameplate.",
+			function() return bd.enabled ~= false end, function(v) bd.enabled = v; if v then FK.SeedSpells() end end)
+		p:Toggle("Show on Target", "Show the FocusKick bar on your current target's nameplate instead of your focus target's.",
+			function() return bd.focusKickUseTarget == true end, function(v) bd.focusKickUseTarget = v or nil end, off)
+		local SIDES = { { "LEFT", "Left" }, { "RIGHT", "Right" }, { "TOP", "Top" }, { "BOTTOM", "Bottom" } }
+		p:Dropdown("Nameplate Anchor", "The side of the nameplate the bar sits on (the unit frame without EllesmereUI Nameplates).",
+			function() return Items(SIDES) end, function() return bd.nameplateAnchorSide or "LEFT" end,
+			function() return LabelOf(SIDES, bd.nameplateAnchorSide or "LEFT") end,
+			function(v) bd.nameplateAnchorSide = v end, nil, off)
+		p:Cog("Nameplate Offset", {
+			{ type = "slider", label = "X Offset", min = -100, max = 100, step = 1, get = function() return bd.nameplateOffsetX or 0 end, set = function(v) bd.nameplateOffsetX = v end },
+			{ type = "slider", label = "Y Offset", min = -100, max = 100, step = 1, get = function() return bd.nameplateOffsetY or 0 end, set = function(v) bd.nameplateOffsetY = v end },
+		}, { icon = "resize" })
+		p:Dropdown("Focus Cast Sound", "Plays when your focus starts an interruptible cast while your interrupt is ready.",
+			function()
+				local items = { { value = "none", name = "None" } }
+				local LSM = ns.GetLSM and ns.GetLSM()
+				for _, n in ipairs(LSM and LSM:List("sound") or {}) do
+					if n ~= "None" then items[#items + 1] = { value = "sm:" .. n, name = n } end
+				end
+				return items
+			end,
+			function() return bd.focusCastSoundKey or "none" end,
+			function() local k = bd.focusCastSoundKey; return (k and k:match("^sm:(.+)$")) or "None" end,
+			function(v) bd.focusCastSoundKey = (v ~= "none") and v or nil; CDM.PlaySoundKey(v) end, nil, off)
+		p:Dropdown("Interrupt Spell", "The interrupt the Focus Cast Sound checks.",
+			function()
+				local items = {}
+				for _, sid in ipairs(FK.ClassInterrupts()) do items[#items + 1] = { value = sid, name = GetSpellInfo(sid) or tostring(sid) } end
+				if #items == 0 then items[1] = { value = 0, name = "None" } end
+				return items
+			end,
+			function() return FK.InterruptSpell(bd) or 0 end,
+			function() local sid = FK.InterruptSpell(bd); return sid and GetSpellInfo(sid) or "None" end,
+			function(v) bd.focusKickInterruptSpellID = (v ~= 0) and v or nil end, nil, off)
+		p:Toggle("Focus Text Reminders", "Shows FOCUS under caster mobs in dungeons while you have no focus set (needs EllesmereUI Nameplates).",
+			function() return bd.focusReminderEnabled == true end, function(v) bd.focusReminderEnabled = v or nil end, off)
+		p:Cog("Focus Reminder Settings", {
+			{ type = "slider", label = "Text Size", min = 8, max = 50, step = 1, get = function() return bd.focusReminderSize or 26 end, set = function(v) bd.focusReminderSize = v end },
+			{ type = "slider", label = "X Offset", min = -100, max = 100, step = 1, get = function() return bd.focusReminderOffsetX or 0 end, set = function(v) bd.focusReminderOffsetX = v end },
+			{ type = "slider", label = "Y Offset", min = -100, max = 100, step = 1, get = function() return bd.focusReminderOffsetY or 0 end, set = function(v) bd.focusReminderOffsetY = v end },
+			{ type = "toggle", label = "Accent Color", get = function() return bd.focusReminderUseAccent ~= false end, set = function(v) bd.focusReminderUseAccent = v end },
+			{ type = "color", label = "Custom Color", get = function() return bd.focusReminderR or 1, bd.focusReminderG or 1, bd.focusReminderB or 1, 1 end,
+				set = function(r, g, b) bd.focusReminderR, bd.focusReminderG, bd.focusReminderB = r, g, b; bd.focusReminderUseAccent = false end },
+		}, { disabled = function() return not bd.focusReminderEnabled end })
+	end
+
 	p:Section("Bar Layout")
 	p:Toggle("Enable Bar", "Shows this bar.", function() return bd.enabled ~= false end, function(v) bd.enabled = v end)
 	if not IsDefaultBar(bd.key) then

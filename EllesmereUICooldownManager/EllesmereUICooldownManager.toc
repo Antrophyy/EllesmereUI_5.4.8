@@ -11,5 +11,6 @@ EllesmereUICooldownManager.lua
 EllesmereUICooldownManager_Spells.lua
 EllesmereUICooldownManager_Icons.lua
 EllesmereUICooldownManager_Bars.lua
+EllesmereUICooldownManager_FocusKick.lua
 EllesmereUICooldownManager_TrackingBars.lua
 EllesmereUICooldownManager_BarGlows.lua
