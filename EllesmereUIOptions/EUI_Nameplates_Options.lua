@@ -1218,16 +1218,35 @@ local function BuildDisplay(p)
 				Swatch(p, "Hostile Color", "enemyNameHostileColor", { fallback = "hostile" })
 				Swatch(p, "Neutral Color", "enemyNameNeutralColor", { fallback = "neutral" })
 			end
-			if (el == "levelName" or el == "nameLevel") and mode ~= "level" then
-				p:Cog(s.label .. " Coloring", {
-					{ type = "toggle", label = "Level Difficulty Color",
+			if (el == "levelName" or el == "nameLevel") then
+				-- Custom Name / Level Color (retail Core Text Coloring part colors).
+				local function PartColor(k)
+					return function()
+						local c = DB()[k] or DB()[s.key .. "Color"] or {}
+						return c.r or 1, c.g or 1, c.b or 1, 1
+					end
+				end
+				local rows = {
+					{ type = "toggle", label = "Custom Name Color", get = On(s.key .. "NameColorOn"), set = Set(s.key .. "NameColorOn") },
+					{ type = "color", label = "Name Color", get = PartColor(s.key .. "NameColor"),
+					  set = function(r, g, b) DB()[s.key .. "NameColor"] = { r = r, g = g, b = b } end,
+					  disabled = Off(s.key .. "NameColorOn") },
+					{ type = "toggle", label = "Custom Level Color", get = On(s.key .. "LevelColorOn"),
+					  set = function(v) DB()[s.key .. "LevelColorOn"] = v; if v then DB()[s.key .. "LevelDiffOn"] = false end end },
+					{ type = "color", label = "Level Color", get = PartColor(s.key .. "LevelColor"),
+					  set = function(r, g, b) DB()[s.key .. "LevelColor"] = { r = r, g = g, b = b } end,
+					  disabled = Off(s.key .. "LevelColorOn") },
+				}
+				if mode ~= "level" then
+					rows[#rows + 1] = { type = "toggle", label = "Level Difficulty Color",
 					  get = function()
 						local v = DB()[s.key .. "LevelDiffOn"]
 						if v == nil then v = DB().levelDifficultyColor end
 						return v == true
 					  end,
-					  set = Set(s.key .. "LevelDiffOn") },
-				})
+					  set = Set(s.key .. "LevelDiffOn") }
+				end
+				p:Cog(s.label .. " Coloring", rows)
 			end
 		end
 		if #assigned % 2 == 1 then
@@ -1260,6 +1279,9 @@ local function BuildDisplay(p)
 		{ type = "toggle", label = "Hide Border",
 		  tip = "Hide the 1-pixel border around the cast bar spell icon.",
 		  get = On("hideCastIconBorder"), set = Set("hideCastIconBorder") },
+		{ type = "toggle", label = "Use Target Border Color",
+		  tip = "Color the spell icon border on your target's nameplate with the target border color.",
+		  get = On("castIconTargetBorder"), set = Set("castIconTargetBorder") },
 	}, { icon = "resize", disabled = Off("showCastIcon", true), disabledTip = "This option requires Spell Icon to be enabled" })
 
 	p:Slider("Cast Background", nil, 0, 100, 1, GetPct("castBgAlpha", 0.9), SetPct("castBgAlpha"))
@@ -1527,6 +1549,42 @@ local function BuildDisplay(p)
 		disabledTip = "This option requires a Hover Effect to be selected" })
 
 	-------------------------------------------------------------------
+	-- Class Resource on the target's plate (retail CLASS RESOURCE).
+	p:Section("Class Resource")
+	local cpOff = Off("showClassPower", false)
+	p:Toggle("Show Class Resource", "Shows your combo points, holy power, chi, shadow orbs, soul shards, burning embers, arcane charges or Maelstrom Weapon on your target's nameplate.",
+		On("showClassPower", false), Set("showClassPower"))
+	p:Cog("Class Resource Colors", {
+		{ type = "toggle", label = "Class Colors", get = On("classPowerClassColors", true), set = Set("classPowerClassColors") },
+		{ type = "color", label = "Fill Color", get = function() local c = Val("classPowerCustomColor") or {} return c.r or 1, c.g or 0.84, c.b or 0.3, 1 end,
+			set = function(r, g, b) DB().classPowerCustomColor = { r = r, g = g, b = b } end },
+		{ type = "color", label = "Empty Color", alpha = true, get = function() local c = Val("classPowerEmptyColor") or {} return c.r or 0.2, c.g or 0.2, c.b or 0.2, c.a or 1 end,
+			set = function(r, g, b, a) DB().classPowerEmptyColor = { r = r, g = g, b = b, a = a or 1 } end },
+		{ type = "color", label = "Background Color", alpha = true, get = function() local c = Val("classPowerBgColor") or {} return c.r or 0.08, c.g or 0.08, c.b or 0.08, c.a or 1 end,
+			set = function(r, g, b, a) DB().classPowerBgColor = { r = r, g = g, b = b, a = a or 1 } end },
+	}, { disabled = cpOff })
+	local CP_POS = { { value = "bottom", name = "Bottom" }, { value = "top", name = "Top" } }
+	p:Dropdown("Position", "Above or below the health bar.", function() return CP_POS end,
+		function() return Val("classPowerPos") or "bottom" end,
+		function() return (Val("classPowerPos") == "top") and "Top" or "Bottom" end, Set("classPowerPos"), nil, cpOff)
+	p:Cog("Position Settings", {
+		{ type = "slider", label = "X Offset", min = -50, max = 50, step = 1, get = Get("classPowerXOffset", 0), set = Set("classPowerXOffset") },
+		{ type = "slider", label = "Y Offset", min = -50, max = 50, step = 1, get = Get("classPowerYOffset", 1), set = Set("classPowerYOffset") },
+		{ type = "slider", label = "Size", min = 0.5, max = 4, step = 0.1, get = Get("classPowerScale", 1), set = Set("classPowerScale") },
+	}, { icon = "directions", disabled = cpOff })
+	p:Slider("Bar Spacing", "Gap between the pips.", 0, 10, 1, Get("classPowerGap", 2), Set("classPowerGap"), cpOff)
+	local CP_SHAPE = { { value = "rectangle", name = "Rectangle" }, { value = "square", name = "Square" } }
+	p:Dropdown("Shape", "5.4.8 has no masks: rectangle or square pips.", function() return CP_SHAPE end,
+		function() return (Val("classPowerShape") == "square") and "square" or "rectangle" end,
+		function() return (Val("classPowerShape") == "square") and "Square" or "Rectangle" end, Set("classPowerShape"), nil, cpOff)
+	p:Toggle("Border", nil, On("classPowerBorder", false), Set("classPowerBorder"), cpOff)
+	p:Cog("Border Settings", {
+		{ type = "slider", label = "Thickness", min = 1, max = 4, step = 1, get = Get("classPowerBorderSize", 1), set = Set("classPowerBorderSize") },
+		{ type = "color", label = "Color", alpha = true, get = function() local c = Val("classPowerBorderColor") or {} return c.r or 0, c.g or 0, c.b or 0, c.a or 1 end,
+			set = function(r, g, b, a) DB().classPowerBorderColor = { r = r, g = g, b = b, a = a or 1 } end },
+	}, { disabled = function() return cpOff() or not On("classPowerBorder", false)() end })
+	p:Blank()
+
 	p:Section("General Text")
 	local function DurationRow(label, k)
 		p:Dropdown(label, nil, function() return Items(TIMER_POS) end,
@@ -1748,6 +1806,95 @@ local function BuildColors(p)
 			if #names == 0 then return "None" end
 			return table.concat(names, ", ")
 		end, ThreatNever)
+
+	-- Debuff Based Nameplate Coloring (retail): your class's list of debuffs
+	-- and debuff combos, each with a color.
+	local DC = ENP.DebuffColorKit
+	if DC then
+		p:Section("Debuff Based Nameplate Coloring")
+		local MODES = { { "none", "None" }, { "nameplate", "Color Nameplate" }, { "border", "Color Border" } }
+		local function Mode()
+			if not DB().debuffColorsEnabled then return "none" end
+			return DB().debuffColorsBorder and "border" or "nameplate"
+		end
+		local function dcOff() return Mode() == "none" end
+		p:Dropdown("Debuff Coloring", "Colors enemy health bars, or their borders, while the chosen debuffs are on them. 5.4.8 reads a plate's debuffs while it is your target, mouseover or focus.",
+			function() local out = {} for i, m in ipairs(MODES) do out[i] = { value = m[1], name = m[2] } end return out end,
+			Mode, function() for _, m in ipairs(MODES) do if m[1] == Mode() then return m[2] end end end,
+			function(v)
+				DB().debuffColorsEnabled = v ~= "none"
+				if v ~= "none" then DB().debuffColorsBorder = v == "border" end
+				if ns.RebuildSettingsPage then ns.RebuildSettingsPage() end
+			end)
+		p:Cog("Color Border", {
+			{ type = "slider", label = "Extra Border Size", min = 0, max = 4, step = 1, tip = "Thickens the border by this many pixels while it shows a debuff color.",
+				get = function() return DB().debuffColorsBorderExtra or 0 end, set = function(v) DB().debuffColorsBorderExtra = v end },
+		}, { disabled = function() return Mode() ~= "border" end })
+		p:Toggle("Only My Debuffs", "Counts only the debuffs you applied.",
+			function() return DB().debuffColorsPlayerOnly ~= false end, function(v) DB().debuffColorsPlayerOnly = v end, dcOff)
+		p:Blank()
+		local key = DC.Key()
+		local singles, combos = DC.Parse(DB()[key])
+		local function Save()
+			DB()[key] = DC.Encode(singles, combos)
+			if ns.ApplySettingsChange then ns.ApplySettingsChange() end
+			if ns.RebuildSettingsPage then ns.RebuildSettingsPage() end
+		end
+		local function SpellLabel(id)
+			local name, _, icon = GetSpellInfo(id)
+			return format("|T%s:16:16:0:0:64:64:5:59:5:59|t %s |cff808080(%d)|r", icon or "Interface\\Icons\\INV_Misc_QuestionMark", name or "?", id)
+		end
+		for i, e in ipairs(singles) do
+			p:Button(SpellLabel(e.spell), "A debuff that colors the plate. Higher entries win.", "Remove", function()
+				table.remove(singles, i)
+				Save()
+			end)
+			p:Swatch("Debuff Color", function() return e.color.r, e.color.g, e.color.b end,
+				function(r, g, b) e.color = { r = r, g = g, b = b }; DB()[key] = DC.Encode(singles, combos) end)
+		end
+		if #singles < DC.MAX_SINGLES then
+			p:Button("+ Add Debuff", "Adds a debuff by its spell ID.", "Add", function()
+				ns.ShowInputPopup({
+					title = "Add Debuff", message = "Enter the spell ID of the debuff.", text = "", confirmText = "Add", cancelText = "Cancel",
+					onConfirm = function(text)
+						local id = tonumber(text and strtrim(text) or "")
+						if id and GetSpellInfo(id) then
+							singles[#singles + 1] = { spell = id, color = { r = DC.SINGLE.r, g = DC.SINGLE.g, b = DC.SINGLE.b } }
+							Save()
+						end
+					end,
+				})
+			end)
+		end
+		for i, c in ipairs(combos) do
+			local names = {}
+			for _, id in ipairs(c.spells) do names[#names + 1] = (GetSpellInfo(id)) or tostring(id) end
+			p:Button("Combo: " .. table.concat(names, " + "), "Colors the plate while all of these debuffs are on it. Combos win over single debuffs.", "Remove", function()
+				table.remove(combos, i)
+				Save()
+			end)
+			p:Swatch("Combo Color", function() return c.color.r, c.color.g, c.color.b end,
+				function(r, g, b) c.color = { r = r, g = g, b = b }; DB()[key] = DC.Encode(singles, combos) end)
+		end
+		if #combos < DC.MAX_COMBOS then
+			p:Button("+ Add Combo", "Adds a combo of two to four debuffs.", "Add", function()
+				ns.ShowInputPopup({
+					title = "Add Combo", message = "Enter 2 to 4 spell IDs separated by + (for example 589+34914).", text = "", confirmText = "Add", cancelText = "Cancel",
+					onConfirm = function(text)
+						local spells = {}
+						for id in (text or ""):gmatch("%d+") do
+							id = tonumber(id)
+							if id and GetSpellInfo(id) and #spells < 4 then spells[#spells + 1] = id end
+						end
+						if #spells >= 2 then
+							combos[#combos + 1] = { spells = spells, color = { r = DC.COMBO.r, g = DC.COMBO.g, b = DC.COMBO.b } }
+							Save()
+						end
+					end,
+				})
+			end)
+		end
+	end
 end
 
 ---------------------------------------------------------------------------

@@ -517,6 +517,92 @@ function Plate:UpdateAuras()
 	Fill(self, self.auraRows.cc, e and e.cc, 3)
 	self:UpdateAuraTimers()
 	if self.isTarget and p.showTargetArrows then self:PlaceArrows() end
+	-- Debuff based coloring follows the aura list.
+	local r, g, b = P.DebuffColorFor(self, e)
+	local sig = r and format("%.3f%.3f%.3f", r, g, b) or nil
+	if sig ~= self._dcSig then
+		self._dcSig = sig
+		self.debuffColorR, self.debuffColorG, self.debuffColorB = r, g, b
+		self:UpdateColor()
+	end
+end
+
+-------------------------------------------------------------------------------
+--  Debuff Based Nameplate Coloring (retail EllesmereUINameplates_DebuffColors:
+--  per-class list "debuffColors" .. CLASS = "id:r,g,b;.../id+id:r,g,b;...",
+--  combos (all spells on the unit) before singles, the higher entry wins).
+--  Colors the health bar, or the border with Color Border.
+-------------------------------------------------------------------------------
+local DC = { SINGLE = { r = 1, g = 0.43, b = 0.04 }, COMBO = { r = 0.10, g = 0.88, b = 0.32 }, MAX_SINGLES = 10, MAX_COMBOS = 5 }
+ENP.DebuffColorKit = DC
+
+local function ParseColor(s, d)
+	local r, g, b = (s or ""):match("^([%d%.]+),([%d%.]+),([%d%.]+)$")
+	r, g, b = tonumber(r), tonumber(g), tonumber(b)
+	if not (r and g and b) then return { r = d.r, g = d.g, b = d.b } end
+	return { r = min(r, 1), g = min(g, 1), b = min(b, 1) }
+end
+
+function DC.Parse(s)
+	local singles, combos = {}, {}
+	if type(s) ~= "string" then return singles, combos end
+	local singlePart, comboPart = s:match("^([^/]*)/?(.*)$")
+	for entry in (singlePart or ""):gmatch("[^;]+") do
+		local id, color = entry:match("^(%d*):?(.*)$")
+		singles[#singles + 1] = { spell = tonumber(id) or 0, color = ParseColor(color, DC.SINGLE) }
+	end
+	for entry in (comboPart or ""):gmatch("[^;]+") do
+		local ids, color = entry:match("^([%d%+]*):?(.*)$")
+		local spells = {}
+		for id in ids:gmatch("%d+") do spells[#spells + 1] = tonumber(id) end
+		combos[#combos + 1] = { spells = spells, color = ParseColor(color, DC.COMBO) }
+	end
+	return singles, combos
+end
+
+local function Num(v) return (format("%.4f", v):gsub("%.?0+$", "")) end
+function DC.Encode(singles, combos)
+	if #singles == 0 and #combos == 0 then return nil end
+	local s, c = {}, {}
+	for i, e in ipairs(singles) do s[i] = e.spell .. ":" .. Num(e.color.r) .. "," .. Num(e.color.g) .. "," .. Num(e.color.b) end
+	for i, e in ipairs(combos) do c[i] = table.concat(e.spells, "+") .. ":" .. Num(e.color.r) .. "," .. Num(e.color.g) .. "," .. Num(e.color.b) end
+	return table.concat(s, ";") .. "/" .. table.concat(c, ";")
+end
+
+function DC.Key() return "debuffColors" .. (P.PLAYER_CLASS or "") end
+
+local parsedFor, parsedS, parsedC = false, {}, {}
+function P.DebuffColorFor(plate, e)
+	local p = P.Profile()
+	if not p.debuffColorsEnabled or not e or plate.isFriendly then return nil end
+	local raw = p[DC.Key()]
+	if raw ~= parsedFor or parsedFor == false then
+		parsedFor = raw
+		parsedS, parsedC = DC.Parse(raw)
+	end
+	if #parsedS == 0 and #parsedC == 0 then return nil end
+	local onlyMine = p.debuffColorsPlayerOnly ~= false
+	local have = {}
+	for _, list in ipairs({ e.debuffs, e.cc }) do
+		for _, a in ipairs(list or {}) do
+			if a.id and (not onlyMine or IsMine(a.caster)) and (a.duration == 0 or (a.expires or 0) > GetTime()) then
+				have[a.id] = true
+			end
+		end
+	end
+	for _, c in ipairs(parsedC) do
+		if #c.spells >= 2 then
+			local all = true
+			for _, id in ipairs(c.spells) do
+				if not have[id] then all = false break end
+			end
+			if all then return c.color.r, c.color.g, c.color.b end
+		end
+	end
+	for _, s in ipairs(parsedS) do
+		if s.spell > 0 and have[s.spell] then return s.color.r, s.color.g, s.color.b end
+	end
+	return nil
 end
 
 -- Duration texts and expiry (every 0.2 s from the plate driver).

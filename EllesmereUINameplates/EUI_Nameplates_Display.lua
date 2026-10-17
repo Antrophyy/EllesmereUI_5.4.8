@@ -283,6 +283,12 @@ function Plate:SetLevels(base)
 	self.health:SetFrameLevel(base + 2)
 	self.borderFrame:SetFrameLevel(base + 4)
 	if self.cast then
+		-- Casts In Front of Nameplates (retail castOverlayEnabled): the cast
+		-- pieces draw a strata above every plate.
+		local strata = P.Profile().castOverlayEnabled and "HIGH" or self:GetFrameStrata()
+		for _, fr in ipairs({ self.cast, self.castBorderFrame, self.castIconFrame, self.castTextFrame }) do
+			if fr and fr:GetFrameStrata() ~= strata then fr:SetFrameStrata(strata) end
+		end
 		self.cast:SetFrameLevel(base + 2)
 		if self.castBorderFrame then self.castBorderFrame:SetFrameLevel(base + 4) end
 		if self.castIconFrame then self.castIconFrame:SetFrameLevel(base + 3) end
@@ -461,6 +467,16 @@ function Plate:ApplyBorderColor()
 		r, g, b, a = c.r, c.g, c.b, 1
 	end
 	P.ColorEdges(self.border, r, g, b, a)
+	-- Cast icon Use Target Border Color (retail castIconTargetBorder): the
+	-- target's spell icon border takes the target border color.
+	if self.castIconBG then
+		if self.isTarget and P.Profile().castIconTargetBorder then
+			local tr, tg, tb = P.Color("targetBorderColor")
+			self.castIconBG:SetTexture(tr, tg, tb, 1)
+		else
+			self.castIconBG:SetTexture(0, 0, 0, 1)
+		end
+	end
 end
 
 -------------------------------------------------------------------------------
@@ -629,10 +645,16 @@ function Plate:UpdateColor()
 	else
 		r, g, b = self:GetReactionColor()
 	end
+	local p = P.Profile()
+	-- Debuff Based Nameplate Coloring: the bar (Color Nameplate) or the
+	-- border (Color Border) takes the matched debuff's color.
+	local dcr = self.debuffColorR and p.debuffColorsEnabled and not self.isFriendly
+	if dcr and not p.debuffColorsBorder then
+		r, g, b = self.debuffColorR, self.debuffColorG, self.debuffColorB
+	end
 	self.barR, self.barG, self.barB = r, g, b
 	self.health:SetStatusBarColor(r, g, b)
 
-	local p = P.Profile()
 	local tr, tg, tb
 	if (p.threatColorBorder or p.threatColorName) and not self.isFriendly then
 		tr, tg, tb = self:ResolveThreatColor()
@@ -641,6 +663,17 @@ function Plate:UpdateColor()
 		self.threatBorderR, self.threatBorderG, self.threatBorderB = tr, tg, tb
 	else
 		self.threatBorderR, self.threatBorderG, self.threatBorderB = nil, nil, nil
+	end
+	if dcr and p.debuffColorsBorder then
+		self.threatBorderR, self.threatBorderG, self.threatBorderB = self.debuffColorR, self.debuffColorG, self.debuffColorB
+		local extra = p.debuffColorsBorderExtra or 0
+		if extra > 0 and not self._dcThick then
+			self._dcThick = true
+			self:ApplyBorder(((p.customBorderEnabled and p.customBorderSize) or p.borderSize or 1) + extra)
+		end
+	elseif self._dcThick then
+		self._dcThick = nil
+		self:ApplyBorder()
 	end
 	self:ApplyBorderColor()
 	self.threatNameR, self.threatNameG, self.threatNameB = nil, nil, nil
@@ -695,13 +728,23 @@ function Plate:UpdateTexts()
 			local lvl = LevelText(self)
 			local diff = p[s.key .. "LevelDiffOn"]
 			if diff == nil then diff = p.levelDifficultyColor == true end
-			if diff and P.SlotColorMode(s.key) ~= "level" then
+			-- Custom Name / Level Color (retail <slot>NameColorOn / LevelColorOn).
+			local function Hex(c)
+				return format("|cff%02x%02x%02x", floor((c.r or 1) * 255), floor((c.g or 1) * 255), floor((c.b or 1) * 255))
+			end
+			if p[s.key .. "LevelColorOn"] and p[s.key .. "LevelColor"] then
+				lvl = Hex(p[s.key .. "LevelColor"]) .. lvl .. "|r"
+			elseif diff and P.SlotColorMode(s.key) ~= "level" then
 				lvl = LevelColorHex(self) .. lvl .. "|r"
 			end
+			local nm = name
+			if p[s.key .. "NameColorOn"] and p[s.key .. "NameColor"] then
+				nm = Hex(p[s.key .. "NameColor"]) .. name .. "|r"
+			end
 			if el == "levelName" then
-				fs:SetText(lvl .. " | " .. name)
+				fs:SetText(lvl .. " | " .. nm)
 			else
-				fs:SetText(name .. " | " .. lvl)
+				fs:SetText(nm .. " | " .. lvl)
 			end
 		elseif el == "level" then
 			fs:SetText(LevelText(self))
@@ -1181,6 +1224,13 @@ function Plate:ApplyAlpha()
 		return
 	end
 	local p = P.Profile()
+	-- Hide Enemy Nameplates out of Combat (retail hideEnemyPlatesOOC): 5.4.8
+	-- keeps the nameplate CVar alone (it may not change in combat) and fades
+	-- our enemy plates out instead; they return when combat starts.
+	if p.hideEnemyPlatesOOC and not self.isFriendly and not InCombatLockdown() and not P._oocCombat then
+		self:SetAlpha(0)
+		return
+	end
 	local nt = (p.nonTargetAlpha or 100) / 100
 	local a = 1
 	if nt < 1 and hasTargetNow and not self.isTarget

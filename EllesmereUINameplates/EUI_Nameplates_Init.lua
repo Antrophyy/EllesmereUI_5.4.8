@@ -215,7 +215,8 @@ local function OnEvent(self, event, ...)
 		P.WipeAuraCache()
 		P.ApplyCVars()
 	elseif event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_REGEN_DISABLED" then
-		P.ForEachVisible(function(plate) plate:UpdateColor() end)
+		P._oocCombat = event == "PLAYER_REGEN_DISABLED"
+		P.ForEachVisible(function(plate) plate:UpdateColor(); plate:ApplyAlpha() end)
 	elseif event == "INSTANCE_ENCOUNTER_ENGAGE_UNIT" then
 		P.ForEachVisible(function(plate)
 			if plate:UpdateUnit() then plate:OnUnitChanged() end

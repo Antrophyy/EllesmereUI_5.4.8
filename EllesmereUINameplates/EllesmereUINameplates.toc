@@ -18,5 +18,6 @@ EUI_Nameplates_Display.lua
 EUI_Nameplates_Cast.lua
 # Debuffs, buffs, crowd control
 EUI_Nameplates_Auras.lua
+EUI_Nameplates_ClassPower.lua
 # Events, start-up, /enp
 EUI_Nameplates_Init.lua
