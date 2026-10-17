@@ -19,7 +19,8 @@
 --    * Specializations -> the two talent specs (SetActiveSpecGroup).
 --    * World markers: 5 on 5.4.8 (square, triangle, diamond, cross, star).
 --    * Raid target markers are set with SetRaidTarget (not protected here).
---    * No toys, pings, interface panels, profession entries.
+--    * No toys or pings. Interface panels are /click entries on the micro
+--      menu buttons; profession presets hold the profession spells.
 --    * Nests: Arc keeps nested menus as an outer arc; Grid and Fan show the
 --      nested menu's entries in place of the nest entry.
 -------------------------------------------------------------------------------
@@ -839,6 +840,153 @@ function QD.EmoteEntries()
 	local out = {}
 	for _, e in ipairs(EMOTES) do
 		out[#out + 1] = Entry({ kind = "macrotext", macrotext = e[2], name = e[1], icon = e[3] })
+	end
+	return out
+end
+
+-- Retail palette presets on 5.4.8 kinds. Interface panels are /click entries
+-- on the micro menu buttons (they open in combat too).
+local PANELS = {
+	{ "Character", "CharacterMicroButton", "Interface\\Icons\\INV_Chest_Cloth_17" },
+	{ "Spellbook", "SpellbookMicroButton", "Interface\\Icons\\INV_Misc_Book_09" },
+	{ "Talents", "TalentMicroButton", "Interface\\Icons\\Ability_Marksmanship" },
+	{ "Achievements", "AchievementMicroButton", "Interface\\Icons\\Achievement_Quests_Completed_08" },
+	{ "Quest Log", "QuestLogMicroButton", "Interface\\Icons\\INV_Misc_Book_08" },
+	{ "Guild", "GuildMicroButton", "Interface\\Icons\\INV_Shirt_GuildTabard_01" },
+	{ "Player vs. Player", "PVPMicroButton", "Interface\\Icons\\Achievement_BG_winWSG" },
+	{ "Group Finder", "LFDMicroButton", "Interface\\Icons\\INV_Misc_GroupNeedMore" },
+	{ "Mounts & Pets", "CompanionsMicroButton", "Interface\\Icons\\Ability_Mount_RidingHorse" },
+	{ "Dungeon Journal", "EJMicroButton", "Interface\\Icons\\INV_Misc_Book_17" },
+	{ "Game Menu", "MainMenuMicroButton", "Interface\\Icons\\INV_Misc_Gear_01" },
+}
+function QD.PanelEntries()
+	local out = {}
+	for _, e in ipairs(PANELS) do
+		if _G[e[2]] then
+			out[#out + 1] = Entry({ kind = "macrotext", macrotext = "/click " .. e[2], name = e[1], icon = e[3] })
+		end
+	end
+	return out
+end
+
+local function KnownSpellEntries(list)
+	local out = {}
+	for _, id in ipairs(list or {}) do
+		if IsSpellKnown(id) or IsSpellKnown(id, true) then
+			if #out >= QD.MAX_SLOTS then break end
+			out[#out + 1] = Entry({ kind = "spell", id = id })
+		end
+	end
+	return out
+end
+
+-- Self-teleports, keyed by class (mage portals are left out on purpose).
+local TELEPORT_SPELLS = {
+	DEATHKNIGHT = { 50977 },     -- Death Gate
+	DRUID       = { 18960 },     -- Teleport: Moonglade
+	MONK        = { 126892 },    -- Zen Pilgrimage
+	SHAMAN      = { 556 },       -- Astral Recall
+	MAGE = {
+		3561, 3562, 3563, 3565, 3566, 3567,        -- the capitals
+		32271, 32272, 33690, 35715, 49358, 49359,  -- Exodar, Silvermoon, Shattrath, Stonard, Theramore
+		53140, 88342, 88344, 132621, 132627,       -- Dalaran, Tol Barad, Vale of Eternal Blossoms
+	},
+}
+function QD.TeleportEntries()
+	return KnownSpellEntries(TELEPORT_SPELLS[select(2, UnitClass("player"))])
+end
+
+-- Potions, elixirs and flasks in the bags (auction class 4 = Consumable;
+-- its subclasses 2-4 are Potion, Elixir, Flask on 5.4.8).
+function QD.PotionEntries()
+	local out, seen, want = {}, {}, {}
+	if GetAuctionItemSubClasses then
+		local subs = { GetAuctionItemSubClasses(4) }
+		for i = 2, 4 do if subs[i] then want[subs[i]] = true end end
+	end
+	for bag = 0, 4 do
+		for s = 1, (GetContainerNumSlots(bag) or 0) do
+			local id = GetContainerItemID(bag, s)
+			if id and not seen[id] and #out < QD.MAX_SLOTS and GetItemSpell(id) then
+				seen[id] = true
+				local sub = select(7, GetItemInfo(id))
+				if sub and want[sub] then out[#out + 1] = Entry({ kind = "item", id = id }) end
+			end
+		end
+	end
+	return out
+end
+
+local FORM_SPELLS = {
+	5487,    -- Bear Form
+	768,     -- Cat Form
+	5215,    -- Prowl
+	783,     -- Travel Form
+	1066,    -- Aquatic Form
+	33943,   -- Flight Form
+	40120,   -- Swift Flight Form
+	24858,   -- Moonkin Form
+	114282,  -- Treant Form
+}
+function QD.FormEntries()
+	local out = KnownSpellEntries(FORM_SPELLS)
+	if #out > 0 and #out < QD.MAX_SLOTS then
+		out[#out + 1] = Entry({ kind = "macrotext", macrotext = "/cancelform", name = "Cancel Form", icon = CLEAR_ICON })
+	end
+	return out
+end
+
+-- One-of-a-set toggles: stances, presences, seals and aspects.
+local STANCE_SPELLS = {
+	WARRIOR     = { 2457, 71, 2458 },                    -- Battle, Defensive, Berserker
+	DEATHKNIGHT = { 48263, 48266, 48265 },               -- Blood, Frost, Unholy Presence
+	PALADIN     = { 31801, 20154, 20165, 20164 },        -- Truth, Righteousness, Insight, Justice
+	MONK        = { 103985, 115069, 115070 },            -- Fierce Tiger, Sturdy Ox, Wise Serpent
+	HUNTER      = { 13165, 109260, 5118, 13159 },        -- Hawk, Iron Hawk, Cheetah, Pack
+	PRIEST      = { 15473 },                             -- Shadowform
+}
+function QD.StanceEntries()
+	return KnownSpellEntries(STANCE_SPELLS[select(2, UnitClass("player"))])
+end
+
+-- The first ability of each profession (GetProfessions order).
+function QD.ProfessionEntries()
+	local out = {}
+	if not GetProfessions then return out end
+	for _, index in ipairs({ GetProfessions() }) do
+		if index then
+			local _, _, _, _, numSpells, offset = GetProfessionInfo(index)
+			for n = 1, math.min(numSpells or 0, 2) do
+				local kind, id = GetSpellBookItemInfo((offset or 0) + n, "spell")
+				if kind == "SPELL" and id and not IsPassiveSpell((offset or 0) + n, "spell") and #out < QD.MAX_SLOTS then
+					out[#out + 1] = Entry({ kind = "spell", id = id })
+				end
+			end
+		end
+	end
+	return out
+end
+
+-- Quest items with a use effect: the bags' quest items and the quest log's
+-- special items (the ones the tracker draws a button for).
+function QD.QuestItemEntries()
+	local out, seen = {}, {}
+	local function Add(id)
+		if not id or seen[id] or #out >= QD.MAX_SLOTS or not GetItemSpell(id) then return end
+		seen[id] = true
+		out[#out + 1] = Entry({ kind = "item", id = id })
+	end
+	for bag = 0, 4 do
+		for s = 1, (GetContainerNumSlots(bag) or 0) do
+			if GetContainerItemQuestInfo and GetContainerItemQuestInfo(bag, s) then
+				Add(GetContainerItemID(bag, s))
+			end
+		end
+	end
+	for i = 1, (GetNumQuestLogEntries and GetNumQuestLogEntries() or 0) do
+		local link = GetQuestLogSpecialItemInfo and GetQuestLogSpecialItemInfo(i)
+		local id = link and tonumber(link:match("item:(%d+)"))
+		Add(id)
 	end
 	return out
 end

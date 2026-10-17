@@ -66,10 +66,17 @@ end
 
 local PRESETS = {
 	{ key = "empty", label = "Empty" },
+	{ key = "panel", label = "Interface Panels", build = function() return QD.PanelEntries() end },
 	{ key = "marker_target", label = "Target Markers", build = function() return QD.TargetMarkerEntries() end },
 	{ key = "marker_world", label = "World Markers", build = function() return QD.WorldMarkerEntries() end },
 	{ key = "hearth", label = "Hearthstones", build = HearthEntries },
+	{ key = "teleport", label = "Teleports", build = function() return QD.TeleportEntries() end },
+	{ key = "potion", label = "Potions", build = function() return QD.PotionEntries() end },
+	{ key = "form", label = "Druid Forms", build = function() return QD.FormEntries() end },
+	{ key = "stance", label = "Stances", build = function() return QD.StanceEntries() end },
 	{ key = "spec", label = "Specializations", build = function() return QD.SpecEntries() end },
+	{ key = "profession", label = "Professions", build = function() return QD.ProfessionEntries() end },
+	{ key = "questitem", label = "Quest Items", build = function() return QD.QuestItemEntries() end },
 	{ key = "mount", label = "Mounts", build = function() return QD.MountEntries() end },
 	{ key = "emote", label = "Emotes", build = function() return QD.EmoteEntries() end },
 }
@@ -186,6 +193,9 @@ local CATEGORIES = {
 	{ label = "World Markers", build = function() return QD.WorldMarkerEntries() end },
 	{ label = "Specializations", build = function() return QD.SpecEntries() end, tip = "Switches to the talent spec holding this specialization." },
 	{ label = "Emotes", build = function() return QD.EmoteEntries() end },
+	{ label = "Interface Panels", build = function() return QD.PanelEntries() end },
+	{ label = "Professions", build = function() return QD.ProfessionEntries() end },
+	{ label = "Quest Items", build = function() return QD.QuestItemEntries() end, tip = "Quest items with a Use effect in your bags and quest log." },
 	{ label = "Other", build = function() return QD.OtherEntries() end, tip = "Resurrect: your battle resurrection in combat, your normal resurrection out of combat." },
 }
 
@@ -227,7 +237,12 @@ local function Build(p)
 	p:Dropdown("Add Action Menu", "Adds a new action menu, empty or filled from a preset.",
 		function()
 			local items = {}
-			for _, preset in ipairs(PRESETS) do items[#items + 1] = { name = preset.label, value = preset.key } end
+			-- A preset this character has nothing for is not offered.
+			for _, preset in ipairs(PRESETS) do
+				if not preset.build or #(preset.build() or {}) > 0 then
+					items[#items + 1] = { name = preset.label, value = preset.key }
+				end
+			end
 			return items
 		end,
 		function() return nil end,
