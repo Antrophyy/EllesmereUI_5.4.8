@@ -1430,6 +1430,19 @@ local function BuildCastBar(p)
 		Get(CB, "borderSize", 1), Set(CB, "borderSize"), Off)
 	local cbg, cbs = RGBA(CB, "border", 0, 0, 0, 1)
 	p:Swatch("Border Color", cbg, cbs, { alpha = true, disabled = function() return Off() or (CB().borderSize or 0) == 0 end })
+	-- Border Options (retail): Extend Top / Bottom, Bottom Separator.
+	p:Cog("Border Options", {
+		{ type = "slider", label = "Extend Top", min = 0, max = 50, step = 1,
+		  tip = "Grows the border past the bar's top edge without resizing the bar.",
+		  get = Get(CB, "borderExtendTop", 0), set = Set(CB, "borderExtendTop") },
+		{ type = "slider", label = "Extend Bottom", min = 0, max = 50, step = 1,
+		  tip = "Grows the border past the bar's bottom edge without resizing the bar.",
+		  get = Get(CB, "borderExtendBottom", 0), set = Set(CB, "borderExtendBottom") },
+		{ type = "toggle", label = "Bottom Separator", tip = "Draws a border-colored line along the bar's bottom edge.",
+		  get = function() return CB().edgeSep == true end, set = function(v) CB().edgeSep = v and true or false end },
+		{ type = "slider", label = "Separator Y Offset", min = -50, max = 50, step = 1,
+		  get = Get(CB, "edgeSepY", 0), set = Set(CB, "edgeSepY"), disabled = function() return not CB().edgeSep end },
+	}, { icon = "directions", disabled = function() return Off() or (CB().borderSize or 0) == 0 end })
 	p:Slider("Background", nil, 0, 100, 1, GetPct(CB, "bgA", 0.7), SetPct(CB, "bgA"), Off)
 	local bgg, bgs = RGBA(CB, "bg", 0, 0, 0, 0.7)
 	p:Swatch("Background Color", bgg, function(r, g, b) bgs(r, g, b, nil) end, { disabled = Off })

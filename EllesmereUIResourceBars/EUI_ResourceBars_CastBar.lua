@@ -420,6 +420,29 @@ local function LayoutCastBar()
 	local px = P.PixelFor(cb)
 	local bs = c.borderSize or 0
 	cb.border:Apply(bs, c.borderR, c.borderG, c.borderB, c.borderA)
+	-- Extend Top / Extend Bottom (retail borderExtendTop / Bottom): the border
+	-- grows past the bar's edges without resizing the bar.
+	cb.border:ClearAllPoints()
+	cb.border:SetPoint("TOPLEFT", cb, "TOPLEFT", 0, (c.borderExtendTop or 0) * px)
+	cb.border:SetPoint("BOTTOMRIGHT", cb, "BOTTOMRIGHT", 0, -(c.borderExtendBottom or 0) * px)
+	-- Bottom Separator (retail edgeSep / edgeSepY): a border-colored line
+	-- along the bar's bottom edge, icon included.
+	if c.edgeSep and bs > 0 then
+		local t = cb.edgeSep
+		if not t then
+			t = cb.border:CreateTexture(nil, "OVERLAY", nil, 7)
+			t:SetTexture(1, 1, 1, 1)
+			cb.edgeSep = t
+		end
+		t:ClearAllPoints()
+		t:SetPoint("BOTTOMLEFT", cb, "BOTTOMLEFT", 0, (c.edgeSepY or 0) * px)
+		t:SetPoint("BOTTOMRIGHT", cb, "BOTTOMRIGHT", 0, (c.edgeSepY or 0) * px)
+		t:SetHeight(bs * px)
+		t:SetVertexColor(c.borderR or 0, c.borderG or 0, c.borderB or 0, c.borderA or 1)
+		t:Show()
+	elseif cb.edgeSep then
+		cb.edgeSep:Hide()
+	end
 	-- Icon.
 	cb.iconFrame:ClearAllPoints()
 	if c.showIcon == false then
