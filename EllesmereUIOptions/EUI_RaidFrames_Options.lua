@@ -1554,7 +1554,7 @@ function O.BuildIndicators(p, C)
 	p:Section("INDICATORS")
 	O.SecStart(p, C, "indicators")
 	local function RoleOff()
-		return C.Val("roleIconStyle", "modern") == "none"
+		return C.Val("roleIconStyle", "modern") == "none" and not C.Val("roleText", false)
 	end
 	-- Role Icons (+ cog) | Show Role
 	O.Drop(p, C, "Role Icons", nil, O.RoleStyleList, "roleIconStyle", "modern")
@@ -1562,6 +1562,13 @@ function O.BuildIndicators(p, C)
 		O.CT(C, "Hide In Combat", "roleIconHideInCombat", false, "Hide role icons while you are in combat."),
 		O.CT(C, "Show Behind Border", "roleIconBehindBorder", false,
 			"Draw role icons behind the frame border, including the hover and target highlight."),
+		O.CT(C, "Role Text", "roleText", false, "Shows Tank / Healer / DPS as text in the role colors instead of the role icon."),
+		{ type = "color", label = "Tank Text Color", get = O.CGet(C, "roleTextTankColor", 59 / 255, 130 / 255, 246 / 255),
+		  set = O.CSet(C, "roleTextTankColor"), disabled = function() return not C.Val("roleText", false) end },
+		{ type = "color", label = "Healer Text Color", get = O.CGet(C, "roleTextHealerColor", 32 / 255, 201 / 255, 151 / 255),
+		  set = O.CSet(C, "roleTextHealerColor"), disabled = function() return not C.Val("roleText", false) end },
+		{ type = "color", label = "DPS Text Color", get = O.CGet(C, "roleTextDPSColor", 240 / 255, 100 / 255, 54 / 255),
+		  set = O.CSet(C, "roleTextDPSColor"), disabled = function() return not C.Val("roleText", false) end },
 	})
 	O.KeyChecks(p, C, "Show Role", nil,
 		{ { "tank", "Tank", "showRoleForTank", true }, { "healer", "Healer", "showRoleForHealer", true },
@@ -1685,6 +1692,11 @@ function O.BuildTopNameBar(p, C)
 		return not C.Val("topNameBarEnabled", false)
 	end
 	O.Toggle(p, C, "Enable Top Name Bar", "A name bar on the frame's top edge (the in-frame name hides).", "topNameBarEnabled", false)
+	p:Cog("Top Name Bar Options", {
+		O.CT(C, "Divider", "topNameBarDivider", false, "Separates the name bar from the health bar with a border-size line."),
+		O.CT(C, "Match Highlight Colors", "topNameBarDividerMatchColor", false, "The divider follows hover and target colors.",
+			function() return not C.Val("topNameBarDivider", false) end),
+	}, { disabled = Off, disabledTip = "Enable Top Name Bar first." })
 	O.Slider(p, C, "Height", nil, 8, 40, 1, "topNameBarHeight", 20, Off)
 	-- Background (+ swatch) | Text Size (+ offset cog)
 	O.Slider(p, C, "Background", nil, 0, 100, 1, "topNameBarBgOpacity", 80, Off)

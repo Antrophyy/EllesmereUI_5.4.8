@@ -191,6 +191,8 @@ local DEFAULTS = {
 		topNameBarTextOffsetY   = 0,
 		topNameBarTextAlign     = "center", -- "center", "left", "right"
 		topNameBarBottom        = false,    -- Show on Bottom: the bar takes the frame's bottom edge
+		topNameBarDivider       = false,
+		topNameBarDividerMatchColor = false,
 
 		-- Text
 		nameSize         = 10,
@@ -291,6 +293,10 @@ local DEFAULTS = {
 		roleIconOffsetX  = 0,
 		roleIconOffsetY  = 0,
 		roleIconHideInCombat = false,
+		roleText         = false,
+		roleTextTankColor   = { r = 59/255, g = 130/255, b = 246/255 },
+		roleTextHealerColor = { r = 32/255, g = 201/255, b = 151/255 },
+		roleTextDPSColor    = { r = 240/255, g = 100/255, b = 54/255 },
 		roleIconBehindBorder = false,  -- drop the carrier below the hover/target raise so borders draw over the icon
 		showRoleForTank    = true,
 		showRoleForHealer  = true,
@@ -679,7 +685,7 @@ do
 		},
 		indicators = {
 			"roleIconStyle", "roleIconSize", "roleIconPosition", "roleIconOffsetX", "roleIconOffsetY", "roleIconHideInCombat",
-			"roleIconBehindBorder",
+			"roleIconBehindBorder", "roleText", "roleTextTankColor", "roleTextHealerColor", "roleTextDPSColor",
 			"showRoleForTank", "showRoleForHealer", "showRoleForDPS",
 			"showRaidMarker", "raidMarkerSize", "raidMarkerPosition", "raidMarkerOffsetX", "raidMarkerOffsetY",
 			"showPingMarker", "pingMarkerSize", "pingMarkerPosition", "pingMarkerOffsetX", "pingMarkerOffsetY",
@@ -712,7 +718,7 @@ do
 			"topNameBarBgColor", "topNameBarBgOpacity",
 			"topNameBarTextSize", "topNameBarTextColorMode", "topNameBarTextColor",
 			"topNameBarTextOffsetX", "topNameBarTextOffsetY", "topNameBarTextAlign",
-			"topNameBarBottom",
+			"topNameBarBottom", "topNameBarDivider", "topNameBarDividerMatchColor",
 		},
 		rangeTooltip = {
 			"oorAlpha", "showTooltip", "tooltipMode", "frameStrata",

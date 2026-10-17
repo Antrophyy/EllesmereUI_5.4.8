@@ -940,6 +940,9 @@ function RF.StyleButton(btn)
 	d.roleCarrier = NewCarrier(btn, health)
 	d.roleIcon = d.roleCarrier:CreateTexture(nil, "OVERLAY")
 	d.roleIcon:Hide()
+	-- Role Text (retail roleText): Tank / Healer / DPS in place of the icon.
+	d.roleText = RF.NewText(d.roleCarrier, s.roleIconSize or 13)
+	d.roleText:Hide()
 	d.leaderHost = NewCarrier(btn, health)
 	d.leaderIcon = d.leaderHost:CreateTexture(nil, "OVERLAY")
 	d.leaderIcon:Hide()
@@ -1110,6 +1113,27 @@ function B.LayoutBars(btn, d, s)
 			d.tnbText:SetJustifyH("CENTER")
 		end
 		d.tnbText:SetWidth(max(1, (btn:GetWidth() or 0) - 4))
+		-- Divider (retail topNameBarDivider): a border-size line between the
+		-- name bar and the health bar, in the border color.
+		local bs = s.borderSize or 1
+		if s.topNameBarDivider == true and bs > 0 and tnbH >= 4 then
+			local t = d.tnbDivider
+			if not t then
+				t = tnb:CreateTexture(nil, "OVERLAY")
+				t:SetTexture(WHITE)
+				d.tnbDivider = t
+			end
+			local edge = bottomBar and "TOP" or "BOTTOM"
+			t:ClearAllPoints()
+			t:SetPoint(edge .. "LEFT", tnb, edge .. "LEFT", 0, 0)
+			t:SetPoint(edge .. "RIGHT", tnb, edge .. "RIGHT", 0, 0)
+			t:SetHeight(max(1, Snap(bs, btn)))
+			local dr, dg, db = Col(s.borderColor, 0, 0, 0)
+			t:SetVertexColor(dr, dg, db, s.borderAlpha or 1)
+			t:Show()
+		elseif d.tnbDivider then
+			d.tnbDivider:Hide()
+		end
 		tnb:Show()
 	else
 		tnb:Hide()
@@ -1286,6 +1310,11 @@ function B.AnchorAll(btn, d, s)
 	local rpos = (s.roleIconPosition or "bottomleft"):upper()
 	d.roleIcon:ClearAllPoints()
 	d.roleIcon:SetPoint(rpos, host, rpos, s.roleIconOffsetX or 0, s.roleIconOffsetY or 0)
+	if d.roleText then
+		RF.SetFont(d.roleText, s.roleIconSize or 13)
+		d.roleText:ClearAllPoints()
+		d.roleText:SetPoint(rpos, d.roleIcon, rpos, 0, 0)
+	end
 
 	-- Leader icon.
 	local ls = Snap(s.leaderIconSize or 14, btn)
@@ -1458,6 +1487,11 @@ function B.ApplyBorderColor(btn, d)
 		r, g, b = RF.RF_VisibleHighlight(s, r, g, b)
 	end
 	RF.SetEdgesColor(d.borderEdges, r, g, b, a)
+	-- Top Name Bar Divider, Match Highlight Colors: the divider follows the
+	-- hover / target color.
+	if d.tnbDivider and d.tnbDivider:IsShown() and s.topNameBarDividerMatchColor == true then
+		d.tnbDivider:SetVertexColor(r, g, b, a)
+	end
 end
 
 -- A highlight colour equal to the border's own would show no change: draw
@@ -1788,11 +1822,21 @@ function B.PaintStatus(btn, d, s, i)
 	d.stSt = st
 end
 
--- Role icon (retail _UpdateRoleIcon).
+-- Role icon (retail _UpdateRoleIcon); Role Text shows TANK / HEALER / DPS
+-- in the role colors instead (retail roleText).
+local ROLE_TEXT = { TANK = "Tank", HEALER = "Healer", DAMAGER = "DPS" }
+local ROLE_TEXT_KEY = { TANK = "roleTextTankColor", HEALER = "roleTextHealerColor", DAMAGER = "roleTextDPSColor" }
+local ROLE_TEXT_DEFAULT = {
+	TANK = { r = 59 / 255, g = 130 / 255, b = 246 / 255 },
+	HEALER = { r = 32 / 255, g = 201 / 255, b = 151 / 255 },
+	DAMAGER = { r = 240 / 255, g = 100 / 255, b = 54 / 255 },
+}
 function B.PaintRole(btn, d, s, i)
 	local icon = d.roleIcon
+	local text = d.roleText
 	local style = s.roleIconStyle or "modern"
-	if style == "none" or (s.roleIconHideInCombat and inCombat) then
+	if text then text:Hide() end
+	if (style == "none" and not s.roleText) or (s.roleIconHideInCombat and inCombat) then
 		icon:Hide()
 		return
 	end
@@ -1800,7 +1844,13 @@ function B.PaintRole(btn, d, s, i)
 	local show = (role == "TANK" and s.showRoleForTank)
 		or (role == "HEALER" and s.showRoleForHealer)
 		or (role == "DAMAGER" and s.showRoleForDPS)
-	if show and RF.ApplyRoleIcon(icon, role, style) then
+	if show and s.roleText and text and ROLE_TEXT[role] then
+		icon:Hide()
+		local c = s[ROLE_TEXT_KEY[role]] or ROLE_TEXT_DEFAULT[role]
+		text:SetTextColor(c.r or 1, c.g or 1, c.b or 1)
+		text:SetText(ROLE_TEXT[role])
+		text:Show()
+	elseif show and RF.ApplyRoleIcon(icon, role, style) then
 		icon:Show()
 	else
 		icon:Hide()
