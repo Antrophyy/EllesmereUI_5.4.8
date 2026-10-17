@@ -18,6 +18,7 @@ init:SetScript("OnEvent", function(self, event, arg1)
 		ERB.RegisterUnlock()
 		ERB.RegisterCastUnlock()
 		ERB.RegisterTotemUnlock()
+		if ERB.RegisterSwingUnlock then ERB.RegisterSwingUnlock() end
 	elseif event == "PLAYER_LOGIN" then
 		ERB.RegisterBarEvents()
 		ERB.RegisterCastEvents()

@@ -1031,6 +1031,13 @@ local function BuildBarDisplay(p)
 			p:Toggle("Show Focus as Power Bar (BM/MM)", "When enabled, BM and MM specs show Focus as the standard power bar instead of a class resource bar.",
 				Get(S, "hunterFocusAsPower", false), function(v) S().hunterFocusAsPower = v; Restructure() end)
 			p:Blank()
+		elseif class == "MONK" then
+			-- Brewmaster Stagger (retail class resource; Stagger Full %).
+			local function StagOff() return ClassOff() or not S().monkStagger end
+			p:Toggle("Show Stagger (Brewmaster)", "Brewmaster shows Stagger as the class resource bar instead of Chi.",
+				Get(S, "monkStagger", false), function(v) S().monkStagger = v; Restructure() end, ClassOff)
+			p:Slider("Stagger Full %", "Stagger equal to this percent of your max health fills the bar.", 10, 500, 5,
+				Get(S, "staggerCeilingPercent", 100), function(v) S().staggerCeilingPercent = v; Restructure() end, StagOff)
 		end
 	end
 
@@ -1073,8 +1080,36 @@ local function BuildBarDisplay(p)
 					local spec = GetSpecialization()
 					return PowOff() or not (spec == 2 or spec == 3)
 				end)
+			-- Mana Bar while Shapeshifted (retail ForeverDruidMana): a thin mana
+			-- bar on the Power Bar while in Bear or Cat Form.
+			local function DM() local t = PW().druidMana; if not t then t = {}; PW().druidMana = t end; return t end
+			local function DMOff() return PowOff() or not DM().enabled end
+			p:Toggle("Mana Bar while Shapeshifted", "Shows a thin mana bar with the Power Bar while in Bear and Cat Form.",
+				function() return DM().enabled == true end, function(v) DM().enabled = v end, PowOff)
+			p:Cog("Mana Bar", {
+				{ type = "slider", label = "Height", min = 2, max = 20, step = 1,
+				  get = function() return DM().height or 4 end, set = function(v) DM().height = v end },
+				{ type = "dropdown", label = "Position", items = Items({ { "below", "Below" }, { "above", "Above" } }),
+				  get = function() return DM().position or "below" end,
+				  labelFn = function() return (DM().position or "below") == "above" and "Above" or "Below" end,
+				  set = function(v) DM().position = v end },
+				{ type = "toggle", label = "Show Text", get = function() return DM().showText == true end,
+				  set = function(v) DM().showText = v end },
+				{ type = "slider", label = "Text Size", min = 6, max = 20, step = 1,
+				  get = function() return DM().textSize or 9 end, set = function(v) DM().textSize = v end,
+				  disabled = function() return not DM().showText end },
+			}, { disabled = DMOff })
 		else
 			p:Blank()
+		end
+		-- Spell Cost Prediction (retail; WoW Forever engine)
+		local scp = ns.SpellCostPrediction
+		if scp then
+			p:Toggle("Spell Cost Prediction", "While you cast a spell with a cast time, the mana it will spend is shown on the Power Bar in a lighter color.",
+				function() return PW().powerCostPrediction == true end, function(v) PW().powerCostPrediction = v end, PowOff)
+			p:Swatch("Spell Cost Color", function() return scp.Color(PW()) end,
+				function(r, g, b) PW().powerCostColor = { r = r, g = g, b = b } end,
+				{ disabled = function() return PowOff() or PW().powerCostPrediction ~= true end })
 		end
 	end
 
@@ -1611,6 +1646,45 @@ local function BuildTotem(p)
 end
 
 ---------------------------------------------------------------------------
+-- Swing Timer page (retail Swing Timer; 5.4.8 times swings from the combat log)
+---------------------------------------------------------------------------
+local function SW()
+	local p = P()
+	p.swingTimer = p.swingTimer or {}
+	return p.swingTimer
+end
+
+local function BuildSwing(p)
+	local function Off() return not SW().enabled end
+	p:Section("Swing Timer")
+	p:Toggle("Enable Swing Timer", "Bars for your main hand, off hand and ranged auto attacks (Unlock Mode: Swing Timer).",
+		function() return SW().enabled == true end, Set(SW, "enabled"))
+	p:Toggle("Combine Hands", "Show only the main hand row for dual wielding.", function() return SW().combineHands == true end,
+		Set(SW, "combineHands"), Off)
+	p:Slider("Width", nil, 40, 600, 1, Get(SW, "width", 214), Set(SW, "width"), Off)
+	p:Slider("Height", nil, 2, 40, 1, Get(SW, "height", 6), Set(SW, "height"), Off)
+	p:Slider("Row Spacing", nil, 0, 20, 1, Get(SW, "spacing", 2), Set(SW, "spacing"), Off)
+	p:Slider("Text Size", nil, 6, 24, 1, Get(SW, "textSize", 10), Set(SW, "textSize"), Off)
+	p:Toggle("Show Time", "The time left until the next swing.", function() return SW().showTime ~= false end, Set(SW, "showTime"), Off)
+	p:Toggle("Show Weapon Label", nil, function() return SW().showLabel == true end, Set(SW, "showLabel"), Off)
+	p:Toggle("Hide When Idle", "Hide the bars while no swing is running.", function() return SW().hideWhenIdle ~= false end,
+		Set(SW, "hideWhenIdle"), Off)
+	p:Blank()
+	local function ColorRow(label, key, r, g, b)
+		p:Swatch(label, function()
+			local c = SW()[key] or { r = r, g = g, b = b }
+			return c.r, c.g, c.b
+		end, function(nr, ng, nb) SW()[key] = { r = nr, g = ng, b = nb } end, { disabled = Off })
+	end
+	p:Label("Main Hand Color")
+	ColorRow("Main Hand Color", "mhColor", 0.9, 0.75, 0.3)
+	p:Label("Off Hand Color")
+	ColorRow("Off Hand Color", "ohColor", 0.7, 0.55, 0.25)
+	p:Label("Ranged Color")
+	ColorRow("Ranged Color", "rangedColor", 0.4, 0.8, 0.4)
+end
+
+---------------------------------------------------------------------------
 -- Module
 ---------------------------------------------------------------------------
 local function BuildMain(p)
@@ -1632,6 +1706,7 @@ ns.RegisterSettingsModule({
 		  build = BuildCastBar, header = BuildCastPreview },
 		{ key = "gcdBar", name = "GCD Bar", description = "Custom class resource, health, and mana bar display.", build = BuildGCD },
 		{ key = "totemBar", name = "Totem Bar", description = "Custom class resource, health, and mana bar display.", build = BuildTotem },
+		{ key = "swingTimer", name = "Swing Timer", description = "Main hand, off hand and ranged swing timers.", build = BuildSwing },
 	},
 	onEnter = function()
 		previewPips, previewFill = math.random(3, 4), math.random(30, 80)

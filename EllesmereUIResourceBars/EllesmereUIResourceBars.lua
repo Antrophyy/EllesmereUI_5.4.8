@@ -168,6 +168,8 @@ local DEFAULTS = {
 			-- 5.4.8: Blood / Unholy / Frost / Death runes in their own colors.
 			runesByType = true,
 			hunterFocusAsPower = false,
+			monkStagger = false,        -- Brewmaster: Stagger as the class resource (instead of Chi)
+			staggerCeilingPercent = 100, -- Stagger Full %: stagger equal to this % of max health fills the bar
 			hidePowerIfResource = false,
 			visibility = "always",
 			visOnlyInstances = false,
@@ -253,6 +255,10 @@ local DEFAULTS = {
 			instanceOnly = false,
 			instantOnly = false,
 			alwaysShow = false,
+		},
+		swingTimer = {
+			enabled = false, width = 214, height = 6, spacing = 2,
+			combineHands = false, showTime = true, showLabel = false, hideWhenIdle = true, textSize = 10,
 		},
 		totemBar = {
 			iconSize = 30,
@@ -753,6 +759,7 @@ ERB.RESOURCE_COLORS = {
 	LIGHTNING_SHIELD = { 0.0, 0.4392, 0.8706 },
 	SHADOW_ORBS = { 0.5, 0.2, 0.8 },
 	BURNING_EMBERS = { 0.95, 0.45, 0.1 },
+	STAGGER = { 0.52, 1.0, 0.52 },
 }
 
 -- Death Knight rune types (GetRuneType: 1 blood, 2 unholy, 3 frost, 4 death).
@@ -917,6 +924,14 @@ function ERB.GetSecondaryResource()
 		return { power = "COMBO", max = MAX_COMBO_POINTS or 5, type = "points", onTarget = true }
 	elseif class == "DRUID" and spec == 1 and (form == nil or form == 0 or form == MOONKIN_FORM_ID) then
 		return { power = "ECLIPSE", max = 100, type = "bar" }
+	elseif class == "MONK" and spec == 1 and UnitStagger and (function()
+			local p = P.Profile()
+			return p and p.secondary and p.secondary.monkStagger
+		end)() then
+		-- Brewmaster Stagger (retail; Stagger Full % = staggerCeilingPercent).
+		local p = P.Profile()
+		local pct = max(1, (p.secondary.staggerCeilingPercent or 100)) / 100
+		return { power = "STAGGER", max = max(1, (UnitHealthMax("player") or 1) * pct), type = "bar" }
 	elseif class == "MONK" then
 		local mx = UnitPowerMax("player", SPELL_POWER_CHI)
 		return { power = "CHI", pt = SPELL_POWER_CHI, max = (mx and mx > 0) and mx or 4, type = "points" }
@@ -978,6 +993,8 @@ function ERB.ReadSecondary(res)
 		return (UnitPower("player", SPELL_POWER_BURNING_EMBERS, true) or 0) / per
 	elseif key == "ECLIPSE" then
 		return UnitPower("player", SPELL_POWER_ECLIPSE) or 0
+	elseif key == "STAGGER" then
+		return min(UnitStagger("player") or 0, res.max)
 	elseif res.pt then
 		return UnitPower("player", res.pt) or 0
 	end

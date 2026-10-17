@@ -1157,6 +1157,74 @@ local function BuildHealth(p)
 	end
 end
 
+-- Mana Bar while Shapeshifted (retail ForeverDruidMana; primary.druidMana =
+-- { enabled, height, position "below" | "above", showText, textSize }): a
+-- thin mana bar on the power bar while a druid is in Bear or Cat Form.
+local function DruidManaShown(pp)
+	local dm = pp.druidMana
+	if not (dm and dm.enabled) or select(2, UnitClass("player")) ~= "DRUID" then return false end
+	local form = GetShapeshiftFormID()
+	return (form == 1 or form == 5) and cachedPrimary ~= 0
+end
+function ERB.UpdateDruidMana()
+	local bar = primaryBar
+	local f = bar and bar.druidMana
+	local p = Profile()
+	if not f or not p then return end
+	local pp = p.primary
+	if not DruidManaShown(pp) or not bar:IsShown() then
+		f:Hide()
+		return
+	end
+	local cur, mx = UnitPower("player", 0) or 0, UnitPowerMax("player", 0) or 0
+	if mx <= 0 then mx = 1 end
+	f.sb:SetMinMaxValues(0, mx)
+	f.sb:SetValue(cur)
+	local r, g, b = ERB.PowerColor("MANA")
+	f.sb:SetStatusBarColor(r or 0, g or 0.55, b or 1, 1)
+	if pp.druidMana.showText then
+		f.text:SetText(format("%d%%", cur / mx * 100))
+		f.text:Show()
+	else
+		f.text:Hide()
+	end
+	f:Show()
+end
+function ERB.LayoutDruidMana(bar, pp)
+	local dm = pp.druidMana
+	if not (dm and dm.enabled) then
+		if bar.druidMana then bar.druidMana:Hide() end
+		return
+	end
+	local f = bar.druidMana
+	if not f then
+		f = CreateFrame("Frame", nil, bar)
+		f.bg = f:CreateTexture(nil, "BACKGROUND")
+		f.bg:SetAllPoints()
+		f.bg:SetTexture(0, 0, 0, 0.6)
+		f.sb = CreateFrame("StatusBar", nil, f)
+		f.sb:SetPoint("TOPLEFT", 1, -1)
+		f.sb:SetPoint("BOTTOMRIGHT", -1, 1)
+		f.sb:SetStatusBarTexture(P.WHITE)
+		f.text = P.NewText(f.sb, 9)
+		f.text:SetPoint("CENTER")
+		bar.druidMana = f
+	end
+	f.sb:SetStatusBarTexture(ERB.BarTexture(Profile(), "primary") or P.WHITE)
+	P.SetFont(f.text, dm.textSize or 9)
+	f:ClearAllPoints()
+	f:SetHeight((dm.height or 4) + 2)
+	if dm.position == "above" then
+		f:SetPoint("BOTTOMLEFT", bar, "TOPLEFT", 0, 1)
+		f:SetPoint("BOTTOMRIGHT", bar, "TOPRIGHT", 0, 1)
+	else
+		f:SetPoint("TOPLEFT", bar, "BOTTOMLEFT", 0, -1)
+		f:SetPoint("TOPRIGHT", bar, "BOTTOMRIGHT", 0, -1)
+	end
+	f:SetFrameLevel(bar:GetFrameLevel() + 2)
+	ERB.UpdateDruidMana()
+end
+
 local function BuildPower(p, expandDelta, expandSign, shiftY)
 	local pp = p.primary
 	if not primaryBar then
@@ -1174,6 +1242,24 @@ local function BuildPower(p, expandDelta, expandSign, shiftY)
 	-- Expand grows toward the missing class resource: the far edge stays put.
 	PlaceAt(bar, pp, 0, -54, (expandDelta or 0) / 2 * (expandSign or 1) + (shiftY or 0), "ERB_Power")
 	ApplyBarHash(bar, pp, ori, function() return cachedPrimary and UnitPowerMax("player", cachedPrimary) end)
+	ERB.LayoutDruidMana(bar, pp)
+	-- Spell Cost Prediction (retail primary.powerCostPrediction): the mana a
+	-- cast will spend, drawn on the power bar's fill (core engine, host "erb").
+	local SCP = ns.SpellCostPrediction
+	if SCP then
+		if pp.powerCostPrediction == true and pp.enabled ~= false then
+			ERB.POWER_COST_HOST = ERB.POWER_COST_HOST or {
+				PowerType = function() return cachedPrimary end,
+				Color = function()
+					local r, g, b = SCP.Color(Profile().primary)
+					return r, g, b, 1
+				end,
+			}
+			SCP.Attach("erb", bar.sb, ERB.POWER_COST_HOST)
+		else
+			SCP.Detach("erb")
+		end
+	end
 end
 
 local function BuildSecondary(p, shiftY)
@@ -1437,6 +1523,7 @@ function ERB.UpdateVisibility()
 		if unlock and pp.enabled ~= false then vis = true end
 		moEligible.primary = vis == "mouseover"
 		SetVisible(primaryBar, pp, vis)
+		ERB.UpdateDruidMana()
 	end
 	if secondaryFrame then
 		local sp = p.secondary
@@ -1518,6 +1605,9 @@ events:SetScript("OnEvent", function(self, event, unit, arg2)
 	if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" or event == "UNIT_HEALTH_FREQUENT"
 		or event == "UNIT_ABSORB_AMOUNT_CHANGED" or event == "UNIT_HEAL_ABSORB_AMOUNT_CHANGED" then
 		UpdateHealthBar()
+		if cachedSecondary and cachedSecondary.power == "STAGGER" then
+			if event == "UNIT_MAXHEALTH" then QueueRebuild() else UpdateSecondaryResource() end
+		end
 		if event == "UNIT_MAXHEALTH" then
 			-- Value hash lines follow the max.
 			local p = Profile()
@@ -1526,6 +1616,7 @@ events:SetScript("OnEvent", function(self, event, unit, arg2)
 			end
 		end
 	elseif event == "UNIT_POWER_FREQUENT" or event == "UNIT_POWER" then
+		if arg2 == "MANA" and ERB.UpdateDruidMana then ERB.UpdateDruidMana() end
 		if arg2 and cachedPrimary and arg2 == ERB.PowerToken(cachedPrimary) then
 			UpdatePrimaryBar()
 		end
@@ -1538,7 +1629,7 @@ events:SetScript("OnEvent", function(self, event, unit, arg2)
 		QueueRebuild()
 	elseif event == "UNIT_AURA" then
 		if unit == "player" then
-			if cachedSecondary and cachedSecondary.aura then
+			if cachedSecondary and (cachedSecondary.aura or cachedSecondary.power == "STAGGER") then
 				UpdateSecondaryResource()
 			end
 			ERB.UpdateVisibility()

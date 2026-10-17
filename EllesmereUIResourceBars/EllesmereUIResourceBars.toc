@@ -14,5 +14,6 @@ EUI_ResourceBars_Bars.lua
 EUI_ResourceBars_CastBar.lua
 # Totem bar
 EUI_ResourceBars_TotemBar.lua
+EUI_ResourceBars_SwingTimer.lua
 # Start-up and /erb
 EUI_ResourceBars_Init.lua
