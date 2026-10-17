@@ -732,9 +732,75 @@ local MODULE_EXTRAS = {
 		Size("BoE / Warbound Text Size", "Font size for the BoE text on gear.", "bagBindTypeFontSize", 8, 16, 11, TextSizes)
 		Size("List Text Size", "Text size of the bag and bank lists.", "bagListFontSize", 8, 16, 11, Refresh)
 	end,
+	-- Chat / Tab / Edit Box fonts and sizes (same keys as the Chat page).
+	chat = function(p)
+		local EC = ns.ECHAT
+		if not (EC and EC.DB) then return end
+		local function D() return EC.DB() end
+		local function Items(withChat)
+			local items = ModuleFontItems()
+			if withChat then
+				table.insert(items, 1, { value = "__chat", name = "Chat Font" })
+			end
+			return items
+		end
+		local function Font(label, key, withChat)
+			local def = withChat and "__chat" or "__global"
+			p:Dropdown(label, nil, function() return Items(withChat) end,
+				function() return D()[key] or def end,
+				function() return ItemLabel(function() return Items(withChat) end, D()[key] or def) end,
+				function(v) D()[key] = v end,
+				{ fontPreview = true, fontPath = FontPreviewPath })
+		end
+		local function Size(label, key, minV, maxV, def, after)
+			p:Slider(label, nil, minV, maxV, 1,
+				function()
+					local v = D()[key]
+					if v then return v end
+					local _, size = FCF_GetChatWindowInfo(1)
+					return size or def
+				end,
+				function(v) D()[key] = v; if after then after(v) end end)
+		end
+		Size("Chat Font Size", "chatFontSize", 8, 27, 14, function(v) if EC.ApplyChatFontSize then EC.ApplyChatFontSize(v) end end)
+		Font("Tab Font", "tabFont", false)
+		p:Slider("Tab Font Size", nil, 8, 24, 1, function() return D().tabFontSize or 11 end, function(v) D().tabFontSize = v end)
+		Font("Edit Box Font", "editBoxFont", true)
+		Size("Edit Box Font Size", "editBoxFontSize", 8, 24, 12)
+		p:Blank()
+	end,
+	-- Quest Tracker font and sizes (same keys as the Quest Tracker page).
+	questTracker = function(p)
+		local EQT = _G.EllesmereUIQuestTracker
+		if not (EQT and EQT.DB) then return end
+		local function Size(label, key, def)
+			p:Slider(label, nil, 8, 24, 1, function() return EQT.DB()[key] or def end, function(v) EQT.DB()[key] = v end)
+		end
+		p:Dropdown("Quest Tracker Font", "The Quest Tracker's own font (EUI Global Font = the module font above).",
+			ModuleFontItems,
+			function() return EQT.DB().font or "__global" end,
+			function() return ItemLabel(ModuleFontItems, EQT.DB().font or "__global") end,
+			function(v) EQT.DB().font = v end,
+			{ fontPreview = true, fontPath = FontPreviewPath })
+		Size("Title Font Size", "titleFontSize", 12)
+		Size("Objective Font Size", "objectiveFontSize", 10)
+		Size("Header Font Size", "headerFontSize", 13)
+		p:Blank()
+	end,
 	-- Battle Res text sizes (same keys as the Quality of Life > Battle Res page).
 	qol = function(p)
+		local Q = ns.QoL
+		if Q and Q.SCT_Get then
+			p:Slider("Combat Text Size", "Size of the Self Combat Text.", 10, 48, 1,
+				function() return Q.SCT_Get("size") end, function(v) Q.SCT_Set("size", v) end)
+		end
+		if ns.GetMovementAlertDB and ns.GetMovementAlertDB() then
+			p:Slider("Movement Alert Text Size", "Size of the Movement Alert text.", 8, 72, 1,
+				function() return ns.GetMovementAlertDB().textSize or 24 end,
+				function(v) ns.GetMovementAlertDB().textSize = v end)
+		end
 		if not ns.GetBattleResDB or not ns.GetBattleResDB() then
+			p:Blank()
 			return
 		end
 		local function Size(label, desc, key, minV, maxV, def)

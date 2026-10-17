@@ -473,6 +473,30 @@ function ns.GSO_BuildGlowsPage(p)
 		"Apply to All", function() ConfirmApply(sites) end)
 	p:Blank()
 
+	-- PER-ENTRY GLOWS (retail ENTRY_GLOW_INFOS): glows set per indicator,
+	-- filter or tile on their own pages; listed here with a way there.
+	local ENTRY_GLOWS = {
+		{ addon = "EllesmereUIRaidFrames", label = "Buff Manager Icon Glows", key = "raidFrames",
+		  text = "Set per indicator on the Buff Manager page. The template never changes it." },
+		{ addon = "EllesmereUIRaidFrames", label = "Debuff Manager Glows", key = "raidFrames",
+		  text = "Icon Effects glows are set per filter and Frame Glow per tile on the Debuff Manager page. The template never changes them." },
+		{ addon = "EllesmereUIUnitFrames", label = "Player Aura Bars Icon Glows", key = "unitFrames",
+		  text = "Icon Effects glows are set per filter on each bar of the Player Aura Bars page. The template never changes them." },
+	}
+	local anyEntry = false
+	for _, e in ipairs(ENTRY_GLOWS) do
+		if IsAddOnLoaded(e.addon) then
+			if not anyEntry then
+				p:Section("Per-Entry Glows")
+				anyEntry = true
+			end
+			p:Button(e.label, e.text, "Open Settings", function()
+				if ns.OpenSettingsModule then ns.OpenSettingsModule(e.key) end
+			end)
+		end
+	end
+	if anyEntry then p:Blank() end
+
 	-- MODULE GLOWS: one section per module, one style row per site.
 	local byModule, order = {}, {}
 	for _, site in ipairs(sites) do

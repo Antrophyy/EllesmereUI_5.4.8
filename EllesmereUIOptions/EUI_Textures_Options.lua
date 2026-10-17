@@ -246,7 +246,7 @@ end
 ---------------------------------------------------------------------------
 local LINK_SECTIONS = {
 	{ folder = "EllesmereUIActionBars", name = "Action Bars", key = "actionBars", rows = { "Bar & Button Border Styles" } },
-	{ folder = "EllesmereUIChat", name = "Chat", key = "chat", rows = { "Panel & Tab Border Styles" } },
+	{ folder = "EllesmereUIDamageMeters", name = "Damage Meters", key = "damageMeters", rows = { "Bar, Breakdown and Spell History Textures" } },
 	{ folder = "EllesmereUIDataBars", name = "DataBars", key = "dataBars", rows = { "Bar Texture (per data bar)" } },
 	{ folder = "EllesmereUIMinimap", name = "Minimap", key = "minimap", rows = { "Minimap Border Style" } },
 }
@@ -259,6 +259,46 @@ local function SectionLinks(p, def)
 	end
 end
 
+---------------------------------------------------------------------------
+-- Chat, Quality of Life, Damage Meters (retail module texture rows)
+---------------------------------------------------------------------------
+local function BarTexItems()
+	local items = { { name = "None", value = "none" } }
+	for _, t in ipairs(ns.GetBarTextures and ns.GetBarTextures() or {}) do
+		items[#items + 1] = { name = t.name, value = t.path }
+	end
+	return items
+end
+local function BarTexLabel(v)
+	if v == nil or v == "none" then return "None" end
+	return ns.GetBarTextureLabel and ns.GetBarTextureLabel(v) or tostring(v)
+end
+local function TexMirror(p, label, tip, db, key)
+	p:Dropdown(label, tip, BarTexItems,
+		function() return db()[key] or "none" end,
+		function() return BarTexLabel(db()[key]) end,
+		function(v) db()[key] = v end,
+		{ texturePreview = true, previewPath = function(v) return (v == "none") and "" or v end })
+end
+
+local function SectionChat(p)
+	local EC = ns.ECHAT
+	if not (EC and EC.DB) then return end
+	p:Section("Chat")
+	TexMirror(p, "Background Texture", "Texture drawn over the chat background color.", EC.DB, "bgTexture")
+	TexMirror(p, "Tab Texture", "Texture drawn over the tab background colors.", EC.DB, "tabBackgroundTexture")
+	LinkRow(p, "Panel & Tab Border Styles", "chat")
+end
+
+local function SectionQoL(p)
+	p:Section("Quality of Life")
+	if ns.GetMovementAlertDB and ns.GetMovementAlertDB() then
+		TexMirror(p, "Movement Alert Bar Texture", "Texture of the Movement Alert bar (Bar display mode).",
+			ns.GetMovementAlertDB, "barTexture")
+	end
+	LinkRow(p, "Cursor, GCD and Cast Ring Textures", "qol")
+end
+
 function ns.GSO_BuildTexturesPage(p)
 	p:Paragraph("A quick view of every texture setting in one place.\n"
 		.. "These are the same settings found on each module's own pages, not separate ones.")
@@ -269,6 +309,8 @@ function ns.GSO_BuildTexturesPage(p)
 	if Loaded("EllesmereUIUnitFrames") then SectionUnitFrames(p) end
 	if Loaded("EllesmereUIResourceBars") then SectionResourceBars(p) end
 	SectionLinks(p, LINK_SECTIONS[4])
+	if Loaded("EllesmereUIChat") then SectionChat(p) end
+	if Loaded("EllesmereUIQoL") then SectionQoL(p) end
 	SectionLinks(p, LINK_SECTIONS[2])
 	SectionLinks(p, LINK_SECTIONS[3])
 end
