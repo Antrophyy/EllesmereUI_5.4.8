@@ -51,13 +51,23 @@ local function TurnInSkipped()
 end
 
 -- Picks one available quest; count and isTrivial(index) come from the gossip or greeting API.
-local function PickAvailable(count, isTrivial, selectFunc)
+-- Ignore Older Expansion Quests (retail autoAcceptIgnoreOldExpansion): at max
+-- level, quests below Pandaria level (86) are older content. Leveling runs
+-- through older content, so the toggle waits for max level.
+local OLD_EXPANSION_LEVEL = 86
+local function OldExpansion(level)
+	if not Cfg("autoAcceptIgnoreOldExpansion") or not level or level <= 0 then return false end
+	if UnitLevel("player") < (GetMaxPlayerLevel and GetMaxPlayerLevel() or 90) then return false end
+	return level < OLD_EXPANSION_LEVEL
+end
+
+local function PickAvailable(count, isTrivial, selectFunc, levelOf)
 	if not Cfg("autoAccept") or count == 0 or AcceptSkipped() then
 		return false
 	end
 	local list = {}
 	for index = 1, count do
-		if not (Cfg("autoAcceptIgnoreTrivial") and isTrivial(index)) then
+		if not (Cfg("autoAcceptIgnoreTrivial") and isTrivial(index)) and not OldExpansion(levelOf and levelOf(index)) then
 			list[#list + 1] = index
 		end
 	end
@@ -88,7 +98,8 @@ local function QuestGossipShow()
 			end
 		end
 	end
-	return PickAvailable(GetNumGossipAvailableQuests(), GossipAvailableTrivial, SelectGossipAvailableQuest)
+	return PickAvailable(GetNumGossipAvailableQuests(), GossipAvailableTrivial, SelectGossipAvailableQuest,
+		function(index) return tonumber((select((index - 1) * 6 + 2, GetGossipAvailableQuests()))) end)
 end
 
 -- 5.4.8 shows NPCs with several quests in the quest frame greeting panel.
@@ -102,7 +113,8 @@ local function OnQuestGreeting()
 			end
 		end
 	end
-	PickAvailable(GetNumAvailableQuests(), GreetingAvailableTrivial, SelectAvailableQuest)
+	PickAvailable(GetNumAvailableQuests(), GreetingAvailableTrivial, SelectAvailableQuest,
+		function(index) return GetAvailableLevel and GetAvailableLevel(index) end)
 end
 
 local function OnQuestDetail()

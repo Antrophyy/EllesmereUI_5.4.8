@@ -231,7 +231,14 @@ local function Build(p)
 		"Hides the master header and its minimize button at the top of the tracker. When shown, it's skinned to match the section headers below it (Quests, Achievements, ...).",
 		function() return EQT.ShouldHideMasterHeader() end,
 		function(v) Set("hideAllObjectivesHeader", v) end)
-	p:Blank()
+	-- Show Quest Icons (retail showQuestIcons): on 5.4.8 the tracker's quest
+	-- icons are the numbered quest POI buttons, owned by the questPOI CVar.
+	p:Toggle("Show Quest Icons", "Shows the numbered quest POI icons next to tracked quests (and the quest areas on the map).",
+		function() return GetCVarBool("questPOI") and true or false end,
+		function(v)
+			SetCVar("questPOI", v and "1" or "0")
+			if WatchFrame_Update then pcall(WatchFrame_Update, WatchFrame) end
+		end)
 
 	-- COLORS
 	p:Section("Colors")
@@ -265,6 +272,10 @@ local function Build(p)
 		{ type = "toggle", label = "Ignore Low Level Quests",
 		  get = function() return Cfg("autoAcceptIgnoreTrivial") or false end,
 		  set = function(v) Set("autoAcceptIgnoreTrivial", v) end },
+		{ type = "toggle", label = "Ignore Older Expansion Quests",
+		  tip = "At max level, skips quests below Pandaria level (older content). Leveling characters are not affected.",
+		  get = function() return Cfg("autoAcceptIgnoreOldExpansion") or false end,
+		  set = function(v) Set("autoAcceptIgnoreOldExpansion", v) end },
 	}, { disabled = acceptOff })
 	p:Toggle("Auto Turn In Quests", nil,
 		function() return Cfg("autoTurnIn") or false end,
