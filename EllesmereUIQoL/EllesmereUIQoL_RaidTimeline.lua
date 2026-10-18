@@ -339,6 +339,7 @@ local function CreateEventFrame()
 	local textHolder = CreateFrame("Frame", nil, icon)
 	textHolder:SetAllPoints(icon)
 	textHolder:SetFrameLevel(icon:GetFrameLevel() + 3)
+	f.textHolder = textHolder
 	local cd = textHolder:CreateFontString(nil, "OVERLAY")
 	cd:SetPoint("CENTER", icon, "CENTER", 0, 0)
 	f.cd = cd
@@ -364,6 +365,7 @@ local function StyleEventFrame(f)
 	if PP and PP.CreateBorder then
 		if not f.border then
 			f.border = PP.CreateBorder(f.icon, 0, 0, 0, 1, 1, "OVERLAY", 1)
+			f.level = nil
 		end
 		if p.showBorder ~= false then f.border:Show() else f.border:Hide() end
 	end
@@ -412,6 +414,19 @@ local function StyleEventFrame(f)
 		name:SetJustifyH("CENTER")
 	end
 	f.styled = true
+end
+
+-- Every part of an event gets its own frame level band, so overlapping
+-- events (same time left) keep a fixed order: the sooner one on top. A
+-- parent's new level does not lower its children in 5.4.8, so all are set.
+local LEVEL_STEP = 4
+local function SetEventLevel(f, level)
+	if f.level == level then return end
+	f.level = level
+	f:SetFrameLevel(level)
+	f.icon:SetFrameLevel(level + 1)
+	if f.border then f.border:SetFrameLevel(level + 2) end
+	f.textHolder:SetFrameLevel(level + 3)
 end
 
 local function AcquireFrame()
@@ -651,9 +666,12 @@ end
 --  Update (every frame while anything is on the timeline)
 -------------------------------------------------------------------------------
 local sortList = {}
+-- Timers less than 0.1 s apart count as the same time: then the older one
+-- comes first, so their order cannot swap from frame to frame.
 local function byExpire(a, b)
-	if a.expire == b.expire then return a.born < b.born end
-	return a.expire < b.expire
+	if abs(a.expire - b.expire) >= 0.1 then return a.expire < b.expire end
+	if a.born ~= b.born then return a.born < b.born end
+	return a.key < b.key
 end
 
 local function InCombatWindow()
@@ -671,7 +689,9 @@ local function UpdateEvents(p, now, elapsed)
 
 	local longIndex = 0
 	local ht = p.highlightTime or 5
-	for _, e in ipairs(sortList) do
+	local baseLevel = frame:GetFrameLevel() + 2
+	local count = #sortList
+	for rank, e in ipairs(sortList) do
 		local rem = e.expire - now
 		local track, target
 		if rem <= L.mediumMax then
@@ -715,6 +735,7 @@ local function UpdateEvents(p, now, elapsed)
 				e.track = track
 				e.sortIndex = longIndex
 			end
+			SetEventLevel(f, baseLevel + (count - rank) * LEVEL_STEP)
 			if f.tex.lastIcon ~= e.icon then
 				f.tex:SetTexture(e.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
 				f.tex.lastIcon = e.icon
