@@ -675,13 +675,8 @@ local function ResolveItem(list, preferredKey, lastUsed)
 			end
 		end
 	end
-	if lastUsed and Count(lastUsed) > 0 then
-		for _, e in ipairs(list) do
-			for _, id in ipairs(ItemsOf(e)) do
-				if id == lastUsed then return id, true end
-			end
-		end
-	end
+	-- Last used may be an item outside the list (any food that gave Well Fed).
+	if lastUsed and Count(lastUsed) > 0 then return lastUsed, true end
 	local stat = PlayerMainStat()
 	local fallback = nil
 	for _, e in ipairs(list) do
@@ -1044,8 +1039,14 @@ local function TrackItemUse(itemID)
 	for _, f in ipairs(D.FOOD_ITEMS) do
 		if f.itemID == itemID then p.lastUsedFood = itemID; return end
 	end
+	-- Unlisted item: becomes the last used food if Well Fed follows it.
+	EABR._pendingFood, EABR._pendingFoodAt = itemID, GetTime()
 end
 EABR.TrackItemUse = TrackItemUse
+
+local function ItemIDFromLink(link)
+	return link and tonumber(link:match("item:(%d+)"))
+end
 
 local function OnIconPostClick(self, button)
 	if button == "MiddleButton" and self._dismissKey then
@@ -1448,6 +1449,19 @@ end
 local function CollectConsumables(missing, playerClass, specID, inInstance, inCombat)
 	local p = EABR.Profile()
 	local co = p.consumables
+	-- A fresh Well Fed within a minute of using an unlisted item: that was food.
+	if EABR._pendingFood then
+		local now = GetTime()
+		if now - EABR._pendingFoodAt > 60 then
+			EABR._pendingFood = nil
+		elseif PlayerHasWellFed() then
+			local rec = _playerAuraNames[SpellName(D.WELL_FED_SPELL) or "Well Fed"] or _playerAuraNames["Well Fed"]
+			if rec and (rec.duration == 0 or rec.expires - now > rec.duration - 60) then
+				p.lastUsedFood = EABR._pendingFood
+				EABR._pendingFood = nil
+			end
+		end
+	end
 	if EABR.SectionShows(co.specialsWhereToShow, inInstance) then
 		CollectSpecials(missing, playerClass, specID, inCombat)
 	end
@@ -2016,6 +2030,18 @@ f:SetScript("OnEvent", function(self, event, arg1)
 		if UseContainerItem then
 			hooksecurefunc("UseContainerItem", function(bag, slot)
 				TrackItemUse(GetContainerItemID(bag, slot))
+			end)
+		end
+		-- Action bar buttons and /use macros.
+		hooksecurefunc("UseAction", function(slot)
+			local kind, id = GetActionInfo(slot)
+			if kind == "item" then TrackItemUse(id) end
+		end)
+		if UseItemByName then
+			hooksecurefunc("UseItemByName", function(name)
+				if not name then return end
+				local id = tonumber(name) or ItemIDFromLink(name) or ItemIDFromLink(select(2, GetItemInfo(name)))
+				TrackItemUse(id)
 			end)
 		end
 		-- Show Below thresholds and the mount state have no event: re-check.
