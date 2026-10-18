@@ -17,4 +17,5 @@ EllesmereUIQoL_RaidTools.lua
 EllesmereUIQoL_AutoLogging.lua
 EllesmereUIQoL_BattleRes.lua
 EllesmereUIQoL_Bloodlust.lua
+EllesmereUIQoL_RaidTimeline.lua
 EllesmereUIQoL_MacroFactory.lua

@@ -984,6 +984,69 @@ local function BuildBattleRes(p)
 end
 
 ---------------------------------------------------------------------------
+-- Raid Timeline (retail Raid Ability Timeline, fed by DBM / BigWigs)
+---------------------------------------------------------------------------
+local function BuildRaidTimeline(p)
+	if not ns.GetRaidTimelineDB then
+		return
+	end
+	local function RT() return ns.GetRaidTimelineDB() end
+	local function RGet(k) return function() return RT()[k] end end
+	local function RSet(k) return function(v) RT()[k] = v end end
+	local function off() return not RT().enabled end
+	local ORIENT, ORIENT_LABEL = Items({ "HORIZONTAL", "Horizontal", "VERTICAL", "Vertical" })
+
+	-- Live preview: sample abilities run on the timeline while this page is shown.
+	if ns.RaidTimelineSetPreviewOwner and type(p.scroll) == "table" and not p.scroll.rtHooked then
+		p.scroll.rtHooked = true
+		p.scroll:HookScript("OnShow", function(self) ns.RaidTimelineSetPreviewOwner(self) end)
+		p.scroll:HookScript("OnHide", function() ns.RaidTimelineSetPreviewOwner(nil) end)
+	end
+
+	p:Section("Raid Timeline")
+	p:Toggle("Enable Raid Timeline", "Shows boss ability timers from DBM or BigWigs on a timeline like the retail Raid Ability Timeline: abilities wait in the slots on the left, slide along the line as they come up and pulse once they pass the pip.\n\nMove it in Unlock Mode.",
+		RGet("enabled"), RSet("enabled"))
+	p:Toggle("Use DBM Timers", "Put DBM timer bars on the timeline.", RGet("useDBM"), RSet("useDBM"), off)
+	p:Toggle("Use BigWigs Timers", "Put BigWigs timer bars on the timeline.", RGet("useBigWigs"), RSet("useBigWigs"), off)
+	p:Toggle("Hide DBM Timer Bars", "Hide DBM's own timer bars while the timeline shows them. (BigWigs bars are turned off in BigWigs.)",
+		RGet("hideBossModBars"), RSet("hideBossModBars"), function() return off() or not RT().useDBM end)
+	p:Toggle("Only in Combat", "Only show the timeline during a boss fight or while you are in combat (pull and break timers are left out of combat).",
+		RGet("combatOnly"), RSet("combatOnly"), off)
+
+	p:Section("Layout")
+	p:Dropdown("Orientation", "Horizontal: abilities travel along a line. Vertical: they travel down a column, with spell names beside them.",
+		ORIENT, RGet("orientation"), function() return ORIENT_LABEL(RT().orientation) end, RSet("orientation"), nil, off)
+	p:Toggle("Reverse Direction", "Horizontal: travel right to left. Vertical: travel bottom to top.", RGet("reverse"), RSet("reverse"), off)
+	p:Slider("Icon Size", "Size of the ability icons.", 20, 64, 1, RGet("iconSize"), RSet("iconSize"), off)
+	p:Slider("Line Length", "Length of the line (the Short track) in pixels.", 120, 600, 5, RGet("shortLength"), RSet("shortLength"), off)
+	p:Slider("Line Seconds", "Seconds covered by the line. Abilities closer than this travel along it.", 5, 30, 1, RGet("shortDuration"), RSet("shortDuration"), off)
+	p:Slider("Approach Length", "Length of the faded part before the line (the Medium track) in pixels.", 0, 200, 5, RGet("mediumLength"), RSet("mediumLength"), off)
+	p:Slider("Approach Seconds", "Abilities further away than this wait in the slots at the start.", 5, 60, 1, RGet("mediumDuration"), RSet("mediumDuration"), off)
+	p:Slider("Waiting Slots", "How many upcoming abilities wait at the start of the timeline (0 = none).", 0, 8, 1, RGet("longSlots"), RSet("longSlots"), off)
+	p:Slider("Highlight Time", "Seconds left at the pip: abilities flash when they pass it and pulse until they happen.", 1, 10, 1, RGet("highlightTime"), RSet("highlightTime"), off)
+
+	p:Section("Look")
+	p:Toggle("Show Pip", "Diamond on the line at the highlight time.", RGet("showPip"), RSet("showPip"), off)
+	p:Toggle("Show Pip Text", "Highlight time next to the pip.", RGet("showPipText"), RSet("showPipText"), off)
+	p:Toggle("Show Countdown", "Seconds left on the icons.", RGet("showCountdown"), RSet("showCountdown"), off)
+	p:Slider("Countdown Size", "Size of the seconds on the icons.", 8, 30, 1, RGet("countdownSize"), RSet("countdownSize"),
+		function() return off() or RT().showCountdown == false end)
+	p:Toggle("Show Spell Names", "Ability names beside the icons (vertical) or above them (horizontal).", RGet("showNames"), RSet("showNames"), off)
+	p:Slider("Name Size", "Size of the ability names.", 8, 20, 1, RGet("nameSize"), RSet("nameSize"),
+		function() return off() or not RT().showNames end)
+	p:Toggle("Show Trail", "Glow trail behind the icons moving along the line.", RGet("showTrail"), RSet("showTrail"), off)
+	p:Toggle("Icon Border", "Thin black border around the icons.", RGet("showBorder"), RSet("showBorder"), off)
+	p:Swatch("Line Color",
+		function() local c = RT().lineColor; return c.r, c.g, c.b end,
+		function(r, g, b) RT().lineColor = { r = r, g = g, b = b } end,
+		{ disabled = off })
+	p:Slider("Background Opacity", "Dark backdrop behind the timeline (percent).", 0, 100, 5,
+		function() return math.floor((RT().backgroundAlpha or 0) * 100 + 0.5) end,
+		function(v) RT().backgroundAlpha = v / 100 end, off)
+	p:Blank()
+end
+
+---------------------------------------------------------------------------
 -- Tabs (retail order: QoL, Raid Tools, Cursor, Shifter, MoveAlert)
 ---------------------------------------------------------------------------
 -- The other tabs come from their own options files; a missing builder
@@ -1024,6 +1087,12 @@ local QOL_PAGES = {
 		name = "Battle Res & Lust",
 		description = "Battle Res: combat resurrections left and when the next one is ready. Bloodlust Tracker: your Sated lockout and the active lust.",
 		build = BuildBattleRes,
+	},
+	{
+		key = "raidtimeline",
+		name = "Raid Timeline",
+		description = "Boss ability timeline (like the retail Raid Ability Timeline) fed by DBM or BigWigs timers.",
+		build = BuildRaidTimeline,
 	},
 }
 
