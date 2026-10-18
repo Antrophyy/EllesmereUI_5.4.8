@@ -1028,6 +1028,19 @@ local function Strata()
 	return EABR.Profile().display.frameStrata or "MEDIUM"
 end
 
+-- Same item subclass as the listed foods (locale-safe "Food & Drink" check).
+-- Unknown item info counts as food so an uncached item is not rejected.
+local function IsFoodItem(itemID)
+	local sub = select(7, GetItemInfo(itemID))
+	if not sub then return true end
+	for _, f in ipairs(D.FOOD_ITEMS) do
+		local ref = select(7, GetItemInfo(f.itemID))
+		if ref then return sub == ref end
+	end
+	return true
+end
+EABR.IsFoodItem = IsFoodItem
+
 local function TrackItemUse(itemID)
 	if not itemID then return end
 	local p = EABR.Profile()
@@ -1039,8 +1052,11 @@ local function TrackItemUse(itemID)
 	for _, f in ipairs(D.FOOD_ITEMS) do
 		if f.itemID == itemID then p.lastUsedFood = itemID; return end
 	end
-	-- Unlisted item: becomes the last used food if Well Fed follows it.
-	EABR._pendingFood, EABR._pendingFoodAt = itemID, GetTime()
+	-- Unlisted food: becomes the last used food if Well Fed follows it.
+	-- Potions and other items used meanwhile are not food and are ignored.
+	if IsFoodItem(itemID) then
+		EABR._pendingFood, EABR._pendingFoodAt = itemID, GetTime()
+	end
 end
 EABR.TrackItemUse = TrackItemUse
 
@@ -1449,7 +1465,9 @@ end
 local function CollectConsumables(missing, playerClass, specID, inInstance, inCombat)
 	local p = EABR.Profile()
 	local co = p.consumables
-	-- A fresh Well Fed within a minute of using an unlisted item: that was food.
+	-- Drop a saved non-food (a potion saved by the earlier tracking).
+	if p.lastUsedFood and not IsFoodItem(p.lastUsedFood) then p.lastUsedFood = nil end
+	-- A fresh Well Fed within a minute of using an unlisted food: remember it.
 	if EABR._pendingFood then
 		local now = GetTime()
 		if now - EABR._pendingFoodAt > 60 then
