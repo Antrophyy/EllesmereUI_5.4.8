@@ -41,7 +41,7 @@ local GROUPS = {
 		entries = {
 			{ label = "Blizzard Skins+", addon = "EllesmereUIBlizzardSkin" },
 			{ label = "Friends List", addon = "EllesmereUIFriends" },
-			{ label = "Spell History", addon = "EllesmereUIDamageMeters" },
+			{ label = "Damage Meters", addon = "EllesmereUIDamageMeters" },
 			{ label = "Chat", addon = "EllesmereUIChat" },
 			{ label = "Bags", addon = "EllesmereUIBags" },
 			{ label = "Mythic+ Tools", addon = "EllesmereUIMythicTimer" },

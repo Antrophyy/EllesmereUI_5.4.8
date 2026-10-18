@@ -1,7 +1,7 @@
 -- Damage Meters (EllesmereUI "EllesmereUIDamageMeters" meter windows, made for 5.4.8).
 -- Retail reads Blizzard's built-in meter (C_DamageMeter, 12.x). 5.4.8 has no
--- such meter, so the numbers come from the Details! addon (its public API:
--- Details:GetCombat, combat:GetContainer / GetActorList / GetDeaths, ...).
+-- such meter, so the numbers come from a separately installed Details! addon.
+-- EDMDetails bridges the original 5.4.8 release and newer Details APIs.
 -- Look, saved keys (EllesmereUIDamageMetersDB.dm) and settings follow retail.
 -- Without Details! the windows show one line "Details! is required".
 
@@ -153,6 +153,30 @@ local function CreateDefaults()
 	}
 end
 DM.CreateDefaults = CreateDefaults
+
+function DM.ApplyModernStyle()
+	local c = DM.DB()
+	local style = {
+		barTexture = "none", breakdownBarTexture = "match",
+		barHeight = 20, barSpacing = 1, barFillAlpha = 1, showClassColor = true,
+		fontSize = 12, leftFontSize = 12, rightFontSize = 12, numberFormat = 2,
+		hideNumbers = false, showPinnedSelf = true, iconStyle = "spec", classIconZoom = 0.08,
+		customIconBorder = false, borderSize = 0,
+		leftTextUseClassColor = false, rightTextUseClassColor = false,
+		leftTextColor = C3(1, 1, 1), rightTextColor = C3(1, 1, 1),
+		leftTextOffsetX = 0, leftTextOffsetY = 0, rightTextOffsetX = 0, rightTextOffsetY = 0,
+		bgR = 0, bgG = 0, bgB = 0, bgAlpha = 0.5,
+		barBgR = 0, barBgG = 0, barBgB = 0, barBgAlpha = 0.35, barBgUseClassColor = false,
+		windowBorderSize = 1, windowBorderColor = C4(0, 0, 0, 1),
+		windowBorderIncludeHeader = true, windowBorderBehind = false,
+		hdrHeight = 22, hdrFontSize = 12, hdrIconSize = 20, hdrMouseoverIcons = true,
+		hdrBgColor = C3(0.08, 0.08, 0.08), hdrBgAlpha = 0.95,
+		hdrTextUseAccent = false, hdrTextColor = C3(1, 1, 1), hdrTextOffX = 0, hdrTextOffY = 0,
+		hdrBottomBorderSize = 0, hoverTooltipScale = 100, breakdownAnchorPoint = "row",
+	}
+	for key, value in pairs(style) do c[key] = value end
+	DM.Apply()
+end
 
 -- The user's retail "Naowh" profile values (first login only, marker dm._seeded).
 local NAOWH_SEED = {
@@ -451,7 +475,6 @@ end
 DM.Abbrev = Abbrev
 
 local function FormatBarValue(amt, perSec, fmt)
-	if perSec and perSec < 1 then perSec = 1 end
 	if fmt == 0 then return Abbrev(perSec) end
 	if fmt == 2 and perSec then return format("%s (%s)", Abbrev(amt), Abbrev(perSec)) end
 	if fmt == 3 and perSec then return format("%s | %s", Abbrev(amt), Abbrev(perSec)) end
@@ -482,14 +505,13 @@ end
 --   Deaths             -> combat:GetDeaths() (Details! death logs)
 ---------------------------------------------------------------------------
 local function D()
-	local d = _G.Details
-	if type(d) == "table" and type(d.GetCombat) == "function" then return d end
-	return nil
+	return ns.EDMDetails.GetAddon()
 end
 DM.Details = D
 
 local function PlayerName()
-	return UnitName("player")
+	local d = D()
+	return d and d.playername or UnitName("player")
 end
 
 -- The combat a window shows: a past segment (combat table), Current or Overall.
@@ -527,7 +549,7 @@ end
 
 local function IsGroupActor(actor, me)
 	if actor.owner then return false end
-	return actor.grupo or actor.nome == me
+	return actor.grupo or actor.nome == me or ns.EDMDetails.IsLocalPlayer(actor)
 end
 
 local srcPool = {}
@@ -540,9 +562,13 @@ local function GetSources(combat, dmType)
 	local function Add(actor, amount)
 		if not amount or amount < 1 then return end
 		amount = floor(amount)
+		local seconds = dur
+		if dmType == T.DamageDone or dmType == T.HealingDone then
+			seconds = ns.EDMDetails.ActorDuration(actor, dur, dmType == T.DamageDone and "damage" or "heal")
+		end
 		out[#out + 1] = {
 			name = actor.nome, class = actor.classe, spec = actor.spec, total = amount,
-			perSec = dur > 0 and amount / dur or nil, isLocalPlayer = actor.nome == me, actor = actor,
+			perSec = seconds > 0 and amount / seconds or nil, isLocalPlayer = ns.EDMDetails.IsLocalPlayer(actor), actor = actor,
 		}
 	end
 	if dmType == T.DamageDone or dmType == T.HealingDone then
@@ -562,7 +588,7 @@ local function GetSources(combat, dmType)
 		for i = 1, #list do
 			local a = list[i]
 			if not a.grupo and not a.owner and a.nome ~= me
-				and (type(a.IsNeutralOrEnemy) ~= "function" or a:IsNeutralOrEnemy()) then
+				and ns.EDMDetails.IsEnemy(a) then
 				Add(a, a.damage_taken)
 			end
 		end
@@ -580,7 +606,7 @@ local function GetSources(combat, dmType)
 				local t = deaths[i]
 				if type(t) == "table" then
 					out[#out + 1] = {
-						name = t[3], class = t[4], total = 1, isLocalPlayer = t[3] == me,
+						name = t[3], class = t[4], total = 1, isLocalPlayer = ns.EDMDetails.IsLocalPlayer({ nome = t[3] }),
 						death = t, deathTime = t.dead_at,
 					}
 				end
@@ -588,14 +614,17 @@ local function GetSources(combat, dmType)
 		end
 		return out, dur
 	end
-	tsort(out, function(a, b) return a.total > b.total end)
+	tsort(out, function(a, b)
+		if a.total == b.total then return a.name < b.name end
+		return a.total > b.total
+	end)
 	return out, dur
 end
 DM.GetSources = GetSources
 
 local function SpellName(id)
+	if id == 1 then return "Melee", "Interface\\Icons\\INV_Sword_04" end
 	if type(id) ~= "number" or id <= 0 then
-		if id == 1 then return "Melee", "Interface\\Icons\\INV_Sword_04" end
 		return tostring(id or "?"), "Interface\\Icons\\INV_Misc_QuestionMark"
 	end
 	local name, _, icon = GetSpellInfo(id)
@@ -624,26 +653,30 @@ local function GetBreakdown(combat, dmType, src)
 			end
 		end
 	end
-	if dmType == T.DamageDone or dmType == T.HealingDone then
-		if actor then
-			AddSpells(actor.spells, "total")
-			-- Pets: their spells live in the pet actors (Details! adds their totals to the owner).
-			local cont = combat[dmType == T.DamageDone and 1 or 2]
-			if type(actor.pets) == "table" and cont and type(cont.GetActor) == "function" then
-				for _, petName in ipairs(actor.pets) do
-					local pet = cont:GetActor(petName)
-					if pet then AddSpells(pet.spells, "total") end
-				end
+	local function AddActorSpells(key, amountKey, attribute)
+		AddSpells(ns.EDMDetails.GetSpells(actor, key), amountKey)
+		if actor and type(actor.pets) == "table" then
+			for _, petName in ipairs(actor.pets) do
+				local pet = ns.EDMDetails.GetActor(combat[attribute], petName)
+				if pet then AddSpells(ns.EDMDetails.GetSpells(pet, key), amountKey) end
 			end
 		end
+	end
+	if dmType == T.DamageDone or dmType == T.HealingDone then
+		AddActorSpells("spells", "total", dmType == T.DamageDone and 1 or 2)
 	elseif dmType == T.DamageTaken then
 		local cont = combat[1]
-		if actor and type(actor.damage_from) == "table" and cont and type(cont.GetActor) == "function" then
+		if actor and type(actor.damage_from) == "table" then
+			local seen = {}
 			for aggressor in pairs(actor.damage_from) do
-				local a = cont:GetActor(aggressor)
-				local amount = a and type(a.targets) == "table" and a.targets[actor.nome] or 0
-				if amount >= 1 then
-					out[#out + 1] = { label = ShortName(aggressor), amount = amount, class = a.classe }
+				local a = ns.EDMDetails.GetActor(cont, aggressor)
+				if a and a.owner then
+					a = type(a.owner) == "table" and a.owner or ns.EDMDetails.GetActor(cont, a.owner) or a
+				end
+				local amount = ns.EDMDetails.TargetAmount(a, actor.nome)
+				if a and amount >= 1 and not seen[a.nome] then
+					seen[a.nome] = true
+					out[#out + 1] = { label = ShortName(a.nome), amount = amount, class = a.classe }
 				end
 			end
 		end
@@ -653,16 +686,16 @@ local function GetBreakdown(combat, dmType, src)
 		for i = 1, #list do
 			local a = list[i]
 			if IsGroupActor(a, me) and type(a.targets) == "table" then
-				local amount = a.targets[src.name] or 0
+				local amount = ns.EDMDetails.TargetAmount(a, src.name)
 				if amount >= 1 then
 					out[#out + 1] = { label = ShortName(a.nome), amount = amount, class = a.classe, spec = a.spec }
 				end
 			end
 		end
 	elseif dmType == T.Interrupts then
-		if actor then AddSpells(actor.interrupt_spells, "counter") end
+		AddActorSpells("interrupt_spells", "counter", 4)
 	elseif dmType == T.Dispels then
-		if actor then AddSpells(actor.dispell_spells, "dispell") end
+		AddActorSpells("dispell_spells", "dispell", 4)
 	elseif dmType == T.Deaths then
 		-- Death log (last events before the death, newest first).
 		local t = src.death
@@ -694,7 +727,7 @@ function DM.GetSegments()
 	local out = {}
 	if not d then return out end
 	local segs = d:GetCombatSegments() or {}
-	for i = 1, min(#segs, 20) do
+	for i = 1, #segs do
 		local c = segs[i]
 		if type(c) == "table" then
 			-- No "try to find" argument: Details! would then search the CURRENT
@@ -1946,6 +1979,10 @@ CreateDMWindow = function(idx)
 				FillRow(W, W.rows[i], sources[i], i, maxAmt, barH)
 				if sources[i].isLocalPlayer and not W.meIndex then W.meIndex = i end
 			end
+			if count == 0 then
+				W.msg:SetText(D().initializing and "Details! is initializing" or "No combat data")
+				W.msg:Show()
+			end
 		end
 		for i = count + 1, BAR_POOL_SIZE do
 			W.rows[i].row:Hide()
@@ -2275,15 +2312,13 @@ function DM.ApplySegmentSelection(W, sessionType, combat)
 end
 
 function DM.ResetData()
-	local d = D()
-	if d and type(d.ResetSegmentData) == "function" then
-		d:ResetSegmentData()
-	end
+	if not ns.EDMDetails.ResetData() then return false end
 	for _, w in ipairs(windows) do
 		w.curSessionID = nil
 		if w.source then w.CloseSource() end
 	end
 	DM.RefreshAll()
+	return true
 end
 
 function DM.AddWindow(src)
@@ -2502,18 +2537,9 @@ end
 ---------------------------------------------------------------------------
 -- Details! windows (5.4.8 only): hide / show them through Details!' API.
 ---------------------------------------------------------------------------
-local detailsHiddenByUs = false
+local detailsWindowsPending = true
 function DM.ApplyDetailsWindows()
-	local d = D()
-	if not d then return end
-	local want = DB().hideDetailsWindows and true or false
-	if want and type(d.ShutDownAllInstances) == "function" then
-		pcall(d.ShutDownAllInstances, d)
-		detailsHiddenByUs = true
-	elseif not want and detailsHiddenByUs and type(d.ReabrirTodasInstancias) == "function" then
-		pcall(d.ReabrirTodasInstancias, d)
-		detailsHiddenByUs = false
-	end
+	detailsWindowsPending = ns.EDMDetails.SetWindowsHidden(DB().hideDetailsWindows == true) == nil
 end
 
 ---------------------------------------------------------------------------
@@ -2521,7 +2547,7 @@ end
 -- and on demand out of combat.
 ---------------------------------------------------------------------------
 local driver = CreateFrame("Frame")
-local acc, timerAcc = 0, 0
+local acc, timerAcc, detailsAcc = 0, 0, 0
 local dirty = false
 
 function DM.RefreshAll()
@@ -2538,6 +2564,13 @@ driver:SetScript("OnUpdate", function(_, elapsed)
 	acc = acc + elapsed
 	timerAcc = timerAcc + elapsed
 	local rate = max(REFRESH_FLOOR, DB().refreshRate or 1)
+	if detailsWindowsPending then
+		detailsAcc = detailsAcc + elapsed
+		if detailsAcc >= 1 then
+			detailsAcc = 0
+			DM.ApplyDetailsWindows()
+		end
+	end
 	local inCombat = DM.InCombat()
 	if (inCombat and acc >= rate) or (dirty and acc >= 0.1) then
 		acc = 0
@@ -2555,12 +2588,12 @@ end)
 
 local function OnCombatStart()
 	for _, w in ipairs(windows) do
-		if w.curSessionID and WinDB(w.idx).autoCurrentOnCombat then
+		if WinDB(w.idx).autoCurrentOnCombat then
 			w.curSessionID = nil
 			w.curSession = S.Current
 			WinDB(w.idx).curSession = S.Current
-			if w.source then w.CloseSource() end
 		end
+		if not w.curSessionID and w.source then w.CloseSource() end
 	end
 	DM.UpdateVisibility()
 	DM.MarkDirty()
@@ -2574,7 +2607,10 @@ local function HookDetails()
 	listener:RegisterEvent("COMBAT_PLAYER_ENTER", function() OnCombatStart() end)
 	listener:RegisterEvent("COMBAT_PLAYER_LEAVE", function() DM.UpdateVisibility(); DM.MarkDirty() end)
 	listener:RegisterEvent("DETAILS_DATA_RESET", function()
-		for _, w in ipairs(windows) do w.curSessionID = nil end
+		for _, w in ipairs(windows) do
+			w.curSessionID = nil
+			if w.source then w.CloseSource() end
+		end
 		DM.MarkDirty()
 	end)
 	listener:RegisterEvent("DETAILS_DATA_SEGMENTREMOVED", function()
@@ -2582,7 +2618,10 @@ local function HookDetails()
 		local keep = {}
 		for _, s in ipairs(DM.GetSegments()) do keep[s.combat] = true end
 		for _, w in ipairs(windows) do
-			if w.curSessionID and not keep[w.curSessionID] then w.curSessionID = nil end
+			if w.curSessionID and not keep[w.curSessionID] then
+				w.curSessionID = nil
+				if w.source then w.CloseSource() end
+			end
 		end
 		DM.MarkDirty()
 	end)
@@ -2608,6 +2647,10 @@ events:SetScript("OnEvent", function(self, event, arg1)
 	if event == "ADDON_LOADED" then
 		if arg1 == addonName then
 			DB()
+		elseif arg1 == "Details" and loaded then
+			HookDetails()
+			detailsWindowsPending = true
+			DM.MarkDirty()
 		end
 		return
 	elseif event == "PLAYER_LOGIN" then

@@ -1,11 +1,12 @@
 ## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Damage Meters
-## Notes: Damage meter windows (numbers from Details!) and Spell History: your recent casts as an icon strip and as bars.
+## Notes: Modern meter windows powered by Details! for 5.4.8, integrated Details! settings, and Spell History.
 ## Author: EllesmereUI port
-## Version: 3.18.0
+## Version: 3.19.0
 ## Dependencies: EllesmereUI
 ## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ExRT, ElvUI, Details, DBM-Core, WeakAuras, VuhDo
 ## SavedVariables: EllesmereUIDamageMetersDB
 
+EllesmereUIDamageMeters_Details.lua
 EllesmereUIDamageMeters_SpellHistory.lua
 EllesmereUIDamageMeters_Meter.lua

@@ -152,6 +152,7 @@ ns.RegisterSyncExclusions("EllesmereUIChat", {
 })
 
 ns.RegisterSyncExclusions("EllesmereUIDamageMeters", {
+	"detailsWindowRestore",
 	"dm.standaloneTimerPos",
 	"dm.windows.*.position", "dm.windows.*.width", "dm.windows.*.height",
 	"spellHistory.iconPos", "spellHistory.barPos", "spellHistory.barWidth",
