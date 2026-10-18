@@ -49,7 +49,7 @@ end
 -- Player chat that wakes the idle fade (whispers wake it from their event).
 local WAKE_TYPES = WithChannels({ "SAY", "YELL", "PARTY", "PARTY_LEADER", "RAID", "RAID_LEADER", "RAID_WARNING",
 	"INSTANCE_CHAT", "INSTANCE_CHAT_LEADER", "GUILD", "OFFICER", "CHANNEL" })
--- Player chat worth remembering; system, loot and combat lines are not.
+-- Player chat, remembered even during the login grace period.
 local CAPTURE_TYPES = WithChannels({ "SAY", "YELL", "EMOTE", "TEXT_EMOTE", "PARTY", "PARTY_LEADER", "GUILD", "OFFICER",
 	"CHANNEL", "RAID", "RAID_LEADER", "RAID_WARNING", "INSTANCE_CHAT", "INSTANCE_CHAT_LEADER", "WHISPER",
 	"WHISPER_INFORM", "BN_WHISPER", "BN_WHISPER_INFORM" })
@@ -484,17 +484,32 @@ local function TrackFrame(cf)
 	return id
 end
 
-local function CaptureAllowed()
-	if DB().persistChatHistory ~= true then
-		return false
+-- 5.4.8 has no chat restrictions, so every line a window shows is kept, in
+-- instances too. Right after login / reload only player chat is kept, so the
+-- welcome text, MOTD and addon load prints that repeat every time are not.
+local LOGIN_GRACE_SEC = 5
+local captureFrom = math.huge
+local skipIds
+
+local function Skipped(id)
+	if not skipIds then
+		skipIds = IdSet({ "CHANNEL_NOTICE", "CHANNEL_NOTICE_USER" })
 	end
-	local inInstance, kind = IsInInstance()
-	return not inInstance or kind == "none"
+	return id and skipIds[id]
 end
 
 local function CaptureHistory(cf, msg, r, g, b, id)
+	if DB().persistChatHistory ~= true or Skipped(id) then
+		return
+	end
+	if GetTime() < captureFrom then
+		local _, capture = Ids()
+		if not (id and capture[id]) then
+			return
+		end
+	end
 	local fid = TrackFrame(cf)
-	if not fid or not CaptureAllowed() then
+	if not fid then
 		return
 	end
 	local list = HistorySV().lines
@@ -514,6 +529,7 @@ local function CaptureHistory(cf, msg, r, g, b, id)
 end
 
 local function RestoreHistory()
+	captureFrom = GetTime() + LOGIN_GRACE_SEC
 	if DB().persistChatHistory ~= true then
 		return
 	end
@@ -588,12 +604,10 @@ function ECHAT.HookChatFrameText(cf)
 			if d.count < COPY_LINES then
 				d.count = d.count + 1
 			end
-			if not restoring and id then
-				local wake, capture = Ids()
-				if capture[id] then
-					CaptureHistory(self, msg, r, g, b, id)
-				end
-				if wake[id] and self:IsShown() and ECHAT.OnActiveMessage then
+			if not restoring then
+				CaptureHistory(self, msg, r, g, b, id)
+				local wake = Ids()
+				if id and wake[id] and self:IsShown() and ECHAT.OnActiveMessage then
 					ECHAT.OnActiveMessage()
 				end
 			end

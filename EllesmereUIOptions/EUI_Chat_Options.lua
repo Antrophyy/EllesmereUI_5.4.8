@@ -353,7 +353,7 @@ local function BuildChat(p)
 
 	-- EXTRAS --------------------------------------------------------------
 	p:Section("Extras")
-	p:Toggle("Remember Last Chat Lines", "Saves the most recent lines per chat tab (per character), except Blizzard's combat log window, so they reappear after /reload or relog. Stored separately from layout profiles.",
+	p:Toggle("Remember Last Chat Lines", "Saves the most recent lines per chat tab (per character), everything the tab shows except channel join / leave notices and Blizzard's combat log window, so they reappear after /reload or relog. Stored separately from layout profiles.",
 		function() return DB().persistChatHistory == true end,
 		Setter("persistChatHistory", function(v) ECHAT.OnSessionHistoryToggled(v) end))
 	p:Cog("Session History", {
