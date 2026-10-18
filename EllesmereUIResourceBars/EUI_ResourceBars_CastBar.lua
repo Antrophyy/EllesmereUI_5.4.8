@@ -46,8 +46,15 @@ local CHANNEL_TICK_DATA = {
 	[16914] = { ticks = 10 },  -- Hurricane
 	[113656] = { ticks = 4 },  -- Fists of Fury
 	[115175] = { ticks = 8 },  -- Soothing Mist
+	[101546] = { ticks = 3 },  -- Spinning Crane Kick
 }
 ERB.CHANNEL_TICK_DATA = CHANNEL_TICK_DATA
+
+-- Channels that 5.4.8 runs as a buff on the player: no channel events and no
+-- UnitChannelInfo, so the bar follows the buff's duration instead.
+local AURA_CHANNELS = {
+	[101546] = true,  -- Spinning Crane Kick
+}
 
 -------------------------------------------------------------------------------
 --  Blizzard's player cast bar
@@ -266,6 +273,7 @@ local function ShowIdle()
 	end
 	local c = CastCfg()
 	cb.casting, cb.channeling = false, false
+	cb.auraChannel = nil
 	cb.bar:SetValue(0)
 	if cb.rangeOut then
 		RestoreFill()
@@ -377,6 +385,7 @@ local function OnChannelStart(spellID)
 		return
 	end
 	cb.casting, cb.channeling = false, true
+	cb.auraChannel = nil
 	cb.castID = nil
 	cb.startTime, cb.endTime = startMS / 1000, endMS / 1000
 	cb.spellName = name
@@ -386,6 +395,51 @@ local function OnChannelStart(spellID)
 	ShowLatency("channel")
 	cb.rangeAt = 1
 	Activate()
+	CastOnUpdate(cb, 0)
+end
+
+-- The buff of an aura-driven channel on the player: spellID, name, icon, duration, expires.
+local function FindAuraChannel()
+	for i = 1, 40 do
+		local name, _, icon, _, _, duration, expires, _, _, _, spellID = UnitBuff("player", i)
+		if not name then
+			return
+		end
+		if spellID and AURA_CHANNELS[spellID] and duration and duration > 0 then
+			return spellID, name, icon, duration, expires
+		end
+	end
+end
+
+local function UpdateAuraChannel()
+	local c = CastCfg()
+	if not c.enabled or not cb or cb.casting or (cb.channeling and not cb.auraChannel) then
+		return
+	end
+	local spellID, name, icon, duration, expires = FindAuraChannel()
+	if not spellID then
+		if cb.auraChannel then
+			ShowIdle()
+		end
+		return
+	end
+	if cb.auraChannel == spellID and cb.endTime == expires then
+		return
+	end
+	local fresh = not cb.auraChannel
+	cb.casting, cb.channeling = false, true
+	cb.auraChannel = spellID
+	cb.castID = nil
+	cb.startTime, cb.endTime = expires - duration, expires
+	cb.spellName = name
+	cb.nameText:SetText(name)
+	SetIcon(icon)
+	ShowTicks(spellID)
+	if fresh then
+		ShowLatency("channel")
+		cb.rangeAt = 1
+		Activate()
+	end
 	CastOnUpdate(cb, 0)
 end
 
@@ -807,6 +861,7 @@ events:SetScript("OnEvent", function(self, event, unit, name, rank, lineID, spel
 			OnChannelStart(nil)
 		elseif cb then
 			ShowIdle()
+			UpdateAuraChannel()
 		end
 		if gb then UpdateGCDBar() end
 		return
@@ -818,7 +873,9 @@ events:SetScript("OnEvent", function(self, event, unit, name, rank, lineID, spel
 	if not cb or not CastCfg().enabled then
 		return
 	end
-	if event == "UNIT_SPELLCAST_START" then
+	if event == "UNIT_AURA" then
+		UpdateAuraChannel()
+	elseif event == "UNIT_SPELLCAST_START" then
 		OnCastStart()
 	elseif event == "UNIT_SPELLCAST_DELAYED" then
 		if cb.casting then
@@ -842,7 +899,7 @@ events:SetScript("OnEvent", function(self, event, unit, name, rank, lineID, spel
 			end
 		end
 	elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
-		if cb.channeling and not UnitChannelInfo("player") then
+		if cb.channeling and not cb.auraChannel and not UnitChannelInfo("player") then
 			ShowIdle()
 		end
 	end
@@ -852,7 +909,7 @@ function ERB.RegisterCastEvents()
 	for _, e in ipairs({ "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_STOP", "UNIT_SPELLCAST_FAILED",
 		"UNIT_SPELLCAST_INTERRUPTED", "UNIT_SPELLCAST_DELAYED", "UNIT_SPELLCAST_CHANNEL_START",
 		"UNIT_SPELLCAST_CHANNEL_UPDATE", "UNIT_SPELLCAST_CHANNEL_STOP", "UNIT_SPELLCAST_SENT",
-		"UNIT_SPELLCAST_SUCCEEDED", "SPELL_UPDATE_COOLDOWN", "PLAYER_ENTERING_WORLD" }) do
+		"UNIT_SPELLCAST_SUCCEEDED", "SPELL_UPDATE_COOLDOWN", "PLAYER_ENTERING_WORLD", "UNIT_AURA" }) do
 		pcall(events.RegisterEvent, events, e)
 	end
 end
