@@ -933,7 +933,6 @@ function LP.SpellMenuRows(bd, idx)
 	rows[#rows + 1] = LP.ToggleRow(bd, id, "Hide Duration (Charges > 0)", "chargeHideCdText", "No recharge timer while a charge is banked.")
 	rows[#rows + 1] = LP.ToggleRow(bd, id, "Stay Hidden While Charges Remain", "chargeHideUntilSpent", "The icon only shows once every charge is spent.")
 	if not isItem then
-		rows[#rows + 1] = LP.ToggleRow(bd, id, "Color Out of Range", "outOfRangeColoring", "Tints this icon red while the target is out of range.")
 		rows[#rows + 1] = LP.ToggleRow(bd, id, "Ignore Resource Cost", "noResourceTint", "Keeps the icon in full color while you lack the resource to cast it.")
 	end
 	LP.ThresholdRows(bd, id, rows)
@@ -1667,8 +1666,6 @@ local function BuildBars(p)
 			function() return floor((CDM.BV(bd, "swipeAlpha") or 0.7) * 100 + 0.5) end,
 			function(v) bd.swipeAlpha = v / 100 end, off)
 		p:Toggle("Suppress GCD", "No swipe for the global cooldown.", function() return bd.suppressGCD == true end, function(v) bd.suppressGCD = v end, off)
-		p:Toggle("Out of Range Overlay", "Tints spells red while the target is out of range.",
-			function() return bd.outOfRangeOverlay == true end, function(v) bd.outOfRangeOverlay = v end, off)
 		p:Toggle("Show Item Count", nil, function() return bd.showItemCount ~= false end, function(v) bd.showItemCount = v end, off)
 		p:Toggle("Hide Items if Missing", "Items you have none of are hidden.",
 			function() return bd.hideItemsIfMissing == true end, function(v) bd.hideItemsIfMissing = v end, off)

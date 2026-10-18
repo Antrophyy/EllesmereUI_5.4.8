@@ -593,8 +593,10 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 			elseif not usable and not onCD and not noMana then
 				tintR, tintG, tintB = 0.4, 0.4, 0.4
 			end
-			if (bd.outOfRangeOverlay or (ss and ss.outOfRangeColoring)) and e.name and UnitExists("target") then
-				if IsSpellInRange(e.name, "target") == 0 then tintR, tintG, tintB = 0.8, 0.1, 0.1 end
+			-- Out of range: Blizzard's viewer always tints a spell red while the
+			-- target is out of its range (retail ITEM_NOT_IN_RANGE_COLOR).
+			if e.name and UnitExists("target") and IsSpellInRange(e.name, "target") == 0 then
+				tintR, tintG, tintB = 0.64, 0.15, 0.15
 			end
 		elseif e.kind == "item" then
 			local n = GetItemCount(e.itemID, false, true) or 0
