@@ -143,17 +143,14 @@ The retail EllesmereUI Chat (`EllesmereUIChat`, 9.3.8) on the 5.4.8 chat frames,
 
 ## Damage Meters
 
-`EllesmereUIDamageMeters` is a separate, toggleable addon with its own entry under `/eui` > UI Reskin Addons > Damage Meters. Enable both it and a **5.4.8-compatible Details!** addon in the character's AddOns list. Details supplies the combat engine; EUI supplies the meter windows and settings integration. The original **Details r236 / v1.29.3** is supported, as are compatible releases exposing the newer `Details` API. Spell History still works without Details.
+`EllesmereUIDamageMeters` is a separate, toggleable addon with its own entry under `/eui` > UI Reskin Addons > Damage Meters. It records the combat log itself (`EllesmereUIDamageMeters_Engine.lua`); no Details! or other meter addon is needed.
 
-- **Damage Meters tab:** damage/DPS, healing/HPS (including the pets and absorbs recorded by Details), damage taken, enemy damage taken, interrupts, dispels, and death recaps. Click a bar for its breakdown; right-click for the home screen. The segment menu selects Current, Overall, or any retained fight. Windows, timers, fonts, textures, keybinds, and Unlock Mode remain independently configurable.
-- **Apply Modern Look:** an opt-in, 5.4.8-native, modern Details-inspired style: flat class-colored bars, compact dark headers, class/spec icons, rank, total, and rate. It keeps window positions, sizes, selected meters, bookmarks, and Spell History. Existing layouts are not automatically restyled.
-- **Details! tab:** edit Details' active profile directly: activity/effective DPS and HPS time, segment retention, automatic reset policy, Overall filters, raid-boss/Challenge Mode resets, damage/healing/resource/action/aura capture, group data collection, and native window refresh/animations. Advanced Details settings opens the original options for plugins, native appearance, profiles, and custom displays. Unsupported controls are disabled.
-- **Hide Details! Windows:** use EUI windows without duplicates while Details keeps collecting. Turning it off restores only windows hidden by EUI on that character, even after a reload. Turn it off before disabling EUI Damage Meters if you want those native windows restored; `/details show` can also reopen native windows.
-- Reset Data clears the shared Details combat data, not settings or Spell History, and is blocked during combat. Details settings and combat history remain in Details' own SavedVariables; EUI profiles contain the EUI appearance/layout only.
+- **Damage Meters tab:** damage/DPS, healing/HPS (pets, guardians and shield absorbs included), damage taken, enemy damage taken, interrupts, dispels, and death recaps. Click a bar for its breakdown; right-click for the home screen. The segment menu selects Current, Overall, or any stored fight. Windows, timers, fonts, textures, keybinds, and Unlock Mode remain independently configurable.
+- **Apply Modern Look:** an opt-in modern style: flat class-colored bars, compact dark headers, class/spec icons, rank, total, and rate. It keeps window positions, sizes, selected meters, bookmarks, and Spell History.
+- **Combat Data tab:** effective or activity DPS/HPS time, number of stored fights, Reset Data, and Overall resets for a new raid boss / Challenge Mode.
+- Fights are kept for the session only (cleared by a reload or logout). Reset Data is blocked during combat. Spec icons show for you and for group members another addon has inspected; others show their class icon.
 
-This is an integration, **not a bundled or pixel-identical port of retail Midnight Details**. Midnight-only APIs and features are not emulated, and no Details source or artwork is redistributed. Changing the retail addon's TOC version is not sufficient to run it on 5.4.8. Keep the compatible Details addon installed separately; no changes to its files are required.
-
-Developer regression check (Lua 5.1, from the repository root): `lua EllesmereUIDamageMeters\tests\DetailsIntegration.lua`. The test uses mock Details APIs and does not read or write a game installation.
+Developer regression check (Lua 5.1, from the repository root): `lua EllesmereUIDamageMeters/tests/Engine.lua`. It feeds mock combat log events to the engine and does not read or write a game installation.
 
 ## Notes
 
@@ -178,7 +175,7 @@ Developer regression check (Lua 5.1, from the repository root): `lua EllesmereUI
 | `EllesmereUIQoL` | Quality of Life: skip cinematics, auto gossip | `EllesmereUIQoLDB` |
 | `EllesmereUIQuestTracker` | Quest Tracker: auto accept / turn in | `EllesmereUIQuestTrackerDB` |
 | `EllesmereUIBlizzardSkin` | Blizzard Skins: Character Sheet | `EllesmereUIBlizzardSkinDB.charSheet` |
-| `EllesmereUIDamageMeters` | Details-powered Damage Meters, integrated Details settings, Spell History | `EllesmereUIDamageMetersDB.dm`, `.spellHistory` (Details saves its own engine settings/data) |
+| `EllesmereUIDamageMeters` | Damage Meters (built-in combat engine), Spell History | `EllesmereUIDamageMetersDB.dm`, `.spellHistory` |
 | `EllesmereUIInterruptTracker` | Interrupt Tracker (not a retail module) | `EllesmereUIInterruptTrackerDB` |
 | `EllesmereUIBags` | Bags and bank (retail EllesmereUI Bags) | `EllesmereUIBagsDB` |
 | `EllesmereUIMinimap` | Minimap (retail EllesmereUI Minimap) | `EllesmereUIMinimapDB` |

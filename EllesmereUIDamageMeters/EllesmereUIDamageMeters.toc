@@ -1,12 +1,12 @@
 ## Interface: 50400
 ## Title: |cff0cd29fEllesmereUI|r Damage Meters
-## Notes: Modern meter windows powered by Details! for 5.4.8, integrated Details! settings, and Spell History.
+## Notes: Modern meter windows with a built-in 5.4.8 combat engine, and Spell History.
 ## Author: EllesmereUI port
 ## Version: 3.19.0
 ## Dependencies: EllesmereUI
-## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ExRT, ElvUI, Details, DBM-Core, WeakAuras, VuhDo
+## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ExRT, ElvUI, DBM-Core, WeakAuras, VuhDo
 ## SavedVariables: EllesmereUIDamageMetersDB
 
-EllesmereUIDamageMeters_Details.lua
+EllesmereUIDamageMeters_Engine.lua
 EllesmereUIDamageMeters_SpellHistory.lua
 EllesmereUIDamageMeters_Meter.lua

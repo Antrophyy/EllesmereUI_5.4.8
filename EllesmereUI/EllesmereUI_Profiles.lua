@@ -237,7 +237,7 @@ local PRIVATE = {
 	EllesmereUICooldownManager = { "_seeded" }, -- first-login marker
 	EllesmereUIMythicTimer = { "_seeded", "_activeRunSplits", "bestObjectiveSplits", "fastestRunSplits" }, -- marker, run splits (per client)
 	EllesmereUIQuestTracker = { "_seeded" }, -- first-login marker
-	EllesmereUIDamageMeters = { "dm._seeded", "detailsWindowRestore" }, -- marker, native window restore state
+	EllesmereUIDamageMeters = { "dm._seeded" }, -- first-login marker
 }
 ns.PROFILE_PRIVATE = PRIVATE
 

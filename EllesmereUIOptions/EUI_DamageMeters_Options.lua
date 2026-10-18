@@ -1,5 +1,5 @@
 -- Settings pages of Damage Meters (same place and options as EllesmereUI):
--- Meter appearance, Details! engine settings, and Spell History.
+-- Meter appearance, combat data settings, and Spell History.
 -- Part of EllesmereUIOptions (load on demand); skipped when EllesmereUIDamageMeters is not loaded.
 
 local ns = EllesmereUI
@@ -142,10 +142,7 @@ end
 local function BuildMeterPage(p)
 	-- DISPLAY
 	p:Section("DISPLAY")
-	if not DM.Details() then
-		p:Paragraph("Enable a 5.4.8-compatible Details! addon and reload to collect combat data. The original r236 release is supported; the retail Midnight addon itself cannot run on this client.")
-	end
-	p:Button("Modern Details-Style Appearance", "Flat class-colored bars, compact headers, class/spec icons, and a dark background. Changes appearance only; window positions, sizes, selected meters, and Spell History are kept. This is a 5.4.8-native style, not the retail Midnight addon.", "Apply Modern Look",
+	p:Button("Modern Appearance", "Flat class-colored bars, compact headers, class/spec icons, and a dark background. Changes appearance only; window positions, sizes, selected meters, and Spell History are kept.", "Apply Modern Look",
 		function() DM.ApplyModernStyle() end)
 	p:Dropdown("Visibility", "When the meter windows are shown. Per-window rules (dungeons, raids, PvP) are in each window's settings menu.",
 		function() return KeyItems(DM.VISIBILITY) end,
@@ -178,7 +175,7 @@ local function BuildMeterPage(p)
 	p:Toggle("Always Show Player", "This will pin your bar to the window when it is not within the visible area",
 		function() return Cfg("showPinnedSelf") ~= false end,
 		function(v) Set("showPinnedSelf", v) end)
-	p:Keybind("Reset Data Keybind", "Left-click to set a keybind.\nRight-click to unbind.\nResets the Details! data outside combat.",
+	p:Keybind("Reset Data Keybind", "Left-click to set a keybind.\nRight-click to unbind.\nResets the combat data outside combat.",
 		function() return Cfg("resetDataKey") end,
 		function(v) Set("resetDataKey", v) end)
 	p:Cog("Reset Button", {
@@ -186,9 +183,6 @@ local function BuildMeterPage(p)
 			get = function() return Cfg("hideResetButton") == true end,
 			set = function(v) Set("hideResetButton", v) end },
 	})
-	p:Toggle("Hide Details! Windows", "Use only the EllesmereUI meter windows while Details! keeps collecting data. Turning this off restores only the native windows hidden by EUI, including after a reload. Turn it off before disabling this module if you want those windows back.",
-		function() return Cfg("hideDetailsWindows") == true end,
-		function(v) Set("hideDetailsWindows", v) end)
 
 	-- HEADER
 	p:Section("HEADER")
@@ -456,96 +450,34 @@ local function BuildMeterPage(p)
 end
 
 ---------------------------------------------------------------------------
--- Details! settings are edited live and saved by Details, not copied into
--- EUI profiles. This also keeps changes made in Details' own options in sync.
+-- Combat data page (EllesmereUIDamageMeters_Engine.lua settings)
 ---------------------------------------------------------------------------
-local function BuildDetailsPage(p)
-	local bridge = ns.EDMDetails
-	local d = bridge.GetAddon()
-	p:Section("DETAILS! ENGINE")
-	if not d then
-		p:Paragraph("Details! is not loaded. Enable the separate 5.4.8-compatible Details addon and reload. No retail Details files need to be copied or modified.")
-		return
-	end
-	p:Paragraph("Connected to Details! " .. tostring(d.userversion or d.version or "") .. ". These controls edit the active Details profile directly. EUI profiles save meter appearance, not Details combat data or engine settings.")
-	p:Button("Advanced Details! Settings", "Open Details' original options for native windows, profiles, plugins, custom displays, and other version-specific settings.", "Open Details!", bridge.OpenOptions)
+local TIME_TYPES = {
+	{ key = "effective", text = "Effective Time" },
+	{ key = "activity", text = "Activity Time" },
+}
 
-	local function Disabled(key)
-		return function() return d.initializing or not bridge.HasSetting(key) end
-	end
-	local function Toggle(label, tip, key)
-		p:Toggle(label, tip, function() return bridge.GetSetting(key) == true end,
-			function(v) bridge.SetSetting(key, v) end, Disabled(key))
-	end
-	local function Dropdown(label, tip, key, choices)
-		p:Dropdown(label, tip, function() return KeyItems(choices) end,
-			function() return bridge.GetSetting(key) end,
-			function() return KeyLabel(choices, bridge.GetSetting(key)) end,
-			function(v) bridge.SetSetting(key, v) end, nil, Disabled(key))
-	end
-	local function Slider(label, tip, key, low, high, step)
-		p:Slider(label, tip, low, high, step, function() return bridge.GetSetting(key) or low end,
-			function(v) bridge.SetSetting(key, v) end, Disabled(key))
-	end
-
+local function BuildCombatDataPage(p)
 	p:Section("COMBAT HISTORY")
-	Dropdown("DPS / HPS Time Measurement", "Activity Time uses each player's active time from Details. Effective Time uses the whole fight duration. Applies to EUI damage/healing rates and native Details windows.",
-		"time_type", {
-			{ key = 1, text = "Activity Time" },
-			{ key = 2, text = "Effective Time" },
-		})
-	Slider("Stored Combat Segments", "Number of fights retained by Details. Changes take effect as new fights are recorded; all retained segments appear in EUI's segment menu.",
-		"segments_amount", 1, 25, 1)
-	Dropdown("Reset on Instance / Group Changes", "Let Details keep data, ask before resetting, or automatically reset on the instance/group changes it recognizes. Auto-reset affects every window using Details data.",
-		"segments_auto_erase", {
-			{ key = 1, text = "Manual" },
-			{ key = 2, text = "Ask Before Resetting" },
-			{ key = 3, text = "Automatic" },
-		})
-	p:Button("Reset Combat Data", "Clear current, overall, and stored fights in Details and EUI. This cannot be undone and is blocked during combat. Appearance and Spell History are not reset.", "Reset Data",
+	p:Paragraph("EllesmereUI records the combat log itself; no other damage meter addon is needed. Fights are kept until you reload or log out.")
+	p:Dropdown("DPS / HPS Time Measurement", "Effective Time divides by the whole fight duration. Activity Time divides by each player's own active time.",
+		function() return KeyItems(TIME_TYPES) end,
+		function() return Cfg("timeType") or "effective" end,
+		function() return KeyLabel(TIME_TYPES, Cfg("timeType") or "effective") end,
+		function(v) Set("timeType", v) end)
+	p:Slider("Stored Combat Segments", "Number of past fights kept for the segment menu.", 1, 30, 1,
+		function() return Cfg("segmentsToKeep") or 18 end,
+		function(v) Set("segmentsToKeep", v) end)
+	p:Button("Reset Combat Data", "Clear Current, Overall and every stored fight. This cannot be undone and is blocked during combat. Appearance and Spell History are not reset.", "Reset Data",
 		function() DM.ResetData() end)
 
 	p:Section("OVERALL DATA")
-	p:Paragraph("These filters control which future fights Details adds to Overall. They do not rebuild previously collected totals.")
-	local flags = {
-		{ key = 16, text = "Include All Fights" },
-		{ key = 1, text = "Include Raid Bosses" },
-		{ key = 2, text = "Include Raid Trash" },
-		{ key = 4, text = "Include Dungeon Bosses" },
-		{ key = 8, text = "Include Dungeon Trash" },
-	}
-	for _, entry in ipairs(flags) do
-		local flag = entry.key
-		p:Toggle(entry.text, "Choose which fights contribute to Details' Overall segment.",
-			function() return bridge.GetOverallFlag(flag) end,
-			function(v) bridge.SetOverallFlag(flag, v) end,
-			function() return d.initializing or not bridge.HasOverall() or (flag ~= 16 and bridge.GetOverallFlag(16)) end)
-	end
-	Toggle("Reset Overall for a New Raid Boss", "Clear Overall when Details detects a different raid boss.", "overall_clear_newboss")
-	Toggle("Reset Overall for a New Challenge Mode", "Clear Overall at the start of a 5.4.8 Challenge Mode run.", "overall_clear_newchallenge")
-
-	p:Section("DATA COLLECTION")
-	p:Paragraph("Disabled collectors stop recording new data; existing fights are kept. Details performance profiles may temporarily override these choices. Controls unavailable in your Details version are disabled.")
-	local captures = {
-		{ key = "damage", text = "Collect Damage", tip = "Damage, damage taken, pet damage, and DPS." },
-		{ key = "heal", text = "Collect Healing", tip = "Healing, overhealing, absorbs, pet healing, and HPS." },
-		{ key = "energy", text = "Collect Resources", tip = "Resource gains for native Details displays and plugins." },
-		{ key = "miscdata", text = "Collect Actions", tip = "Interrupts, dispels, resurrections, and defensive cooldowns." },
-		{ key = "aura", text = "Collect Auras", tip = "Buff/debuff uptime and the aura data used by Details." },
-	}
-	for _, entry in ipairs(captures) do
-		local key = entry.key
-		p:Toggle(entry.text, entry.tip, function() return bridge.GetCapture(key) == true end,
-			function(v) bridge.SetCapture(key, v) end,
-			function() return d.initializing or not bridge.HasCapture(key) end)
-	end
-	Toggle("Receive Group Data for Disabled Collectors", "Use Details' group communication to obtain data for collectors you have disabled.", "cloud_capture")
-
-	p:Section("NATIVE DETAILS! WINDOWS")
-	p:Paragraph("These settings affect Details' own windows. For the modern EUI windows, use the Damage Meters tab (including Hide Details! Windows).")
-	Slider("Native Window Update Rate (seconds)", "Refresh interval for native Details windows. EUI windows have their own Refresh Rate setting.",
-		"update_speed", 0.05, 3, 0.05)
-	Toggle("Animate Native Bars", "Enable Details' own bar animations. Does not change EUI meter bars.", "use_row_animations")
+	p:Toggle("Reset Overall for a New Raid Boss", "Clear Overall when a different raid boss is pulled.",
+		function() return Cfg("overallClearNewBoss") ~= false end,
+		function(v) Set("overallClearNewBoss", v) end)
+	p:Toggle("Reset Overall for a New Challenge Mode", "Clear Overall at the start of a Challenge Mode run.",
+		function() return Cfg("overallClearNewChallenge") ~= false end,
+		function(v) Set("overallClearNewChallenge", v) end)
 end
 
 ---------------------------------------------------------------------------
@@ -650,20 +582,20 @@ local function BuildSpellHistoryPage(p)
 		function() return SH().barOpacity end, function(v) SH().barOpacity = v end, barOff)
 end
 
--- Meter appearance, the 5.4.8 Details engine, then Spell History.
+-- Meter appearance, combat data, then Spell History.
 local PAGES = {}
 if DM then
 	PAGES[#PAGES + 1] = {
 		key = "damageMeters",
 		name = "Damage Meters",
-		description = "Meter windows with the numbers from Details!. Right-click a window for its home screen, click a bar for its breakdown. Move the windows in Unlock Mode.",
+		description = "Meter windows. Right-click a window for its home screen, click a bar for its breakdown. Move the windows in Unlock Mode.",
 		build = BuildMeterPage,
 	}
 	PAGES[#PAGES + 1] = {
-		key = "details",
-		name = "Details!",
-		description = "Configure the Details combat engine from EUI. Details remains a separate addon and saves these settings in its own active profile.",
-		build = BuildDetailsPage,
+		key = "combatData",
+		name = "Combat Data",
+		description = "How fights are recorded: DPS / HPS time, stored fights and Overall resets.",
+		build = BuildCombatDataPage,
 	}
 end
 PAGES[#PAGES + 1] = {
@@ -682,7 +614,7 @@ ns.RegisterSettingsModule({
 		ns.ResetSpellHistorySettings()
 		if DM then DM.Reset() end
 	end,
-	resetTip = "Reset EUI meter appearance and Spell History settings. Positions, Details engine settings, and combat data are kept.",
+	resetTip = "Reset EUI meter appearance and Spell History settings. Positions and combat data are kept.",
 	onEnter = function()
 		ns.SetSpellHistoryPreview(true)
 		if DM then DM.SetPreview(true) end

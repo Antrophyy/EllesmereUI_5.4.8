@@ -1,9 +1,8 @@
 -- Damage Meters (EllesmereUI "EllesmereUIDamageMeters" meter windows, made for 5.4.8).
 -- Retail reads Blizzard's built-in meter (C_DamageMeter, 12.x). 5.4.8 has no
--- such meter, so the numbers come from a separately installed Details! addon.
--- EDMDetails bridges the original 5.4.8 release and newer Details APIs.
+-- such meter, so the numbers come from EllesmereUI's own combat log engine
+-- (EllesmereUIDamageMeters_Engine.lua, ns.EDMEngine).
 -- Look, saved keys (EllesmereUIDamageMetersDB.dm) and settings follow retail.
--- Without Details! the windows show one line "Details! is required".
 
 local addonName = ...
 local ns = EllesmereUI
@@ -41,7 +40,7 @@ local T = {
 local S = { Overall = 0, Current = 1 }
 DM.T, DM.S = T, S
 
--- Types Details! can give. Avoidable Damage Taken has no Details! counterpart:
+-- Types the 5.4.8 engine records. Avoidable Damage Taken has no counterpart:
 -- not offered (a saved bookmark of it stays saved, like retail does for types
 -- a client does not offer).
 local TYPE_NAMES = {
@@ -148,8 +147,11 @@ local function CreateDefaults()
 		borderSize = 0,
 		borderR = 0, borderG = 0, borderB = 0, borderA = 1,
 		windowCount = 1,
-		-- 5.4.8 only: hide the Details! windows (the numbers come from Details!).
-		hideDetailsWindows = false,
+		-- 5.4.8 only: combat engine settings (EllesmereUIDamageMeters_Engine.lua).
+		segmentsToKeep = 18,
+		timeType = "effective", -- "effective" (fight duration) | "activity" (each player's active time)
+		overallClearNewBoss = true,
+		overallClearNewChallenge = true,
 	}
 end
 DM.CreateDefaults = CreateDefaults
@@ -318,7 +320,7 @@ local function Accent()
 end
 DM.Accent = Accent
 
--- Player classes of 5.4.8 (Details! also uses "PET", "UNKNOW", "UNGROUPPLAYER", ...).
+-- Player classes of 5.4.8.
 local CLASSES = {
 	WARRIOR = true, PALADIN = true, HUNTER = true, ROGUE = true, PRIEST = true, DEATHKNIGHT = true,
 	SHAMAN = true, MAGE = true, WARLOCK = true, MONK = true, DRUID = true,
@@ -495,124 +497,72 @@ local function ShortName(name)
 end
 
 ---------------------------------------------------------------------------
--- Details! adapter. Each retail meter type maps to a Details! container:
---   Damage Done        -> damage container (1), group actors, actor.total
---   Healing Done       -> heal container (2),   group actors, actor.total
---   Damage Taken       -> damage container (1), group actors, actor.damage_taken
---   Enemy Damage Taken -> damage container (1), enemy actors, actor.damage_taken
---   Interrupts         -> misc container (4),   actor.interrupt
---   Dispels            -> misc container (4),   actor.dispell
---   Deaths             -> combat:GetDeaths() (Details! death logs)
+-- Engine adapter (EllesmereUIDamageMeters_Engine.lua). Each retail meter type
+-- reads one actor field of a fight:
+--   Damage Done        -> group actors, actor.damage  (breakdown: dmgSpells)
+--   Healing Done       -> group actors, actor.healing (breakdown: healSpells)
+--   Damage Taken       -> group actors, actor.taken   (breakdown: takenFrom)
+--   Enemy Damage Taken -> enemy actors, actor.taken   (breakdown: takenFrom)
+--   Interrupts         -> group actors, actor.interrupts (intSpells)
+--   Dispels            -> group actors, actor.dispels (dispSpells)
+--   Deaths             -> fight.deaths (death recaps)
 ---------------------------------------------------------------------------
-local function D()
-	return ns.EDMDetails.GetAddon()
+local function Engine()
+	return ns.EDMEngine
 end
-DM.Details = D
+DM.Engine = Engine
 
-local function PlayerName()
-	local d = D()
-	return d and d.playername or UnitName("player")
-end
-
--- The combat a window shows: a past segment (combat table), Current or Overall.
+-- The fight a window shows: a past segment, Current or Overall.
 local function GetCombat(W)
-	local d = D()
-	if not d then return nil end
+	local e = Engine()
 	if W.curSessionID then return W.curSessionID end
-	if W.curSession == S.Overall then return d:GetCombat(-1) end
-	return d:GetCombat(0)
+	if W.curSession == S.Overall then return e.GetOverall() end
+	return e.GetCurrent()
 end
 DM.GetCombat = GetCombat
 
 local function CombatTime(combat)
-	if not combat or type(combat.GetCombatTime) ~= "function" then return 0 end
-	local t = combat:GetCombatTime() or 0
-	local d = D()
-	if d and combat == d:GetCombat(-1) and t <= 0.1 then
-		-- Overall without its own clock: the sum of the stored segments.
-		local sum = 0
-		local segs = d:GetCombatSegments() or {}
-		for i = 1, #segs do
-			local c = segs[i]
-			if c and c.GetCombatTime then sum = sum + (c:GetCombatTime() or 0) end
-		end
-		t = sum
-	end
-	return t
+	return combat and Engine().Duration(combat) or 0
 end
 DM.CombatTime = CombatTime
 
-local function ActorList(combat, attribute)
-	if not combat or type(combat.GetActorList) ~= "function" or not combat[attribute] then return {} end
-	return combat:GetActorList(attribute) or {}
-end
+local ACTIVE_FIELD = { [T.DamageDone] = "dmgActive", [T.HealingDone] = "healActive" }
+local AMOUNT_FIELD = {
+	[T.DamageDone] = "damage", [T.HealingDone] = "healing", [T.DamageTaken] = "taken",
+	[T.EnemyDamageTaken] = "taken", [T.Interrupts] = "interrupts", [T.Dispels] = "dispels",
+}
 
-local function IsGroupActor(actor, me)
-	if actor.owner then return false end
-	return actor.grupo or actor.nome == me or ns.EDMDetails.IsLocalPlayer(actor)
-end
-
-local srcPool = {}
 -- Returns a sorted list of rows: { name, class, spec, total, perSec, isLocalPlayer, actor, death }.
 local function GetSources(combat, dmType)
 	local out = {}
 	if not combat then return out, 0 end
-	local me = PlayerName()
+	local me = UnitGUID("player")
 	local dur = CombatTime(combat)
-	local function Add(actor, amount)
-		if not amount or amount < 1 then return end
-		amount = floor(amount)
-		local seconds = dur
-		if dmType == T.DamageDone or dmType == T.HealingDone then
-			seconds = ns.EDMDetails.ActorDuration(actor, dur, dmType == T.DamageDone and "damage" or "heal")
-		end
-		out[#out + 1] = {
-			name = actor.nome, class = actor.classe, spec = actor.spec, total = amount,
-			perSec = seconds > 0 and amount / seconds or nil, isLocalPlayer = ns.EDMDetails.IsLocalPlayer(actor), actor = actor,
-		}
-	end
-	if dmType == T.DamageDone or dmType == T.HealingDone then
-		local list = ActorList(combat, dmType == T.DamageDone and 1 or 2)
-		for i = 1, #list do
-			local a = list[i]
-			if IsGroupActor(a, me) then Add(a, a.total) end
-		end
-	elseif dmType == T.DamageTaken then
-		local list = ActorList(combat, 1)
-		for i = 1, #list do
-			local a = list[i]
-			if IsGroupActor(a, me) then Add(a, a.damage_taken) end
-		end
-	elseif dmType == T.EnemyDamageTaken then
-		local list = ActorList(combat, 1)
-		for i = 1, #list do
-			local a = list[i]
-			if not a.grupo and not a.owner and a.nome ~= me
-				and ns.EDMDetails.IsEnemy(a) then
-				Add(a, a.damage_taken)
-			end
-		end
-	elseif dmType == T.Interrupts or dmType == T.Dispels then
-		local list = ActorList(combat, 4)
-		local key = dmType == T.Interrupts and "interrupt" or "dispell"
-		for i = 1, #list do
-			local a = list[i]
-			if IsGroupActor(a, me) and type(a[key]) == "number" then Add(a, a[key]) end
-		end
-	elseif dmType == T.Deaths then
-		local deaths = type(combat.GetDeaths) == "function" and combat:GetDeaths() or nil
-		if type(deaths) == "table" then
-			for i = 1, #deaths do
-				local t = deaths[i]
-				if type(t) == "table" then
-					out[#out + 1] = {
-						name = t[3], class = t[4], total = 1, isLocalPlayer = ns.EDMDetails.IsLocalPlayer({ nome = t[3] }),
-						death = t, deathTime = t.dead_at,
-					}
-				end
-			end
+	if dmType == T.Deaths then
+		for i = 1, #combat.deaths do
+			local t = combat.deaths[i]
+			out[#out + 1] = {
+				name = t.name, class = t.class, total = 1, isLocalPlayer = t.name == UnitName("player"),
+				death = t, deathTime = t.time,
+			}
 		end
 		return out, dur
+	end
+	local field = AMOUNT_FIELD[dmType]
+	if not field then return out, dur end
+	local enemies = dmType == T.EnemyDamageTaken
+	local activity = ACTIVE_FIELD[dmType] and DB().timeType == "activity"
+	for _, a in pairs(combat.actors) do
+		local amount = a[field]
+		if amount and amount >= 1 and ((enemies and a.enemy) or (not enemies and a.group)) then
+			amount = floor(amount)
+			local seconds = dur
+			if activity then seconds = max(1, a[ACTIVE_FIELD[dmType]] or 0) end
+			out[#out + 1] = {
+				name = a.name, class = a.class, spec = a.spec, total = amount,
+				perSec = seconds > 0 and amount / seconds or nil, isLocalPlayer = a.guid == me, actor = a,
+			}
+		end
 	end
 	tsort(out, function(a, b)
 		if a.total == b.total then return a.name < b.name end
@@ -632,86 +582,47 @@ local function SpellName(id)
 end
 DM.SpellName = SpellName
 
+local SPELL_LIST = {
+	[T.DamageDone] = "dmgSpells", [T.HealingDone] = "healSpells",
+	[T.Interrupts] = "intSpells", [T.Dispels] = "dispSpells",
+}
+
 -- Breakdown of one row: { label, icon, amount, spellID, class }, sorted.
 local function GetBreakdown(combat, dmType, src)
 	local out = {}
 	if not combat or not src then return out end
 	local actor = src.actor
-	local function AddSpells(container, key)
-		if type(container) ~= "table" or type(container._ActorTable) ~= "table" then return end
-		for id, spell in pairs(container._ActorTable) do
-			local amount = spell[key] or spell.counter or 0
-			if amount >= 1 then
-				local name, icon = SpellName(id)
-				local found = false
-				for i = 1, #out do
-					if out[i].spellID == id then out[i].amount = out[i].amount + amount; found = true; break end
-				end
-				if not found then
-					out[#out + 1] = { label = name, icon = icon, amount = amount, spellID = id }
+	if SPELL_LIST[dmType] then
+		local list = actor and actor[SPELL_LIST[dmType]]
+		if type(list) == "table" then
+			for _, s in pairs(list) do
+				if s.amount >= 1 then
+					local name, icon = SpellName(s.id)
+					if s.pet then name = name .. " (" .. ShortName(s.pet) .. ")" end
+					out[#out + 1] = { label = name, icon = icon, amount = floor(s.amount), spellID = s.id }
 				end
 			end
 		end
-	end
-	local function AddActorSpells(key, amountKey, attribute)
-		AddSpells(ns.EDMDetails.GetSpells(actor, key), amountKey)
-		if actor and type(actor.pets) == "table" then
-			for _, petName in ipairs(actor.pets) do
-				local pet = ns.EDMDetails.GetActor(combat[attribute], petName)
-				if pet then AddSpells(ns.EDMDetails.GetSpells(pet, key), amountKey) end
-			end
-		end
-	end
-	if dmType == T.DamageDone or dmType == T.HealingDone then
-		AddActorSpells("spells", "total", dmType == T.DamageDone and 1 or 2)
-	elseif dmType == T.DamageTaken then
-		local cont = combat[1]
-		if actor and type(actor.damage_from) == "table" then
-			local seen = {}
-			for aggressor in pairs(actor.damage_from) do
-				local a = ns.EDMDetails.GetActor(cont, aggressor)
-				if a and a.owner then
-					a = type(a.owner) == "table" and a.owner or ns.EDMDetails.GetActor(cont, a.owner) or a
-				end
-				local amount = ns.EDMDetails.TargetAmount(a, actor.nome)
-				if a and amount >= 1 and not seen[a.nome] then
-					seen[a.nome] = true
-					out[#out + 1] = { label = ShortName(a.nome), amount = amount, class = a.classe }
+	elseif dmType == T.DamageTaken or dmType == T.EnemyDamageTaken then
+		if actor and type(actor.takenFrom) == "table" then
+			for _, t in pairs(actor.takenFrom) do
+				if t.amount >= 1 then
+					out[#out + 1] = { label = ShortName(t.name), amount = floor(t.amount), class = t.class }
 				end
 			end
 		end
-	elseif dmType == T.EnemyDamageTaken then
-		local list = ActorList(combat, 1)
-		local me = PlayerName()
-		for i = 1, #list do
-			local a = list[i]
-			if IsGroupActor(a, me) and type(a.targets) == "table" then
-				local amount = ns.EDMDetails.TargetAmount(a, src.name)
-				if amount >= 1 then
-					out[#out + 1] = { label = ShortName(a.nome), amount = amount, class = a.classe, spec = a.spec }
-				end
-			end
-		end
-	elseif dmType == T.Interrupts then
-		AddActorSpells("interrupt_spells", "counter", 4)
-	elseif dmType == T.Dispels then
-		AddActorSpells("dispell_spells", "dispell", 4)
 	elseif dmType == T.Deaths then
-		-- Death log (last events before the death, newest first).
+		-- Death recap (last events before the death, newest first).
 		local t = src.death
-		local events = t and t[1]
+		local events = t and t.events
 		if type(events) == "table" then
-			local deathAt = t[2] or 0
 			for i = #events, 1, -1 do
 				local ev = events[i]
-				if type(ev) == "table" and (ev[1] == true or ev[1] == false) and (ev[3] or 0) > 0 then
-					local name, icon = SpellName(ev[2])
-					local ago = (type(ev[4]) == "number" and deathAt > 0) and (ev[4] - deathAt) or nil
-					out[#out + 1] = {
-						label = name, icon = icon, amount = floor(ev[3]), spellID = ev[2],
-						heal = ev[1] == false, source = ev[6], ago = ago,
-					}
-				end
+				local name, icon = SpellName(ev.id)
+				out[#out + 1] = {
+					label = name, icon = icon, amount = floor(ev.amount), spellID = ev.id,
+					heal = ev.heal, source = ev.source, ago = ev.at - t.at,
+				}
 			end
 		end
 		return out
@@ -723,26 +634,17 @@ DM.GetBreakdown = GetBreakdown
 
 -- Stored segments for the segment menu, newest first: { combat, name, time }.
 function DM.GetSegments()
-	local d = D()
 	local out = {}
-	if not d then return out end
-	local segs = d:GetCombatSegments() or {}
+	local segs = Engine().GetSegments()
 	for i = 1, #segs do
 		local c = segs[i]
-		if type(c) == "table" then
-			-- No "try to find" argument: Details! would then search the CURRENT
-			-- fight's enemies, not this segment's.
-			local name = type(c.GetCombatName) == "function" and c:GetCombatName() or nil
-			if not name or name == "" then name = "Combat" end
-			out[#out + 1] = { combat = c, name = name, time = CombatTime(c) }
-		end
+		out[#out + 1] = { combat = c, name = c.name or "Combat", time = CombatTime(c) }
 	end
 	return out
 end
 
 function DM.InCombat()
-	local d = D()
-	if d and type(d.IsInCombat) == "function" and d:IsInCombat() then return true end
+	if Engine().InCombat() then return true end
 	return InCombatLockdown() or UnitAffectingCombat("player") and true or false
 end
 
@@ -1960,11 +1862,7 @@ CreateDMWindow = function(idx)
 		local stride = barH + (c.barSpacing or 2)
 		local count = 0
 		W.meIndex = nil
-		if not D() then
-			W.msg:SetText("Details! is required")
-			W.msg:Show()
-			W.sources = nil
-		elseif W.curDMType == nil then
+		if W.curDMType == nil then
 			W.msg:Hide()
 			W.sources = nil
 		else
@@ -1980,7 +1878,7 @@ CreateDMWindow = function(idx)
 				if sources[i].isLocalPlayer and not W.meIndex then W.meIndex = i end
 			end
 			if count == 0 then
-				W.msg:SetText(D().initializing and "Details! is initializing" or "No combat data")
+				W.msg:SetText("No combat data")
 				W.msg:Show()
 			end
 		end
@@ -2312,7 +2210,10 @@ function DM.ApplySegmentSelection(W, sessionType, combat)
 end
 
 function DM.ResetData()
-	if not ns.EDMDetails.ResetData() then return false end
+	if not Engine().Reset() then
+		ns.Print("Damage Meters: combat data cannot be reset during combat.")
+		return false
+	end
 	for _, w in ipairs(windows) do
 		w.curSessionID = nil
 		if w.source then w.CloseSource() end
@@ -2370,10 +2271,7 @@ end
 local timerFrameSA
 
 local function TimerDuration()
-	local d = D()
-	local combat = d and d:GetCombat(0)
-	if not combat then return 0 end
-	return CombatTime(combat)
+	return CombatTime(Engine().GetCurrent())
 end
 
 function DM.UpdateTimerText()
@@ -2535,19 +2433,11 @@ function DM.ToggleWindows()
 end
 
 ---------------------------------------------------------------------------
--- Details! windows (5.4.8 only): hide / show them through Details!' API.
----------------------------------------------------------------------------
-local detailsWindowsPending = true
-function DM.ApplyDetailsWindows()
-	detailsWindowsPending = ns.EDMDetails.SetWindowsHidden(DB().hideDetailsWindows == true) == nil
-end
-
----------------------------------------------------------------------------
--- Refresh driver: every refreshRate seconds in combat, on Details! events
+-- Refresh driver: every refreshRate seconds in combat, on engine events
 -- and on demand out of combat.
 ---------------------------------------------------------------------------
 local driver = CreateFrame("Frame")
-local acc, timerAcc, detailsAcc = 0, 0, 0
+local acc, timerAcc = 0, 0
 local dirty = false
 
 function DM.RefreshAll()
@@ -2564,13 +2454,6 @@ driver:SetScript("OnUpdate", function(_, elapsed)
 	acc = acc + elapsed
 	timerAcc = timerAcc + elapsed
 	local rate = max(REFRESH_FLOOR, DB().refreshRate or 1)
-	if detailsWindowsPending then
-		detailsAcc = detailsAcc + elapsed
-		if detailsAcc >= 1 then
-			detailsAcc = 0
-			DM.ApplyDetailsWindows()
-		end
-	end
 	local inCombat = DM.InCombat()
 	if (inCombat and acc >= rate) or (dirty and acc >= 0.1) then
 		acc = 0
@@ -2599,24 +2482,24 @@ local function OnCombatStart()
 	DM.MarkDirty()
 end
 
-local listener
-local function HookDetails()
-	local d = D()
-	if not d or listener or type(d.CreateEventListener) ~= "function" then return end
-	listener = d:CreateEventListener()
-	listener:RegisterEvent("COMBAT_PLAYER_ENTER", function() OnCombatStart() end)
-	listener:RegisterEvent("COMBAT_PLAYER_LEAVE", function() DM.UpdateVisibility(); DM.MarkDirty() end)
-	listener:RegisterEvent("DETAILS_DATA_RESET", function()
+-- Engine notifications: fight start / end, data reset, old fights dropped.
+ns.EDMEngine.Listen(function(what)
+	if not loaded then return end
+	if what == "start" then
+		OnCombatStart()
+	elseif what == "stop" then
+		DM.UpdateVisibility()
+		DM.MarkDirty()
+	elseif what == "reset" then
 		for _, w in ipairs(windows) do
 			w.curSessionID = nil
 			if w.source then w.CloseSource() end
 		end
 		DM.MarkDirty()
-	end)
-	listener:RegisterEvent("DETAILS_DATA_SEGMENTREMOVED", function()
+	elseif what == "removed" then
 		-- A removed segment that a window shows falls back to Current.
 		local keep = {}
-		for _, s in ipairs(DM.GetSegments()) do keep[s.combat] = true end
+		for _, seg in ipairs(Engine().GetSegments()) do keep[seg] = true end
 		for _, w in ipairs(windows) do
 			if w.curSessionID and not keep[w.curSessionID] then
 				w.curSessionID = nil
@@ -2624,8 +2507,10 @@ local function HookDetails()
 			end
 		end
 		DM.MarkDirty()
-	end)
-end
+	else
+		DM.MarkDirty()
+	end
+end)
 
 -- Challenge Mode start / end (retail M+ keystone start / completion).
 local function IsChallengeMode()
@@ -2647,15 +2532,10 @@ events:SetScript("OnEvent", function(self, event, arg1)
 	if event == "ADDON_LOADED" then
 		if arg1 == addonName then
 			DB()
-		elseif arg1 == "Details" and loaded then
-			HookDetails()
-			detailsWindowsPending = true
-			DM.MarkDirty()
 		end
 		return
 	elseif event == "PLAYER_LOGIN" then
 		DM.Build()
-		HookDetails()
 		DM.ApplyKeybinds()
 		return
 	end
@@ -2691,9 +2571,6 @@ events:SetScript("OnEvent", function(self, event, arg1)
 		end
 		DM.MarkDirty()
 	else
-		if event == "PLAYER_ENTERING_WORLD" then
-			After(2, DM.ApplyDetailsWindows)
-		end
 		DM.UpdateVisibility()
 		DM.MarkDirty()
 	end
@@ -2740,7 +2617,6 @@ function DM.Apply()
 	DM.LayoutTimerFrame()
 	DM.UpdateVisibility()
 	DM.ApplyKeybinds()
-	DM.ApplyDetailsWindows()
 	DM.RegisterUnlock()
 	DM.RefreshAll()
 end
@@ -2907,7 +2783,7 @@ do
 			copy._seeded = 1
 			out.dm = copy
 			if notes then
-				notes[#notes + 1] = "Damage Meters: meter windows and settings come from the retail profile (numbers from Details!)."
+				notes[#notes + 1] = "Damage Meters: meter windows and settings come from the retail profile."
 			end
 			return out
 		end
