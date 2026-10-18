@@ -629,8 +629,12 @@ local PREVIEW = {
 	{ "Frost Nova", "Interface\\Icons\\Spell_Frost_FrostNova", 55 },
 }
 
+-- Only while the settings window itself is open: a page frame can report
+-- visible after the window closed, which left the samples running.
 local function PreviewActive()
 	if ns._unlockActive then return true end
+	local win = _G.EllesmereUISettings
+	if not (win and win:IsShown() and win:IsVisible()) then return false end
 	return previewOwner ~= nil and previewOwner:IsVisible() and true or false
 end
 
@@ -844,8 +848,17 @@ local function UpdateEvents(p, now, elapsed)
 	end
 end
 
+-- Drops everything from the timeline (after an error, so it cannot stick).
+local function ClearAll()
+	for key, e in pairs(events) do
+		if e.frame then ReleaseFrame(e.frame); e.frame = nil end
+		events[key] = nil
+	end
+	if frame then frame:Hide() end
+end
+
 local driver = CreateFrame("Frame")
-local function OnDriverUpdate(_, elapsed)
+local function DriverUpdate(_, elapsed)
 	local p = P()
 	if not p or not frame then return end
 	local now = GetTime()
@@ -868,8 +881,25 @@ local function OnDriverUpdate(_, elapsed)
 		end
 		return
 	end
+	-- Timers whose source never reported an end (a missed cancel).
+	for _, e in pairs(events) do
+		if e.state == "active" and e.expire < now - 1 then EndEvent(e, false) end
+	end
 	if not frame:IsShown() then frame:Show() end
 	UpdateEvents(p, now, elapsed or 0)
+end
+
+local reported = false
+local function OnDriverUpdate(self, elapsed)
+	local ok, err = pcall(DriverUpdate, self, elapsed)
+	if not ok then
+		ClearAll()
+		if not reported then
+			reported = true
+			local handler = geterrorhandler and geterrorhandler()
+			if handler then handler(err) end
+		end
+	end
 end
 
 -------------------------------------------------------------------------------
