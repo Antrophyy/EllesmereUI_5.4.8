@@ -1997,11 +1997,29 @@ local function SetPassthrough(on)
 	ECHAT.ApplySidebarIcons()
 end
 
-function ECHAT.ApplyAlpha(a)
+-- 5.4.8 draws icons in chat text (raid markers, role icons) with the frame
+-- alpha they had when the line was laid out, so a new alpha needs a re-layout:
+-- a font size bump and back redraws every line.
+local lastRedraw = 0
+local function RedrawText(cf)
+	local font, size, flags = cf:GetFont()
+	if font and size then
+		cf:SetFont(font, size + 1, flags)
+		cf:SetFont(font, size, flags)
+	end
+end
+
+function ECHAT.ApplyAlpha(a, skipRedraw)
 	P.alphaCur = a
 	SetPassthrough(a <= 0)
+	if not skipRedraw then
+		lastRedraw = GetTime()
+	end
 	P.ForEachChatFrame(function(cf)
 		cf:SetAlpha(a)
+		if not skipRedraw and cf:IsVisible() then
+			RedrawText(cf)
+		end
 		local tab = _G[cf:GetName() .. "Tab"]
 		if tab and not cf.isDocked then
 			tab:SetAlpha(a)
@@ -2060,7 +2078,8 @@ fadeFrame:SetScript("OnUpdate", function(self, dt)
 		return
 	end
 	fadeAccum = 0
-	ECHAT.ApplyAlpha(cur)
+	-- Text redraws are throttled mid-fade; the last step always redraws.
+	ECHAT.ApplyAlpha(cur, cur ~= alphaTarget and GetTime() - lastRedraw < 0.1)
 	if cur == alphaTarget then
 		self:Hide()
 	end
