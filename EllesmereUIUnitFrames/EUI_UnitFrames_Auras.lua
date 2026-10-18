@@ -24,6 +24,38 @@ local AUTO_GROWTH = {
 -- Sated / Exhaustion debuffs are never shown.
 local HIDDEN_DEBUFFS = { [57723] = true, [57724] = true, [80354] = true, [95809] = true }
 
+-- Raid encounter debuffs (ElvUI MoP RaidDebuffs, Mogu'shan Vaults .. Siege of
+-- Orgrimmar, plus Malkorok's Ancient Barriers). Some are applied with a player
+-- as caster (Ancient Barrier is cast by you on yourself), so a caster test
+-- would call them player auras; they always count as "Non-Player".
+UF.ENCOUNTER_DEBUFFS = {}
+for _, id in ipairs({
+	116161, 116281, 116374, 116417, 116525, 116778, 116784, 116835, 116942, 117436, 117519, 117708, 117723,
+	117878, 117949, 118048, 118091, 118135, 118163, 118303, 119086, 119775, 119985, 120629, 120669, 121949,
+	122055, 122064, 122151, 122370, 122740, 122752, 122760, 122761, 122777, 122835, 123011, 123036, 123081,
+	123121, 123180, 123474, 123705, 123812, 123963, 125206, 129078, 130395, 131788, 131790, 131792, 132222,
+	133597, 133767, 133768, 133798, 134256, 134366, 134391, 134691, 135000, 135695, 136050, 136192, 136193,
+	136228, 136295, 136478, 136512, 136587, 136654, 136708, 136710, 136719, 136722, 136753, 136767, 136857,
+	136903, 136914, 136922, 136992, 137162, 137341, 137359, 137360, 137371, 137408, 137422, 137440, 137633,
+	137641, 137731, 137972, 138297, 138329, 138349, 138372, 138569, 138609, 138659, 138732, 139011, 139840,
+	139843, 139857, 140092, 140179, 140701, 142315, 142864, 142865, 142913, 142948, 142990, 143198, 143385,
+	143431, 143434, 143436, 143480, 143494, 143579, 143638, 143701, 143766, 143767, 143773, 143777, 143780,
+	143791, 143800, 143840, 143919, 143974, 143990, 144089, 144215, 144236, 144330, 144351, 144358, 144459,
+	144467, 144514, 144774, 144851, 145065, 145171, 145183, 145195, 145218, 146124, 146235, 146589, 146594,
+	146902, 147029, 147207, 147383,
+	142862, 142863, -- Ancient Barrier, Weak Ancient Barrier (Malkorok)
+}) do
+	UF.ENCOUNTER_DEBUFFS[id] = true
+end
+
+-- Debuff from a player or player pet (encounter debuffs never are).
+function UF.DebuffFromPlayer(caster, spellId)
+	if spellId and UF.ENCOUNTER_DEBUFFS[spellId] then
+		return false
+	end
+	return caster ~= nil and UnitPlayerControlled(caster) and true or false
+end
+
 local PREVIEW_BUFFS = { 1459, 21562, 19740, 20217, 1126, 6673 }
 local PREVIEW_DEBUFFS = { { 172, "Magic" }, { 980, "Curse" }, { 589, "Magic" }, { 2818, "Poison" }, { 55095, "Disease" }, { 8921, nil } }
 
@@ -366,7 +398,7 @@ local function DebuffAllowed(frame, s, spellId, caster, dtype, duration, isBoss)
 			CastByMe = mine, BossAura = isBoss, Dispellable = CanDispel(dtype),
 			DispelTyped = dtype ~= nil and dtype ~= "", DispelMagic = dtype == "Magic", DispelCurse = dtype == "Curse",
 			DispelPoison = dtype == "Poison", DispelDisease = dtype == "Disease",
-			NonPlayer = caster == nil or not UnitPlayerControlled(caster), AnyPlayer = caster ~= nil and UnitPlayerControlled(caster),
+			NonPlayer = not UF.DebuffFromPlayer(caster, spellId), AnyPlayer = UF.DebuffFromPlayer(caster, spellId),
 		}
 		if neg then
 			for key, on in pairs(neg) do

@@ -406,9 +406,9 @@ local function ClassMatch(key, a)
 	elseif key == "castbyme" then
 		return IsMine(a.caster)
 	elseif key == "nonplayer" then
-		return not (a.caster and UnitPlayerControlled(a.caster))
+		return not UF.DebuffFromPlayer(a.caster, a.spellId)
 	elseif key == "anyplayer" then
-		return a.caster ~= nil and UnitPlayerControlled(a.caster) and true or false
+		return UF.DebuffFromPlayer(a.caster, a.spellId)
 	elseif key == "bossaura" then
 		return a.isBoss == true
 	elseif key == "canapply" then
