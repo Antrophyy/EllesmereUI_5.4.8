@@ -488,11 +488,17 @@ end
 -- HidePartyPreview).
 ---------------------------------------------------------------------------
 O.view = { entered = false, tab = nil }
+-- Buff / Debuff Manager preview style ("raid" / "party"): session only,
+-- changes no settings.
+O.managerPreview = "raid"
 
 function O.UpdatePreview()
 	local prof = P()
 	local mode = prof and prof.previewMode or "overlay"
 	local tab = O.view.entered and O.view.tab or nil
+	if tab == "manager" then
+		tab = O.managerPreview
+	end
 	-- A raid size preview (tier editor) ends when the Raid Frames tab goes.
 	if O.sizeTier and tab ~= "raid" then
 		O.sizeTier = nil
@@ -530,6 +536,7 @@ function O.TrackTab(p, tab)
 	end)
 end
 
+O.MANAGER_PREVIEWS = { { "raid", "Raid" }, { "party", "Party" } }
 O.PREVIEW_MODES = { { "real", "Real Preview" }, { "overlay", "Overlay Preview" }, { "none", "No Preview" } }
 
 -- Fixed header above the settings: the retail "Preview Mode" row.
@@ -2904,10 +2911,18 @@ end
 function O.ManagerTab(key, name, description, id)
 	local def = { key = key, name = name, description = description }
 	def.build = function(p)
-		-- Buff / Debuff Manager: the raid preview stays up so edited
-		-- indicators are visible (Click Casting shows none).
+		-- Buff / Debuff Manager: the raid or party preview stays up so
+		-- edited indicators are visible (Click Casting shows none).
 		if id ~= "ClickCast" then
-			O.TrackTab(p, "raid")
+			O.TrackTab(p, "manager")
+			p:Dropdown("Preview", "Preview the Raid or the Party frames while you edit. Only changes what the preview shows, for this session.",
+				function() return Items(O.MANAGER_PREVIEWS) end,
+				function() return O.managerPreview end,
+				function() return LabelOf(O.MANAGER_PREVIEWS, O.managerPreview) end,
+				function(v)
+					O.managerPreview = v
+					O.UpdatePreview()
+				end)
 		end
 		local build = ns["RFO_Build" .. id .. "Page"]
 		if build then
