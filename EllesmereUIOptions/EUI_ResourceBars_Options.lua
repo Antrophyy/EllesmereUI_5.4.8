@@ -1175,38 +1175,81 @@ end
 ---------------------------------------------------------------------------
 local previewPips, previewFill = 3, 55
 
+local PX = function()
+	return 768 / (ns.PhysicalHeight and ns.PhysicalHeight() or 1080) / UIParent:GetEffectiveScale()
+end
+
+-- Is the Power Bar showing for this spec and form, as live.
+local function PowerAvail(res)
+	local pp, sp = PW(), S()
+	if pp.enabled == false or not ERB.GetPrimaryPowerType() then return false end
+	if ERB.BarHiddenByForm and ERB.BarHiddenByForm(pp) then return false end
+	if sp.hidePowerIfResource and sp.enabled ~= false and res then return false end
+	return true
+end
+
+-- One preview section: a small title over a scale host holding the bar.
+local function PreviewSection(host, title)
+	local sec = { title = host:CreateFontString(nil, "OVERLAY") }
+	sec.title:SetFont(ns.GetFontPath and ns.GetFontPath() or ns.FONT, 10, "")
+	sec.title:SetTextColor(1, 1, 1, 0.45)
+	sec.title:SetText(title)
+	sec.host = CreateFrame("Frame", nil, host)
+	sec.host:SetSize(10, 10)
+	sec.edges = {}
+	for i = 1, 4 do
+		sec.edges[i] = sec.host:CreateTexture(nil, "OVERLAY", nil, 7)
+	end
+	sec.text = sec.host:CreateFontString(nil, "OVERLAY")
+	sec.text:SetFont(ns.GetFontPath and ns.GetFontPath("resourceBars") or ns.FONT, 11, "OUTLINE")
+	return sec
+end
+
+local function SectionEdges(sec, cfg, show)
+	local bs = (cfg.borderSize or 0) * PX()
+	local e = sec.edges
+	e[1]:ClearAllPoints(); e[1]:SetPoint("TOPLEFT"); e[1]:SetPoint("TOPRIGHT"); e[1]:SetHeight(max(0.01, bs))
+	e[2]:ClearAllPoints(); e[2]:SetPoint("BOTTOMLEFT"); e[2]:SetPoint("BOTTOMRIGHT"); e[2]:SetHeight(max(0.01, bs))
+	e[3]:ClearAllPoints(); e[3]:SetPoint("TOPLEFT"); e[3]:SetPoint("BOTTOMLEFT"); e[3]:SetWidth(max(0.01, bs))
+	e[4]:ClearAllPoints(); e[4]:SetPoint("TOPRIGHT"); e[4]:SetPoint("BOTTOMRIGHT"); e[4]:SetWidth(max(0.01, bs))
+	for i = 1, 4 do
+		e[i]:SetTexture(cfg.borderR or 0, cfg.borderG or 0, cfg.borderB or 0, cfg.borderA or 1)
+		e[i]:SetShown(show and bs > 0)
+	end
+end
+
+local function SectionText(sec, cfg, show, text)
+	local t = sec.text
+	t:ClearAllPoints()
+	local anchor = cfg.textAnchor or "CENTER"
+	t:SetPoint(anchor, sec.host, anchor, cfg.textXOffset or 0, cfg.textYOffset or 0)
+	t:SetFont(ns.GetFontPath and ns.GetFontPath("resourceBars") or ns.FONT, cfg.textSize or 11, "OUTLINE")
+	t:SetText(text or "")
+	t:SetShown(show and text ~= nil)
+end
+
+-- The page header previews the class resource, Power Bar and Health Bar
+-- stacked top to bottom, each under a small title and styled from the same
+-- settings the live bars read. A bar that is turned off (or has none for
+-- this spec or form) is left out.
 local function BuildPreviewHeader(page, host, width)
 	if editing then
 		return 0
 	end
-	local res = ERB.GetSecondaryResource()
-	if not res or not S().enabled then
-		return 0
-	end
 	local container = CreateFrame("Frame", nil, host)
-	container:SetSize(width, 80)
-	container:SetPoint("TOP", host, "TOP", 0, 0)
-	local scaleHost = CreateFrame("Frame", nil, container)
-	scaleHost:SetPoint("CENTER")
-	scaleHost:SetSize(10, 10)
+	container:SetPoint("TOPLEFT")
+	container:SetPoint("TOPRIGHT")
+	container:SetHeight(10)
+
+	-- Class resource
+	local cr = PreviewSection(container, "Class Resource")
+	local scaleHost = cr.host
 	local pipsF = {}
 	local bgTex = scaleHost:CreateTexture(nil, "BACKGROUND")
 	local fillTex = scaleHost:CreateTexture(nil, "ARTWORK")
-	local edges = {}
-	for i = 1, 4 do
-		edges[i] = scaleHost:CreateTexture(nil, "OVERLAY", nil, 7)
-	end
-	local count = scaleHost:CreateFontString(nil, "OVERLAY")
-	count:SetFont(ns.GetFontPath and ns.GetFontPath("resourceBars") or ns.FONT, 11, "OUTLINE")
-	local function Update()
+	local function UpdateResource(res)
 		local sp = S()
-		local scale = UIParent:GetEffectiveScale() / max(0.01, host:GetEffectiveScale())
-		scaleHost:SetScale(scale)
 		local w, h = sp.pipWidth or 214, sp.pipHeight or 20
-		local avail = (width - 40) / scale
-		if w > avail then
-			scaleHost:SetScale(scale * avail / w)
-		end
 		scaleHost:SetSize(w, h)
 		local r, g, b = ERB.SecondaryBaseColor(sp, res)
 		local bgR, bgG, bgB, bgA = sp.barBgR or 0, sp.barBgG or 0, sp.barBgB or 0, sp.barBgA or 0.5
@@ -1217,6 +1260,7 @@ local function BuildPreviewHeader(page, host, width)
 		local fillA = (sp.fillOpacity or 100) / 100
 		for _, pf in ipairs(pipsF) do pf.bg:Hide(); pf.fill:Hide() end
 		fillTex:Hide()
+		local text
 		if res.type == "bar" then
 			fillTex:SetTexture(tex)
 			fillTex:SetVertexColor(r, g, b, fillA)
@@ -1225,13 +1269,11 @@ local function BuildPreviewHeader(page, host, width)
 			fillTex:SetPoint("BOTTOMLEFT")
 			fillTex:SetWidth(max(1, w * previewFill / 100))
 			fillTex:Show()
-			count:SetText(sp.showPercent and (previewFill .. "%") or tostring(floor((res.max or 100) * previewFill / 100)))
+			text = sp.showPercent and (previewFill .. "%") or tostring(floor((res.max or 100) * previewFill / 100))
 		else
 			local n = res.max or 5
 			local lit = min(n, max(1, floor(n * previewPips / 5 + 0.5)))
-			local spacing = sp.pipSpacing or 1
-			local px = 768 / (ns.PhysicalHeight and ns.PhysicalHeight() or 1080) / UIParent:GetEffectiveScale()
-			local gap = spacing * px
+			local gap = (sp.pipSpacing or 1) * PX()
 			local pw = (w - gap * (n - 1)) / n
 			for i = 1, n do
 				local pf = pipsF[i]
@@ -1253,28 +1295,98 @@ local function BuildPreviewHeader(page, host, width)
 					pf.fill:Show()
 				end
 			end
-			count:SetText(tostring(lit))
+			text = tostring(lit)
 		end
-		local bs = (sp.borderSize or 0) * (768 / (ns.PhysicalHeight and ns.PhysicalHeight() or 1080) / UIParent:GetEffectiveScale())
-		local br, bg2, bb, ba = sp.borderR or 0, sp.borderG or 0, sp.borderB or 0, sp.borderA or 1
-		edges[1]:ClearAllPoints(); edges[1]:SetPoint("TOPLEFT"); edges[1]:SetPoint("TOPRIGHT"); edges[1]:SetHeight(max(0.01, bs))
-		edges[2]:ClearAllPoints(); edges[2]:SetPoint("BOTTOMLEFT"); edges[2]:SetPoint("BOTTOMRIGHT"); edges[2]:SetHeight(max(0.01, bs))
-		edges[3]:ClearAllPoints(); edges[3]:SetPoint("TOPLEFT"); edges[3]:SetPoint("BOTTOMLEFT"); edges[3]:SetWidth(max(0.01, bs))
-		edges[4]:ClearAllPoints(); edges[4]:SetPoint("TOPRIGHT"); edges[4]:SetPoint("BOTTOMRIGHT"); edges[4]:SetWidth(max(0.01, bs))
-		for i = 1, 4 do
-			edges[i]:SetTexture(br, bg2, bb, ba)
-			edges[i]:SetShown(bs > 0 and not sp.borderOnPips)
+		SectionEdges(cr, sp, not sp.borderOnPips)
+		cr.text:SetTextColor(sp.textR or 1, sp.textG or 1, sp.textB or 1, 0.9)
+		SectionText(cr, sp, sp.showText and res.type ~= "runes", text)
+		return w, h
+	end
+
+	-- Power Bar and Health Bar
+	local function BarSection(title, cfg, kind)
+		local sec = PreviewSection(container, title)
+		sec.bg = sec.host:CreateTexture(nil, "BACKGROUND")
+		sec.bg:SetAllPoints()
+		sec.fill = sec.host:CreateTexture(nil, "ARTWORK")
+		sec.Update = function()
+			local c, p = cfg(), P()
+			local w, h = c.width or 214, c.height or (kind == "health" and 16 or 14)
+			sec.host:SetSize(w, h)
+			if c.darkTheme then
+				sec.bg:SetTexture(ERB.DARK_BG[1], ERB.DARK_BG[2], ERB.DARK_BG[3], 1)
+			else
+				sec.bg:SetTexture(c.bgR or 0, c.bgG or 0, c.bgB or 0, c.bgA or 0.75)
+			end
+			local r, g, b
+			if c.darkTheme then
+				r, g, b = ERB.DARK_FILL[1], ERB.DARK_FILL[2], ERB.DARK_FILL[3]
+			elseif c.customColored then
+				r, g, b = c.fillR or 1, c.fillG or 1, c.fillB or 1
+			elseif kind == "health" then
+				r, g, b = ERB.ClassColor()
+			else
+				r, g, b = ERB.PowerColor(ERB.PowerToken(ERB.GetPrimaryPowerType()))
+			end
+			local pct = kind == "health" and min(100, previewFill + 20) or previewFill
+			sec.fill:SetTexture(ERB.TexturePath(ERB.BarTexture and ERB.BarTexture(p, kind) or p.general.barTexture))
+			sec.fill:SetVertexColor(r, g, b, (c.fillOpacity or 100) / 100)
+			sec.fill:ClearAllPoints()
+			sec.fill:SetPoint("TOPLEFT")
+			sec.fill:SetPoint("BOTTOMLEFT")
+			sec.fill:SetWidth(max(1, w * pct / 100))
+			SectionEdges(sec, c, true)
+			if c.textCustomColored == false then
+				sec.text:SetTextColor(r, g, b, 1)
+			else
+				sec.text:SetTextColor(c.textFillR or 1, c.textFillG or 1, c.textFillB or 1, c.textFillA or 1)
+			end
+			SectionText(sec, c, (c.textFormat or "none") ~= "none" and not (ERB.TextHiddenByForm and ERB.TextHiddenByForm(c)),
+				pct .. "%")
+			return w, h
 		end
-		count:ClearAllPoints()
-		local anchor = sp.textAnchor or "CENTER"
-		count:SetPoint(anchor, scaleHost, anchor, sp.textXOffset or 0, sp.textYOffset or 0)
-		count:SetFont(ns.GetFontPath and ns.GetFontPath("resourceBars") or ns.FONT, sp.textSize or 11, "OUTLINE")
-		count:SetTextColor(sp.textR or 1, sp.textG or 1, sp.textB or 1, 0.9)
-		count:SetShown(sp.showText and res.type ~= "runes")
+		return sec
+	end
+	local pw = BarSection("Power Bar", PW, "primary")
+	local hb = BarSection("Health Bar", H, "health")
+
+	local TOP, TITLE_H, GAP, BOTTOM = 10, 14, 10, 12
+	local function Place(sec, show, y, w, h)
+		sec.title:SetShown(show)
+		sec.host:SetShown(show)
+		if not show then return y end
+		local scale = UIParent:GetEffectiveScale() / max(0.01, host:GetEffectiveScale())
+		local avail = (width - 40) / scale
+		if w > avail then scale = scale * avail / w end
+		sec.host:SetScale(scale)
+		sec.title:ClearAllPoints()
+		sec.title:SetPoint("TOP", container, "TOP", 0, -y)
+		y = y + TITLE_H
+		sec.host:ClearAllPoints()
+		sec.host:SetPoint("TOP", container, "TOP", 0, -y / scale)
+		return y + h * scale + GAP
+	end
+
+	local function Update()
+		local res = ERB.GetSecondaryResource()
+		local y = TOP
+		local showRes = res and S().enabled and true or false
+		local w, h = 1, 1
+		if showRes then w, h = UpdateResource(res) end
+		y = Place(cr, showRes, y, w, h)
+		local showPw = PowerAvail(res)
+		if showPw then w, h = pw.Update() end
+		y = Place(pw, showPw, y, w, h)
+		local showHb = H().enabled and true or false
+		if showHb then w, h = hb.Update() end
+		y = Place(hb, showHb, y, w, h)
+		local total = (showRes or showPw or showHb) and (y - GAP + BOTTOM) or 0
+		container:SetHeight(max(1, total))
+		page:SetHeaderHeight(total)
+		return total
 	end
 	page:OnRefresh(Update)
-	Update()
-	return 80
+	return Update()
 end
 
 ---------------------------------------------------------------------------
