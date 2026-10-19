@@ -1,6 +1,6 @@
 -------------------------------------------------------------------------------
---  EUI_MythicTimer_TargetFocusBars.lua (5.4.8 port)
---  Target/Focus Bars (Mythic+ Tools): standalone cast bars for the target
+--  EUI_ChallengeTimer_TargetFocusBars.lua (5.4.8 port)
+--  Target/Focus Bars (Challenge Mode Tools): standalone cast bars for the target
 --  and focus units, placeable in Unlock Mode, with the nameplate cast
 --  colors: interrupt-on-cooldown tint, uninterruptible wash + shield, the
 --  kick tick / kick-ready window, and the interrupted flash.
@@ -573,7 +573,7 @@ local function MakeBarUnlockElement(which, label, order)
 	return ns.MakeUnlockElement({
 		key   = key,
 		label = label,
-		group = "Mythic+",
+		group = "Challenge Mode",
 		order = order,
 		noResize = true,
 		allowMatchSource = true,

@@ -483,7 +483,7 @@ ns.MODULE_SAVED_VARIABLES = {
 	"EllesmereUIFriendsDB",
 	"EllesmereUIInterruptTrackerDB",
 	"EllesmereUIMinimapDB",
-	"EllesmereUIMythicTimerDB",
+	"EllesmereUIChallengeTimerDB",
 	"EllesmereUINameplatesDB",
 	"EllesmereUIQoLDB",
 	"EllesmereUIQuestTrackerDB",

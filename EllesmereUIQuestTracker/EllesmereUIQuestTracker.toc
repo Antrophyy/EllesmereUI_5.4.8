@@ -4,7 +4,7 @@
 ## Author: EllesmereUI port
 ## Version: 3.18.0
 ## Dependencies: EllesmereUI
-## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ExRT, ElvUI, Details, DBM-Core, WeakAuras, VuhDo, EllesmereUIMythicTimer
+## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ExRT, ElvUI, Details, DBM-Core, WeakAuras, VuhDo, EllesmereUIChallengeTimer
 ## SavedVariables: EllesmereUIQuestTrackerDB
 
 # Loader

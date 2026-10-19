@@ -211,7 +211,7 @@ local ADDONS = {
 	{ folder = "EllesmereUICooldownManager", display = "Cooldown Manager", svName = "EllesmereUICooldownManagerDB" },
 	{ folder = "EllesmereUIAuraBuffReminders", display = "AuraBuff Reminders", svName = "EllesmereUIAuraBuffRemindersDB" },
 	{ folder = "EllesmereUIFriends", display = "Friends List", svName = "EllesmereUIFriendsDB" },
-	{ folder = "EllesmereUIMythicTimer", display = "Mythic+ Tools", svName = "EllesmereUIMythicTimerDB" },
+	{ folder = "EllesmereUIChallengeTimer", display = "Challenge Mode Tools", svName = "EllesmereUIChallengeTimerDB" },
 	{ folder = "EllesmereUIQuickdraw", display = "Quickdraw", svName = "EllesmereUIQuickdrawDB" },
 }
 ns.PROFILE_ADDONS = ADDONS
@@ -235,7 +235,7 @@ local PRIVATE = {
 	EllesmereUIAuraBuffReminders = { "_seeded" }, -- first-login marker
 	EllesmereUIQuickdraw = { "_seeded", "lastMountSpell" }, -- first-login marker, last mount ridden
 	EllesmereUICooldownManager = { "_seeded" }, -- first-login marker
-	EllesmereUIMythicTimer = { "_seeded", "_activeRunSplits", "bestObjectiveSplits", "fastestRunSplits" }, -- marker, run splits (per client)
+	EllesmereUIChallengeTimer = { "_seeded", "_activeRunSplits", "bestObjectiveSplits", "fastestRunSplits" }, -- marker, run splits (per client)
 	EllesmereUIQuestTracker = { "_seeded" }, -- first-login marker
 	EllesmereUIDamageMeters = { "dm._seeded" }, -- first-login marker
 }
@@ -563,6 +563,8 @@ function ns.DecodeProfileString(str)
 	if not ok or type(payload) ~= "table" or type(payload.data) ~= "table" then
 		return nil, "Failed to deserialize data"
 	end
+	-- Retail strings and older Mists strings carry the old module folders.
+	ns.RenameModuleFolders(payload.data)
 	if not payload.version or payload.version < 3 then
 		return nil, "This profile was created before the beta wipe and is no longer compatible. Please create a new export."
 	end

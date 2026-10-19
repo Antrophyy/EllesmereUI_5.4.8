@@ -1,6 +1,6 @@
 -------------------------------------------------------------------------------
---  EUI_MythicTimer_RunSummary.lua (5.4.8 port)
---  Run Summary (Mythic+ Tools): overview of a finished Challenge Mode with one
+--  EUI_ChallengeTimer_RunSummary.lua (5.4.8 port)
+--  Run Summary (Challenge Mode Tools): overview of a finished Challenge Mode with one
 --  row per party member, plus a per character history of finished runs (/ov).
 --
 --  5.4.8: the numbers come from the combat log (retail reads Blizzard's damage
@@ -8,7 +8,7 @@
 --  interrupts and deaths. Spec and item level come from inspecting the group.
 --  M+ score and loot do not exist for Challenge Modes and are skipped; the
 --  header shows the medal instead of the key level / chest count.
---  Run records live in the per character EllesmereUIMythicRunsDB.
+--  Run records live in the per character EllesmereUIChallengeRunsDB.
 -------------------------------------------------------------------------------
 local addonName, P = ...
 local ns = EllesmereUI
@@ -18,7 +18,7 @@ local format = string.format
 
 
 local db
-local SV_NAME = "EllesmereUIMythicRunsDB"
+local SV_NAME = "EllesmereUIChallengeRunsDB"
 local SCHEMA = 1
 
 local function Cfg()
@@ -576,13 +576,13 @@ end
 
 local function BuildWindow()
 	if win then return win end
-	win = CreateFrame("Frame", "EUIMythicRunSummaryFrame", UIParent)
+	win = CreateFrame("Frame", "EUIChallengeRunSummaryFrame", UIParent)
 	win:SetFrameStrata("FULLSCREEN")
 	win:SetClampedToScreen(true)
 	win:SetMovable(true)
 	win:EnableMouse(true)
 	win:Hide()
-	if UISpecialFrames then tinsert(UISpecialFrames, "EUIMythicRunSummaryFrame") end
+	if UISpecialFrames then tinsert(UISpecialFrames, "EUIChallengeRunSummaryFrame") end
 
 	local bg = win:CreateTexture(nil, "BACKGROUND", nil, 0)
 	bg:SetAllPoints()
@@ -941,7 +941,7 @@ SLASH_EUIMPLUS1 = "/ov"
 SLASH_EUIMPLUS2 = "/euimplus"
 SlashCmdList.EUIMPLUS = function(msg)
 	if not Enabled() then
-		ns.Print("Run Summary is disabled in Mythic+ Tools.")
+		ns.Print("Run Summary is disabled in Challenge Mode Tools.")
 		return
 	end
 	local lower = msg and msg:lower() or ""

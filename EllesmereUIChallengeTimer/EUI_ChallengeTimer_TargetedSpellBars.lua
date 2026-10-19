@@ -1,6 +1,6 @@
 -------------------------------------------------------------------------------
---  EUI_MythicTimer_TargetedSpellBars.lua (5.4.8 port)
---  Targeted Spell Bars (Mythic+ Tools): one movable group of cast bars, one
+--  EUI_ChallengeTimer_TargetedSpellBars.lua (5.4.8 port)
+--  Targeted Spell Bars (Challenge Mode Tools): one movable group of cast bars, one
 --  per enemy that is casting, with spell name, spell target and timer, the
 --  interrupt colors (interrupt on cooldown tint, uninterruptible wash), the
 --  out-of-interrupt-range fade and raid target markers.
@@ -713,7 +713,7 @@ local function RegisterUnlock()
 		ns.MakeUnlockElement({
 			key   = "EMT_TargetedSpellBars",
 			label = "Targeted Spell Bars",
-			group = "Mythic+",
+			group = "Challenge Mode",
 			order = 521,
 			noResize = true,
 			allowMatchSource = true,

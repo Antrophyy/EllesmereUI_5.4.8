@@ -70,6 +70,54 @@ function ns.ModuleDB(svName, legacyKey, subKey)
 	return db
 end
 
+-- Module folders renamed in this port (retail name -> Mists name). Saved
+-- data and profile strings key a module by its folder: profile addons,
+-- sync groups, spec / conditional override keys (folder .. "\31" .. path).
+-- ns.RenameModuleFolders(t) renames those keys anywhere inside t.
+local RENAMED_FOLDERS = {
+	EllesmereUIMythicTimer = "EllesmereUIChallengeTimer", -- Mists has Challenge Modes, not Mythic+
+}
+ns.RENAMED_FOLDERS = RENAMED_FOLDERS
+
+local function RenameKey(k)
+	if type(k) ~= "string" then
+		return nil
+	end
+	local new = RENAMED_FOLDERS[k]
+	if new then
+		return new
+	end
+	local folder, rest = k:match("^([^\31]+)(\31.*)$")
+	new = folder and RENAMED_FOLDERS[folder]
+	return new and (new .. rest) or nil
+end
+
+function ns.RenameModuleFolders(t, seen)
+	if type(t) ~= "table" then
+		return
+	end
+	seen = seen or {}
+	if seen[t] then
+		return
+	end
+	seen[t] = true
+	local moves
+	for k, v in pairs(t) do
+		local new = RenameKey(k)
+		if new then
+			moves = moves or {}
+			moves[k] = new
+		end
+		ns.RenameModuleFolders(v, seen)
+	end
+	for old, new in pairs(moves or {}) do
+		if t[new] == nil then
+			t[new] = t[old]
+		end
+		t[old] = nil
+	end
+end
+
 -- Screen height in physical pixels (5.4.8 has no GetPhysicalScreenSize).
 -- Windowed maximized ("Windowed (Fullscreen)") draws at the monitor's native
 -- size, and gxResolution is often not saved then: use the largest mode of the
@@ -174,6 +222,10 @@ driver:SetScript("OnEvent", function(self, event, arg1)
 	ns._freshInstall = type(EllesmereUIDB) ~= "table" or next(EllesmereUIDB) == nil
 	if type(EllesmereUIDB) ~= "table" then
 		EllesmereUIDB = {}
+	end
+	if EllesmereUIDB._folderRenames ~= 1 then
+		ns.RenameModuleFolders(EllesmereUIDB)
+		EllesmereUIDB._folderRenames = 1
 	end
 	BuildOptionsPanel()
 end)

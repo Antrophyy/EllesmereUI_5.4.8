@@ -124,7 +124,7 @@ ns.RegisterSyncExclusions("EllesmereUIRaidFrames", {
 	"profile.petFrames.raid_freePos", "profile.petFrames.raid_freeRect",
 })
 
-ns.RegisterSyncExclusions("EllesmereUIMythicTimer", {
+ns.RegisterSyncExclusions("EllesmereUIChallengeTimer", {
 	"standalonePos", "scale", "frameWidth",
 	"tsb.pos", "tsb.width", "tsb.height",
 	"tfb.*.pos", "tfb.*.width", "tfb.*.height",
@@ -906,7 +906,7 @@ local KEY_FOLDERS = {
 	blizzardSkins = "EllesmereUIBlizzardSkin", topBar = "EllesmereUITopBar",
 	interrupts = "EllesmereUIInterruptTracker", reforge = "EllesmereUIReforge",
 	cdm = "EllesmereUICooldownManager", auraBuff = "EllesmereUIAuraBuffReminders",
-	friends = "EllesmereUIFriends", EllesmereUIMythicTimer = "EllesmereUIMythicTimer",
+	friends = "EllesmereUIFriends", EllesmereUIChallengeTimer = "EllesmereUIChallengeTimer",
 	quickdraw = "EllesmereUIQuickdraw",
 }
 

@@ -1,5 +1,5 @@
 -------------------------------------------------------------------------------
---  EllesmereUIMythicTimer.lua (5.4.8 port of EllesmereUI Mythic+ Tools)
+--  EllesmereUIChallengeTimer.lua (5.4.8 port of retail EllesmereUI Mythic+ Tools, EllesmereUIMythicTimer)
 --
 --  The retail Mythic+ timer mapped onto Mists of Pandaria Challenge Modes:
 --    * timer      = GetWorldElapsedTime of the challenge mode world timer
@@ -11,7 +11,7 @@
 --      and no death time penalty)
 --    * key level / affixes / score do not exist: the key level spot shows
 --      the current medal instead, affixes are skipped.
---  Same saved keys as retail (profile table = EllesmereUIMythicTimerDB).
+--  Same saved keys as retail (retail EllesmereUIMythicTimerDB, here EllesmereUIChallengeTimerDB).
 --  The cast bar features live in the other files of this addon.
 -------------------------------------------------------------------------------
 local addonName, P = ...
@@ -23,7 +23,7 @@ local format = string.format
 local wipe = wipe
 
 local EMT = {}
-ns.MythicTimer = EMT
+ns.ChallengeTimer = EMT
 P.EMT = EMT
 EMT.P = P  -- the options file reads the cast bar / run summary functions here
 
@@ -601,7 +601,7 @@ local function Overlay(dst, src)
 	end
 end
 
-local root  -- EllesmereUIMythicTimerDB (the profile)
+local root  -- EllesmereUIChallengeTimerDB (the profile)
 local db    -- { profile = root }, the retail Lite DB shape the ported code reads
 
 function EMT.DB()
@@ -626,7 +626,7 @@ if ns.ProfileRetail and ns.ProfileRetail.CONVERT then
 		out.showPreview = nil
 		out._seeded = 1
 		if notes and type(notes) == "table" then
-			notes[#notes + 1] = "Mythic+ Tools: affixes, key level, M+ score, loot, current pull and important-cast flags have no 5.4.8 counterpart."
+			notes[#notes + 1] = "Challenge Mode Tools: affixes, key level, M+ score, loot, current pull and important-cast flags have no 5.4.8 counterpart."
 		end
 		return out
 	end
@@ -1427,7 +1427,7 @@ local function CreateStandaloneFrame()
 	if standaloneCreated then return standaloneFrame end
 	standaloneCreated = true
 
-	local f = CreateFrame("Frame", "EllesmereUIMythicTimerStandalone", UIParent)
+	local f = CreateFrame("Frame", "EllesmereUIChallengeTimerStandalone", UIParent)
 	f:SetSize(260, 200)
 	f:SetPoint("RIGHT", UIParent, "RIGHT", -100, 0)
 	f:SetFrameStrata("MEDIUM")
@@ -2547,8 +2547,8 @@ local function RegisterUnlock()
 	ns:RegisterUnlockElements({
 		ns.MakeUnlockElement({
 			key   = "EMT_MythicTimer",
-			label = "Mythic+ Timer",
-			group = "Mythic+",
+			label = "Challenge Timer",
+			group = "Challenge Mode",
 			order = 520,
 			noResize = true,
 			isHidden = function() return not (root and root.enabled) end,
@@ -2609,7 +2609,7 @@ boot:SetScript("OnEvent", function(self, event, arg1)
 	if event == "ADDON_LOADED" then
 		if arg1 ~= addonName then return end
 		self:UnregisterEvent("ADDON_LOADED")
-		root = ns.ModuleDB("EllesmereUIMythicTimerDB")
+		root = ns.ModuleDB("EllesmereUIChallengeTimerDB")
 		if root._seeded ~= 1 then Seed(root) end
 		FillDefaults(root, DEFAULTS)
 		root.showPreview = false

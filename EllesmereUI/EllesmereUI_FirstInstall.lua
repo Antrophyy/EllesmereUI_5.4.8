@@ -44,7 +44,7 @@ local GROUPS = {
 			{ label = "Damage Meters", addon = "EllesmereUIDamageMeters" },
 			{ label = "Chat", addon = "EllesmereUIChat" },
 			{ label = "Bags", addon = "EllesmereUIBags" },
-			{ label = "Mythic+ Tools", addon = "EllesmereUIMythicTimer" },
+			{ label = "Challenge Mode Tools", addon = "EllesmereUIChallengeTimer" },
 			{ label = "Quest Tracker", addon = "EllesmereUIQuestTracker" },
 			{ label = "Minimap", addon = "EllesmereUIMinimap" },
 		},

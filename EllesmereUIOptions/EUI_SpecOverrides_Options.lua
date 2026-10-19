@@ -77,7 +77,7 @@ local KEY_FOLDER = {
 	quickdraw = "EllesmereUIQuickdraw", raidFrames = "EllesmereUIRaidFrames",
 	qol = "EllesmereUIQoL", nameplates = "EllesmereUINameplates", topBar = "EllesmereUITopBar",
 	bags = "EllesmereUIBags", questTracker = "EllesmereUIQuestTracker",
-	EllesmereUIMythicTimer = "EllesmereUIMythicTimer", reforge = "EllesmereUIReforge",
+	EllesmereUIChallengeTimer = "EllesmereUIChallengeTimer", reforge = "EllesmereUIReforge",
 }
 local MODULE_TITLES = {}
 

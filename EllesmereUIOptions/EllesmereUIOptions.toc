@@ -50,4 +50,4 @@ EUI_QuestTracker_Options.lua
 EUI_Minimap_Options.lua
 EUI_Chat_Options.lua
 EUI_Bags_Options.lua
-EUI_MythicTimer_Options.lua
+EUI_ChallengeTimer_Options.lua

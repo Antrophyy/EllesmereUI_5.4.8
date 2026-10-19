@@ -86,7 +86,7 @@ ns.FONT_MODULES = {
 	{ key = "cdm", folder = "EllesmereUICooldownManager", display = "Cooldown Manager" },
 	{ key = "auraBuff", folder = "EllesmereUIAuraBuffReminders", display = "AuraBuff Reminders" },
 	{ key = "friends", folder = "EllesmereUIFriends", display = "Friends" },
-	{ key = "mythicTimer", folder = "EllesmereUIMythicTimer", display = "Mythic+ Tools" },
+	{ key = "mythicTimer", folder = "EllesmereUIChallengeTimer", display = "Challenge Mode Tools" },
 	{ key = "quickdraw", folder = "EllesmereUIQuickdraw", display = "Quickdraw" },
 	{ key = "questTracker", folder = "EllesmereUIQuestTracker", display = "Quest Tracker" },
 }

@@ -241,7 +241,7 @@ R.MIGRATIONS = {
 	{
 		id = "mythic_timer_default_pos_to_otf_v2",
 		body = function(ctx)
-			local emt = ctx.profile.addons and ctx.profile.addons.EllesmereUIMythicTimer
+			local emt = ctx.profile.addons and ctx.profile.addons.EllesmereUIChallengeTimer
 			if not emt then return end
 			local pos = emt.standalonePos
 			if not pos then return end

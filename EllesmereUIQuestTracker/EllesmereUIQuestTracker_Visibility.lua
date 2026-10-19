@@ -13,7 +13,7 @@
 -- moved in combat (queued for PLAYER_REGEN_ENABLED). Only after the player
 -- moved it once; until then Blizzard keeps placing it.
 --
--- Challenge Mode: EllesmereUIMythicTimer hides the WatchFrame during a run
+-- Challenge Mode: EllesmereUIChallengeTimer hides the WatchFrame during a run
 -- (Show hook, alpha 0 in combat). While it does, this file leaves the
 -- WatchFrame alone (no Show / Hide / alpha) and only hides its background.
 -------------------------------------------------------------------------------
@@ -147,9 +147,9 @@ local function ShouldAutoHide()
 end
 EQT.ShouldAutoHide = ShouldAutoHide
 
--- Same rule as TrackerShouldBeHidden() in EllesmereUIMythicTimer.lua.
-local function MythicTimerOwnsTracker()
-	local emt = ns.MythicTimer
+-- Same rule as TrackerShouldBeHidden() in EllesmereUIChallengeTimer.lua.
+local function ChallengeTimerOwnsTracker()
+	local emt = ns.ChallengeTimer
 	if not (emt and emt.DB and emt.currentRun) then return false end
 	local root = emt.DB()
 	if not (root and root.enabled) then return false end
@@ -161,7 +161,7 @@ local function MythicTimerOwnsTracker()
 	end
 	return false
 end
-EQT.MythicTimerOwnsTracker = MythicTimerOwnsTracker
+EQT.ChallengeTimerOwnsTracker = ChallengeTimerOwnsTracker
 
 -------------------------------------------------------------------------------
 -- Background (our own UIParent frame, never a child of the WatchFrame)
@@ -215,7 +215,7 @@ local function ResizeBG()
 	local bg = bgFrame
 	local wf = WF()
 	if not (bg and wf) then return end
-	local visible = wf:IsShown() and wf:GetAlpha() > 0 and not ShouldAutoHide() and not MythicTimerOwnsTracker()
+	local visible = wf:IsShown() and wf:GetAlpha() > 0 and not ShouldAutoHide() and not ChallengeTimerOwnsTracker()
 	local header = _G.WatchFrameHeader
 	local hasContent = header and header:IsShown()
 	if not visible or not hasContent then
@@ -279,7 +279,7 @@ moFrame:SetScript("OnUpdate", function(self, elapsed)
 	if moElapsed < 0.1 then return end
 	moElapsed = 0
 	local wf = WF()
-	if not wf or MythicTimerOwnsTracker() then return end
+	if not wf or ChallengeTimerOwnsTracker() then return end
 	local over = wf:IsShown() and wf:IsMouseOver()
 	SetTrackerAlpha(over and 1 or 0)
 end)
@@ -297,8 +297,8 @@ end
 local function UpdateVisibility()
 	local wf = WF()
 	if not wf then return end
-	if MythicTimerOwnsTracker() then
-		-- The Mythic+ timer hides it; never fight that.
+	if ChallengeTimerOwnsTracker() then
+		-- The Challenge Mode timer hides it; never fight that.
 		moFrame:Hide()
 		hiddenByUs = false
 		if bgFrame then bgFrame:Hide() end
@@ -469,7 +469,7 @@ function EQT.InitVisibility()
 	EnsureBG()
 	-- Blizzard shows it again (zone change, scenario): re-check the auto-hide.
 	hooksecurefunc(wf, "Show", function(self)
-		if MythicTimerOwnsTracker() then return end
+		if ChallengeTimerOwnsTracker() then return end
 		if ShouldAutoHide() then HardHide(self) end
 	end)
 	wf:HookScript("OnHide", function() if bgFrame then bgFrame:Hide() end end)
@@ -493,7 +493,7 @@ function EQT.InitVisibility()
 		UpdateVisibility()
 		if event == "CHALLENGE_MODE_COMPLETED" or event == "WORLD_STATE_TIMER_START" or event == "WORLD_STATE_TIMER_STOP"
 			or event == "PLAYER_ENTERING_WORLD" then
-			-- Again once the Mythic+ timer has its run state (it checks 3s after a load).
+			-- Again once the Challenge Mode timer has its run state (it checks 3s after a load).
 			P.After(0.5, UpdateVisibility)
 			P.After(3.5, UpdateVisibility)
 		end

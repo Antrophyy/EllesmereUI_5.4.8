@@ -1,27 +1,27 @@
--- Settings pages of Mythic+ Tools (retail EUI_MythicTimer_Options.lua):
--- Mythic+ Timer, Targeted Spell Bars, Target/Focus Bars, Run Summary.
+-- Settings pages of Challenge Mode Tools (retail EUI_MythicTimer_Options.lua):
+-- Challenge Timer, Targeted Spell Bars, Target/Focus Bars, Run Summary.
 -- Part of EllesmereUIOptions (load on demand); skipped when
--- EllesmereUIMythicTimer is not loaded. Setters only store: the runtime's
+-- EllesmereUIChallengeTimer is not loaded. Setters only store: the runtime's
 -- ns.applyHooks entry applies every change.
 -- 5.4.8: the timer runs on Challenge Modes (Gold / Silver / Bronze are the
 -- retail +3 / +2 / +1 thresholds); affixes, key level, M+ score, loot,
 -- current pull, border textures and important-cast flags do not exist.
 
 local ns = EllesmereUI
-if not IsAddOnLoaded("EllesmereUIMythicTimer") then
+if not IsAddOnLoaded("EllesmereUIChallengeTimer") then
 	return
 end
 
 local floor = math.floor
 local U = ns.OptionsUtil
-local EMT = ns.MythicTimer
+local EMT = ns.ChallengeTimer
 local P = EMT and EMT.P
 if not P then
 	return
 end
 
-local EYE_ON = "Interface\\AddOns\\EllesmereUIMythicTimer\\media\\eui-visible"
-local EYE_OFF = "Interface\\AddOns\\EllesmereUIMythicTimer\\media\\eui-invisible"
+local EYE_ON = "Interface\\AddOns\\EllesmereUIChallengeTimer\\media\\eui-visible"
+local EYE_OFF = "Interface\\AddOns\\EllesmereUIChallengeTimer\\media\\eui-invisible"
 
 local function T()
 	return EMT.DB()
@@ -107,7 +107,7 @@ local function AccentSwatches(p, useKey, colorKey, dr, dg, db, isDisabled, follo
 end
 
 -------------------------------------------------------------------------------
---  Page: Mythic+ Timer
+--  Page: Challenge Timer
 -------------------------------------------------------------------------------
 local TIMER_FORMATS = {
 	"REMAINING", "11:37",
@@ -234,7 +234,7 @@ local function BuildTimerPage(p)
 		local lead = { { name = "EUI Global Default", value = "__global" } }
 		return U.FontItems and U.FontItems(lead) or lead
 	end
-	p:Dropdown("Timer Font", "Font of the timer clock. EUI Global Default follows the Mythic+ Tools module font.",
+	p:Dropdown("Timer Font", "Font of the timer clock. EUI Global Default follows the Challenge Mode Tools module font.",
 		FontItems,
 		function() return Cfg("timerFont") or "__global" end,
 		function()
@@ -825,16 +825,16 @@ local function PreviewsOff()
 end
 
 ns.RegisterSettingsModule({
-	key = "EllesmereUIMythicTimer",
-	name = "Mythic+ Tools",
+	key = "EllesmereUIChallengeTimer",
+	name = "Challenge Mode Tools",
 	group = "UI Reskin Addons",
 	tabs = {
-		{ key = "timer", name = "Mythic+ Timer", description = "Challenge Mode timer: medal thresholds, boss splits, enemy count and deaths.", build = BuildTimerPage },
+		{ key = "timer", name = "Challenge Timer", description = "Challenge Mode timer: medal thresholds, boss splits, enemy count and deaths.", build = BuildTimerPage },
 		{ key = "tsb", name = "Targeted Spell Bars", description = "One cast bar per casting enemy, in one movable group.", build = BuildTSBPage },
 		{ key = "tfb", name = "Target/Focus Bars", description = "Standalone target and focus cast bars with interrupt colors.", build = BuildTFBPage },
 		{ key = "rs", name = "Run Summary", description = "End of run overview and a per character run history (/ov).", build = BuildRSPage },
 	},
 	reset = function() EMT.Reset() end,
-	resetTip = "Set all Mythic+ Tools settings back to default.",
+	resetTip = "Set all Challenge Mode Tools settings back to default.",
 	onLeave = PreviewsOff,
 })

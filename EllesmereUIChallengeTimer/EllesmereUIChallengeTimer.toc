@@ -1,0 +1,13 @@
+## Interface: 50400
+## Title: |cff0cd29fEllesmereUI|r Challenge Mode Tools
+## Notes: Challenge Mode timer with full tracking customizations, run summary, target/focus cast bars and targeted spell bars (5.4.8 port of retail EllesmereUI Mythic+ Tools, EllesmereUIMythicTimer).
+## Author: EllesmereUI port
+## Version: 3.18.0
+## Dependencies: EllesmereUI
+## SavedVariables: EllesmereUIChallengeTimerDB
+## SavedVariablesPerCharacter: EllesmereUIChallengeRunsDB
+
+EllesmereUIChallengeTimer.lua
+EUI_ChallengeTimer_TargetedSpellBars.lua
+EUI_ChallengeTimer_TargetFocusBars.lua
+EUI_ChallengeTimer_RunSummary.lua
