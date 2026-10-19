@@ -43,10 +43,12 @@ P.OrientedSize = OrientedSize
 -------------------------------------------------------------------------------
 local playerClass = select(2, UnitClass("player"))
 
-local function FormBucket(isClassResource)
+-- Moonkin Form hides the class resource (Eclipse) bar or text too when its
+-- box is checked (Enable/Disable per Form).
+local function FormBucket()
 	local f = GetShapeshiftFormID()
 	if f == 31 or f == 35 then
-		return isClassResource and nil or "moonkin"
+		return "moonkin"
 	end
 	if f == 1 then return "energy" end
 	if f == 5 then return "rage" end
@@ -57,7 +59,7 @@ function ERB.BarHiddenByForm(cfg, isClassResource)
 	if playerClass ~= "DRUID" or not cfg or not cfg.barDisabledForms then
 		return false
 	end
-	local key = FormBucket(isClassResource)
+	local key = FormBucket()
 	return key and cfg.barDisabledForms[key] and true or false
 end
 
@@ -65,7 +67,7 @@ function ERB.TextHiddenByForm(cfg, isClassResource)
 	if playerClass ~= "DRUID" or not cfg or not cfg.textDisabledForms then
 		return false
 	end
-	local key = FormBucket(isClassResource)
+	local key = FormBucket()
 	return key and cfg.textDisabledForms[key] and true or false
 end
 
