@@ -71,6 +71,7 @@ local DEFAULTS = {
 		opacity = 1.0,
 		frameStrata = "MEDIUM",
 		cursorAttach = false,
+		cursorAttachCombatOnly = false,
 		borderTexture = "solid",
 		borderSize = 1,
 		borderR = 0, borderG = 0, borderB = 0, borderA = 1,
@@ -1709,8 +1710,10 @@ local function Refresh()
 
 	HandleAppearSounds(_missing)
 
-	-- Split: cursor (important, cursor attach on) / row.
+	-- Split: cursor (important, cursor attach on; with Only on Cursor in
+	-- Combat, only while in combat) / row.
 	local useCursor = p.display.cursorAttach and cursorAnchor
+		and (not p.display.cursorAttachCombatOnly or inCombat or InCombatLockdown())
 	local rowList, curList = {}, {}
 	for _, m in ipairs(_missing) do
 		if not (m.dismissKey and dismissed[m.dismissKey]) then

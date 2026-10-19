@@ -229,6 +229,12 @@ local function BuildReminders(p)
 	p:Toggle("Attach Important Buffs to Cursor", "This option only affects Raid Buffs.",
 		function() return DDB().cursorAttach end,
 		function(v) DDB().cursorAttach = v end, off)
+	p:Cog("Cursor Options", {
+		{ type = "toggle", label = "Only on Cursor in Combat",
+		  tip = "Important buffs follow the cursor only while you are in combat, and show with your other reminders the rest of the time.",
+		  get = function() return DDB().cursorAttachCombatOnly == true end,
+		  set = function(v) DDB().cursorAttachCombatOnly = v end },
+	}, { disabled = function() return (off and off()) or not DDB().cursorAttach end, disabledTip = "Attach Important Buffs to Cursor" })
 	p:Dropdown("Glow", "Glow on the reminder icons.",
 		function() local out = {}; for i, g in ipairs(EABR.GLOW_TYPES) do out[i] = { value = g[1], name = g[2] } end; return out end,
 		function() return DDB().glowType or 0 end,
