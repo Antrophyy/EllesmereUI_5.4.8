@@ -293,9 +293,11 @@ local function RaiseLateFlyoutChildren(btn)
 		return
 	end
 	local combat = InCombatLockdown()
+	-- Our black backing box stays under the button (raised, it darkens the icon).
+	local box = GetFFD(btn).ungroupBg
 	local function raise(frame, level)
 		for _, child in ipairs({ frame:GetChildren() }) do
-			if not (combat and child:IsProtected()) then
+			if child ~= box and not (combat and child:IsProtected()) then
 				child:SetFrameStrata("DIALOG")
 				child:SetFrameLevel(level)
 				raise(child, level + 1)
