@@ -7,7 +7,9 @@
 -- Resolution ladder:
 --   1. keybind  -- a group whose keybind toggle is on (creation order)
 --   2. instance -- dungeon / raid / arena / battleground
---   3. solo     -- not in a group (never inside an instance)
+--   3. party    -- in a group that is not a raid, inside an instance or out
+--                  (below instance, so a group for the instance type wins)
+--   4. solo     -- not in a group (never inside an instance)
 -- One conditional group is active at a time, or none. Nothing flips in
 -- combat: the state is resolved again at PLAYER_REGEN_ENABLED.
 --
@@ -21,6 +23,7 @@ end
 
 ns.CONDITIONS = {
 	{ id = "keybind", label = "Keybind (out of combat)" },
+	{ id = "party", label = "Party (in a group, not a raid)" },
 	{ id = "dungeon", label = "Dungeon" },
 	{ id = "raid", label = "Raid" },
 	{ id = "arena", label = "Arena" },
@@ -85,6 +88,19 @@ end
 ---------------------------------------------------------------------------
 -- Resolver
 ---------------------------------------------------------------------------
+-- The first group that checks Party, while in a group that is not a raid.
+local function PartyGroup(groups)
+	if not IsInGroup() or IsInRaid() then
+		return nil
+	end
+	for _, g in ipairs(groups) do
+		if g.conds and g.conds.party then
+			return g
+		end
+	end
+	return nil
+end
+
 function ns.Conditions_ActiveGroup()
 	local groups = ns.Conditions_GetGroups()
 	if not groups or #groups == 0 then
@@ -103,11 +119,16 @@ function ns.Conditions_ActiveGroup()
 				return g
 			end
 		end
-		return nil
+		-- In an instance: party can still apply, solo never does.
+		return PartyGroup(groups)
 	end
 	if instanceType and instanceType ~= "none" then
-		-- Scenario and other instance types: no condition.
-		return nil
+		-- Scenario and other instance types: only party.
+		return PartyGroup(groups)
+	end
+	local pg = PartyGroup(groups)
+	if pg then
+		return pg
 	end
 	if not IsInGroup() then
 		for _, g in ipairs(groups) do
