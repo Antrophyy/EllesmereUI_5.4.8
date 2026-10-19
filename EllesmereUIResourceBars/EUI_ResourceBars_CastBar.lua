@@ -242,6 +242,11 @@ end
 local function RestoreFill()
 	local c = CastCfg()
 	local r, g, b = FillColor(c)
+	-- Uninterruptible Color Override: a cast that cannot be interrupted fills
+	-- in its own colour. Out of Range Gray still paints over it.
+	if cb.uninterruptible and c.uninterruptibleOverride then
+		r, g, b = c.uninterruptibleR or 0.5, c.uninterruptibleG or 0.5, c.uninterruptibleB or 0.5
+	end
 	P.ApplyFill(cb.bar:GetStatusBarTexture(), c, r, g, b, (c.fillOpacity or 100) / 100)
 	cb.rangeOut = nil
 end
@@ -275,7 +280,8 @@ local function ShowIdle()
 	cb.casting, cb.channeling = false, false
 	cb.auraChannel = nil
 	cb.bar:SetValue(0)
-	if cb.rangeOut then
+	if cb.rangeOut or cb.uninterruptible then
+		cb.uninterruptible = nil
 		RestoreFill()
 	end
 	cb.nameText:SetText("")
@@ -353,15 +359,29 @@ local function SetIcon(texture)
 	end
 end
 
+-- Repaints the fill when a cast's interruptible state changes (cast start and
+-- UNIT_SPELLCAST_(NOT_)INTERRUPTIBLE). Only matters with the override on.
+local function SetUninterruptible(flag)
+	flag = flag and true or nil
+	if cb.uninterruptible == flag then
+		return
+	end
+	cb.uninterruptible = flag
+	if CastCfg().uninterruptibleOverride and not cb.rangeOut then
+		RestoreFill()
+	end
+end
+
 local function OnCastStart()
 	local c = CastCfg()
 	if not c.enabled or not cb then
 		return
 	end
-	local name, _, text, texture, startMS, endMS, _, castID = UnitCastingInfo("player")
+	local name, _, text, texture, startMS, endMS, _, castID, notInterruptible = UnitCastingInfo("player")
 	if not name then
 		return
 	end
+	SetUninterruptible(notInterruptible)
 	cb.casting, cb.channeling = true, false
 	cb.castID = castID
 	cb.startTime, cb.endTime = startMS / 1000, endMS / 1000
@@ -380,10 +400,11 @@ local function OnChannelStart(spellID)
 	if not c.enabled or not cb then
 		return
 	end
-	local name, _, text, texture, startMS, endMS = UnitChannelInfo("player")
+	local name, _, text, texture, startMS, endMS, _, notInterruptible = UnitChannelInfo("player")
 	if not name then
 		return
 	end
+	SetUninterruptible(notInterruptible)
 	cb.casting, cb.channeling = false, true
 	cb.auraChannel = nil
 	cb.castID = nil
@@ -888,6 +909,10 @@ events:SetScript("OnEvent", function(self, event, unit, name, rank, lineID, spel
 		if cb.casting and (not cb.castID or not lineID or lineID == cb.castID) then
 			ShowIdle()
 		end
+	elseif event == "UNIT_SPELLCAST_INTERRUPTIBLE" or event == "UNIT_SPELLCAST_NOT_INTERRUPTIBLE" then
+		if cb.casting or cb.channeling then
+			SetUninterruptible(event == "UNIT_SPELLCAST_NOT_INTERRUPTIBLE")
+		end
 	elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
 		OnChannelStart(spellID)
 	elseif event == "UNIT_SPELLCAST_CHANNEL_UPDATE" then
@@ -909,7 +934,8 @@ function ERB.RegisterCastEvents()
 	for _, e in ipairs({ "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_STOP", "UNIT_SPELLCAST_FAILED",
 		"UNIT_SPELLCAST_INTERRUPTED", "UNIT_SPELLCAST_DELAYED", "UNIT_SPELLCAST_CHANNEL_START",
 		"UNIT_SPELLCAST_CHANNEL_UPDATE", "UNIT_SPELLCAST_CHANNEL_STOP", "UNIT_SPELLCAST_SENT",
-		"UNIT_SPELLCAST_SUCCEEDED", "SPELL_UPDATE_COOLDOWN", "PLAYER_ENTERING_WORLD", "UNIT_AURA" }) do
+		"UNIT_SPELLCAST_SUCCEEDED", "SPELL_UPDATE_COOLDOWN", "PLAYER_ENTERING_WORLD", "UNIT_AURA",
+		"UNIT_SPELLCAST_INTERRUPTIBLE", "UNIT_SPELLCAST_NOT_INTERRUPTIBLE" }) do
 		pcall(events.RegisterEvent, events, e)
 	end
 end

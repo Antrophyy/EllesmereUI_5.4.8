@@ -227,6 +227,8 @@ local DEFAULTS = {
 			showGCDBoundary = false,
 			gcdBoundaryR = 1.0, gcdBoundaryG = 0.82, gcdBoundaryB = 0.0, gcdBoundaryA = 0.95,
 			outOfRangeGray = false,
+			uninterruptibleOverride = false,
+			uninterruptibleR = 0.5, uninterruptibleG = 0.5, uninterruptibleB = 0.5,
 			showTotalDuration = false,
 			latencyEnabled = false,
 			latencyShowText = false,

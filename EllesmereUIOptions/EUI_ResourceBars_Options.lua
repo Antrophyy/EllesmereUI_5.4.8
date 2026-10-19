@@ -1463,6 +1463,12 @@ local function BuildCastBar(p)
 		  get = Get(CB, "gradientDir", "HORIZONTAL"), set = Set(CB, "gradientDir") },
 		{ type = "toggle", label = "Gray When Out of Range", tip = "Grays the fill while your target is out of range of the spell being cast.",
 		  get = function() return CB().outOfRangeGray == true end, set = Set(CB, "outOfRangeGray") },
+		{ type = "toggle", label = "Uninterruptible Color Override", tip = "Casts that cannot be interrupted fill in their own color.",
+		  get = function() return CB().uninterruptibleOverride == true end, set = Set(CB, "uninterruptibleOverride") },
+		{ type = "color", label = "Uninterruptible Color",
+		  get = function() local c = CB(); return c.uninterruptibleR or 0.5, c.uninterruptibleG or 0.5, c.uninterruptibleB or 0.5 end,
+		  set = function(r, g, b) local c = CB(); c.uninterruptibleR, c.uninterruptibleG, c.uninterruptibleB = r, g, b end,
+		  disabled = function() return not CB().uninterruptibleOverride end },
 	}, { disabled = Off, disabledTip = req })
 	p:Dropdown("Bar Texture", nil, TextureItems, Get(CB, "texture", "none"),
 		function() return ERB.TextureLabel(CB().texture) end, Set(CB, "texture"),
