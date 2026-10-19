@@ -53,12 +53,37 @@ local function CreatePortrait(frame)
 	p.ring:Hide()
 	p.border = UF.CreateBorder(p, p, true)
 	p.border:SetShown(false)
-	-- Cast icon shown over the portrait (Cast Icon > Show Icon on Portrait).
-	p.castIcon = p:CreateTexture(nil, "OVERLAY", nil, 2)
-	p.castIcon:SetAllPoints()
-	p.castIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-	p.castIcon:Hide()
+	-- Cast icon shown over the portrait (Cast Icon > Show Icon on Portrait). Its
+	-- own frame sits over a 3D portrait model; while it shows, the ring, outer
+	-- ring and inner shadow move to a layer above it, so the icon does not
+	-- cover the portrait's decoration.
+	local ci = CreateFrame("Frame", nil, p)
+	ci:SetAllPoints()
+	ci:SetFrameLevel(p:GetFrameLevel() + 2)
+	ci.tex = ci:CreateTexture(nil, "ARTWORK")
+	ci.tex:SetAllPoints()
+	ci.tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	function ci:SetTexture(texture) self.tex:SetTexture(texture) end
+	ci:Hide()
+	ci:SetScript("OnShow", function() UF.PortraitDecorAbove(p, true) end)
+	ci:SetScript("OnHide", function() UF.PortraitDecorAbove(p, false) end)
+	p.castIcon = ci
 	frame.Portrait = p
+end
+
+function UF.PortraitDecorAbove(p, on)
+	if on and not p.decor then
+		p.decor = CreateFrame("Frame", nil, p)
+		p.decor:SetAllPoints()
+		p.decor:SetFrameLevel(p:GetFrameLevel() + 3)
+	end
+	if not p.decor then
+		return
+	end
+	local parent = on and p.decor or p
+	for _, key in ipairs({ "ring", "outerRing", "innerShadow" }) do
+		if p[key] then p[key]:SetParent(parent) end
+	end
 end
 
 local function EnsureModel(p)
@@ -884,7 +909,10 @@ local function LayoutCastbar(frame, s, frameW)
 		end
 	end
 	Place(holder.time, durSide, s.castDurationSize or 10, s.castDurationX or 0, s.castDurationY or 0, s.castDurationColor)
-	holder.time:SetWidth(timerW)
+	-- The box is wider than the room it reserves (timerW), up to half the bar:
+	-- the countdown sits at the anchored edge and a pushback's added time
+	-- ("1.5+0.50") fits instead of being cut off.
+	holder.time:SetWidth(max(timerW * 2.5, (width - (showIcon and c.iconInWidth and height or 0)) * 0.5))
 	local targetX = (durSide == "right" and targetSide == "right") and (-3 - timerW) or -3
 	Place(holder.target, targetSide, s.castSpellTargetSize or 11, s.castSpellTargetX or 0, s.castSpellTargetY or 0, s.castSpellTargetColor, targetX)
 	Place(holder.name, nameSide, s.castSpellNameSize or 11, s.castSpellNameX or 0, s.castSpellNameY or 1, s.castSpellNameColor)
