@@ -350,13 +350,33 @@ local function BuildBags(p)
 
 	if anyGrid then
 		p:Section("Grid View")
-		p:Toggle("Show Item Level", "Display item levels on equipment items in the inventory.",
-			function() return P().showItemlevelInBags ~= false end,
+		-- A view over showItemlevelInBags (false = Never) and
+		-- itemlevelUseCustomColor (Custom Colored).
+		local ILVL_MODES = { { "never", "Never" }, { "default", "Default Colors" }, { "custom", "Custom Colored" } }
+		local function IlvlMode()
+			if P().showItemlevelInBags == false then return "never" end
+			return P().itemlevelUseCustomColor and "custom" or "default"
+		end
+		p:Dropdown("Show Item Level", "Display item levels on equipment items in the inventory, in their usual colors or in one color of your choice.",
+			Items(ILVL_MODES),
+			IlvlMode,
+			function() return Label(ILVL_MODES, IlvlMode()) end,
 			function(v)
-				P().showItemlevelInBags = v
+				local pr = P()
+				pr.showItemlevelInBags = v ~= "never"
+				if v ~= "never" then pr.itemlevelUseCustomColor = v == "custom" end
+				-- The first Custom Colored pick starts from white.
+				if v == "custom" and not pr.itemlevelCustomColor then
+					pr.itemlevelCustomColor = { r = 1, g = 1, b = 1 }
+				end
 				RefreshBags()
+				RefreshBank()
 			end)
 		p:Cog("Item Level Options", {
+			{ type = "color", label = "Item Level Color",
+			  get = function() local c = P().itemlevelCustomColor or {}; return c.r or 1, c.g or 1, c.b or 1 end,
+			  set = function(r, g, b) P().itemlevelCustomColor = { r = r, g = g, b = b }; RefreshBags(); RefreshBank() end,
+			  disabled = function() return IlvlMode() ~= "custom" end },
 			{ type = "toggle", label = "Show Gear Track Rank",
 			  tip = "5.4.8: the item upgrade level (1/2, 2/2) of upgraded gear, in the stack count corner.",
 			  get = function() return P().bagShowTrackRank or false end,
