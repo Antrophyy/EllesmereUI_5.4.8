@@ -506,6 +506,13 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 				local c = bd.pandemicGlowMode == "custom" and bd.pandemicGlowColor
 				if c then gr, gg, gb = c.r or 1, c.g or 1, c.b or 0 else gr, gg, gb = 1, 1, 0 end
 			end
+			-- Show When Missing hides the active buff; Also Show Below brings
+			-- it back for its last N seconds (retail missingShowBelow).
+			if ss and ss.alwaysShow == "missing" then
+				local below = tonumber(ss.missingShowBelow)
+				local left = dur and dur > 0 and (start + dur - now) or nil
+				if not (below and below > 0 and left and left <= below) then show = false end
+			end
 			if not f._wasActive and ss and ss.buffActiveSoundKey then CDM.PlaySoundKey(ss.buffActiveSoundKey) end
 			f._wasActive = true
 		else

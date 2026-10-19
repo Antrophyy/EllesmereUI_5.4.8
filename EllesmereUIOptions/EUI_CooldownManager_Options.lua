@@ -837,6 +837,8 @@ function LP.SpellMenuRows(bd, idx)
 		rows[#rows + 1] = LP.SubRow(bd, id, "Always Show Buff", "alwaysShow", function()
 			return { { val = nil, label = "Default" }, { val = "on", label = "Show" }, { val = "off", label = "Hide" }, { val = "missing", label = "Show When Missing" } }
 		end)
+		rows[#rows + 1] = LP.NumberRow(bd, id, "Also Show Below", "missingShowBelow",
+			"With Show When Missing, the active buff also shows for its last this many seconds. Empty turns it off.")
 		rows[#rows + 1] = LP.SubRow(bd, id, "Desaturate Inactive", "desatInactive", function()
 			return { { val = nil, label = "Default" }, { val = "on", label = "Desaturate" }, { val = "off", label = "Full Color" } }
 		end)
