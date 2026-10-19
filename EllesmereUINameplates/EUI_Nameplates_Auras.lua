@@ -230,7 +230,41 @@ local function CreateIcon(row)
 	b.glowFrame:SetFrameLevel(b.cd:GetFrameLevel() + 1)   -- under the text
 	b.glow = P.CreateEdges(b.glowFrame, b.glowFrame, "OVERLAY", 7)
 	b.glowFrame:Hide()
+	-- Host for the shared glow styles (Dispel Glow Style other than Border).
+	b.styleGlow = CreateFrame("Frame", nil, b)
+	b.styleGlow:SetAllPoints()
+	b.styleGlow:SetFrameLevel(b.cd:GetFrameLevel() + 1)
+	b.styleGlow:SetAlpha(0)
 	return b
+end
+
+-------------------------------------------------------------------------------
+--  Dispel Glow Style: 0 none, 1-7 the shared glow styles (Pixel Glow, Action
+--  Button Glow, Auto-Cast Shine, Shape Glow, GCD, Modern WoW Glow, Classic
+--  WoW Glow), 9 Border (the edge border). Returns nil for Border.
+-------------------------------------------------------------------------------
+P.DISPEL_GLOW_BORDER = 9
+function P.DispelGlowStyle(p)
+	local s = tonumber(p.dispelGlowStyle or defaults.dispelGlowStyle) or P.DISPEL_GLOW_BORDER
+	local G = EllesmereUI.Glows
+	if s < 1 or s > 7 or not G or not G.STYLES[s] then return nil end
+	return s
+end
+
+local function StartStyleGlow(b, style, c, p)
+	local w, h = b:GetWidth(), b:GetHeight()
+	local sig = format("%d:%.2f%.2f%.2f:%d:%d:%d", style, c.r, c.g, c.b, w, h, p.dispelGlowThickness or 1)
+	if b._styleGlowSig == sig then return end
+	b._styleGlowSig = sig
+	b.styleGlow:Show()
+	EllesmereUI.Glows.StartGlow(b.styleGlow, style, w, c.r, c.g, c.b,
+		{ th = p.dispelGlowThickness or 1, N = p.dispelGlowLines, period = p.dispelGlowSpeed }, h)
+end
+
+local function StopStyleGlow(b)
+	if not b._styleGlowSig then return end
+	b._styleGlowSig = nil
+	EllesmereUI.Glows.StopGlow(b.styleGlow)
 end
 
 local function ApplyIconStyle(b, kind, w, h)
@@ -475,17 +509,25 @@ local function Fill(plate, row, list, cap)
 				end
 				-- Glows: pandemic (own debuffs in their last 30%) and dispel
 				-- (purgeable enemy buffs).
-				local glow
+				-- The dispel glow wears the Dispel Glow Style: Border is the
+				-- edge border, any other a shared glow style.
+				local glow, style
 				if kind == "debuffs" and p.pandemicGlow and a.duration > 0 and a.expires > 0
 					and (a.expires - now) <= a.duration * 0.3 then
 					glow = p.pandemicGlowColor or defaults.pandemicGlowColor
 				elseif kind == "buffs" and p.dispelGlow and (a.stealable or a.dtype == "Magic") then
 					glow = p.dispelGlowColor or defaults.dispelGlowColor
+					style = P.DispelGlowStyle(p)
 				end
-				if glow then
+				if glow and style then
+					b.glowFrame:Hide()
+					StartStyleGlow(b, style, glow, p)
+				elseif glow then
+					StopStyleGlow(b)
 					P.LayoutEdges(b.glow, p.pandemicGlowThickness or 1, glow.r, glow.g, glow.b, 1)
 					b.glowFrame:Show()
 				else
+					StopStyleGlow(b)
 					b.glowFrame:Hide()
 				end
 				b:Show()
@@ -494,6 +536,7 @@ local function Fill(plate, row, list, cap)
 	end
 	for i = n + 1, #row.icons do
 		row.icons[i]:Hide()
+		StopStyleGlow(row.icons[i])
 		row.icons[i].aura = nil
 	end
 	row.count = n

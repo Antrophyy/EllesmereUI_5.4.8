@@ -2002,10 +2002,13 @@ local function BuildGeneral(p)
 	Drop(p, "Enemy Buff Filter",
 		"Which enemy buffs show on nameplates. Important shows the buffs Blizzard flags for enemy nameplates plus anything dispellable; Only Dispellable shows just the buffs that can be dispelled, purged or soothed; Show All shows every buff. With a Dispel Glow style set, every dispellable buff shown glows.",
 		{ { "important", "Important" }, { "dispellable", "Only Dispellable" }, { "showall", "Show All" } }, "npEnemyBuffFilter", "important")
-	local GLOW_STYLES = { { 0, "None" }, { 1, "Pixel Glow" } }
+	local GLOW_STYLES = { { 0, "None" }, { 9, "Border" }, { 1, "Pixel Glow" }, { 2, "Action Button Glow" },
+		{ 3, "Auto-Cast Shine" }, { 4, "Shape Glow" }, { 5, "GCD" }, { 6, "Modern WoW Glow" }, { 7, "Classic WoW Glow" } }
 	local function GlowStyle()
 		if Val("dispelGlow") ~= true then return 0 end
-		return 1
+		local s = tonumber(Val("dispelGlowStyle")) or 9
+		if s < 1 or s > 9 or s == 8 then s = 9 end
+		return s
 	end
 	p:Dropdown("Dispel Glow Style", nil, function() return Items(GLOW_STYLES) end, GlowStyle,
 		function() return LabelOf(GLOW_STYLES, GlowStyle()) end,
@@ -2016,6 +2019,7 @@ local function BuildGeneral(p)
 			end
 			if Val("dispelGlow") == true then
 				DB().dispelGlowStyle = v
+				RunApplyHooks()
 				return
 			end
 			ns.ShowConfirmPopup({
