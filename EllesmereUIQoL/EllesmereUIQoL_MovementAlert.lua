@@ -341,6 +341,10 @@ local function BuildEntry(spellId, override)
 	return entry
 end
 
+-- Spells shown on cooldown at the last check (the "ready" sound fires when one
+-- leaves this set).
+local readyAlertShown, readyScratch = {}, {}
+
 local function CacheMovementSpells()
 	wipe(cachedSpells)
 	local overrides = MA().spellOverrides or {}
@@ -361,6 +365,17 @@ local function CacheMovementSpells()
 			local e = BuildEntry(spellId, override)
 			if e then cachedSpells[#cachedSpells + 1] = e end
 		end
+	end
+	-- Carry the on-cooldown set over to the new list and drop the spells it no
+	-- longer tracks, so a form or spec change never sounds "ready" for a spell
+	-- that is still on cooldown.
+	if next(readyAlertShown) then
+		local carried = readyScratch
+		wipe(carried)
+		for _, e in ipairs(cachedSpells) do
+			if readyAlertShown[e.spellId] then carried[e.spellId] = e end
+		end
+		readyAlertShown, readyScratch = carried, readyAlertShown
 	end
 end
 M.CacheMovementSpells = CacheMovementSpells
@@ -457,7 +472,6 @@ local function ShowSlot(index, entry, rem, total)
 end
 
 local inCombat = false
-local readyAlertShown, readyScratch = {}, {}
 local previewEnds  -- options preview (nil = off)
 
 local pollFrame = CreateFrame("Frame")
