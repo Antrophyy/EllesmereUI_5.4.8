@@ -856,6 +856,14 @@ WSkin.RegisterWindow({
 					ns._Merchant_RefreshItemLevels()
 				end
 			end)
+		p:Toggle("Bulk Buy", "Shift-click a vendor item to buy any amount at once, past a single stack. Items that cost currency or other items, and large gold totals, ask for confirmation first.",
+			function() return BS.DB().merchantBulkBuy == true end,
+			function(v)
+				BS.DB().merchantBulkBuy = v and true or false
+				if ns._Merchant_RefreshBulkBuy then
+					ns._Merchant_RefreshBulkBuy()
+				end
+			end)
 	end,
 })
 end
