@@ -1405,6 +1405,47 @@ local function Skin_Macros()
 	end
 end
 
+-- Equipment Manager set popup (GearManagerDialogPopup, PaperDollFrame): the
+-- same name-and-icon picker as the macro popup. It follows the character
+-- sheet's style ("charsheet" key), so Blizz Default and Off keep it stock.
+local _gearHooked = false
+local function Skin_GearPopup()
+	local p = _G.GearManagerDialogPopup
+	if not p or BS.Forbidden(p) then
+		return
+	end
+	WSkin.Panel(p)
+	local eb = _G.GearManagerDialogPopupEditBox
+	if eb then
+		WSkin.EditBox(eb, { inset = { -6, -2, 0, -2 } })
+	end
+	H.Btn(_G.GearManagerDialogPopupOkay)
+	H.Btn(_G.GearManagerDialogPopupCancel)
+	H.ScrollArt("GearManagerDialogPopupScrollFrame")
+	local regions = { p:GetRegions() }
+	for i = 1, #regions do
+		local r = regions[i]
+		if r and r.IsObjectType and r:IsObjectType("FontString") then
+			H.White(r)
+		end
+	end
+	MC.Grid("GearManagerDialogPopupButton")
+	if not _gearHooked then
+		_gearHooked = true
+		WSkin.HookShow(p, WSkin.Debounce(function()
+			if p:IsVisible() then
+				Skin_GearPopup()
+			end
+		end))
+	end
+end
+
+WSkin.RegisterWindow({
+	key = "charsheet",
+	elvui = "character",
+	apply = Skin_GearPopup,
+})
+
 WSkin.RegisterWindow({
 	key = "macros",
 	label = "Macros",
