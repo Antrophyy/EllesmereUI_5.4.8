@@ -20,7 +20,7 @@ local GROUPS = {
 			{ label = "Nameplates", addon = "EllesmereUINameplates" },
 			{ label = "Unit Frames", addon = "EllesmereUIUnitFrames" },
 			{ label = "Cooldown Manager", addon = "EllesmereUICooldownManager" },
-			{ label = "Raid Frames", addon = "EllesmereUIRaidFrames" },
+			{ label = "Raid & Party Frames", addon = "EllesmereUIRaidFrames" },
 			{ label = "Resource Bars", addon = "EllesmereUIResourceBars" },
 		},
 	},

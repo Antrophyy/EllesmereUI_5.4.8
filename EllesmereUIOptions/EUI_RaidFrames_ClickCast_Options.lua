@@ -421,7 +421,7 @@ function ns.RFO_BuildClickCastPage(p)
 	p:Toggle("Trigger Bindings on Down", "Run bindings when the mouse button or key goes down instead of up.",
 		function() return cc.downClick end,
 		function(v) RF.CC_SetDownClick(v) end, Off)
-	local MF = { { key = "all", text = "All Unit Frames" }, { key = "rf", text = "EUI Raid Frames" } }
+	local MF = { { key = "all", text = "All Unit Frames" }, { key = "rf", text = "EUI Raid & Party Frames" } }
 	p:Dropdown("Mouseover Frames", "Which frames use the frame bindings: only the EllesmereUI raid and party frames, or every unit frame that supports click casting (EllesmereUI unit frames and others).",
 		function() return ns.OptionsUtil.KeyItems(MF) end,
 		function() return cc.allFrames and "all" or "rf" end,

@@ -48,7 +48,7 @@ local RESOURCE_ITEMS = {
 -- module that is off registers no provider: no row for it).
 local DM_ITEMS = {
 	{ key = "unitFrames",   label = "Unit Frames" },
-	{ key = "raidFrames",   label = "Raid Frames" },
+	{ key = "raidFrames",   label = "Raid & Party Frames" },
 	{ key = "resourceBars", label = "Class Resource Bar" },
 }
 

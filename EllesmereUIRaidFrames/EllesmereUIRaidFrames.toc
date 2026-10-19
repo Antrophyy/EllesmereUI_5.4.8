@@ -1,6 +1,6 @@
 ## Interface: 50400
-## Title: |cff0cd29fEllesmereUI|r Raid Frames
-## Notes: Incredibly light performance, modern raid frames with endless flexibility (EllesmereUI Raid Frames, 5.4.8 port). /erf for settings.
+## Title: |cff0cd29fEllesmereUI|r Raid & Party Frames
+## Notes: Incredibly light performance, modern raid and party frames with endless flexibility (EllesmereUI Raid & Party Frames, 5.4.8 port). /erf for settings.
 ## Author: EllesmereUI port
 ## Version: 3.17.0
 ## Dependencies: EllesmereUI

@@ -927,7 +927,7 @@ end
 local function Build(p)
 	if not (RF() and P()) then
 		p:Section("Debuff Manager")
-		p:Paragraph("Raid Frames are not loaded.")
+		p:Paragraph("Raid & Party Frames are not loaded.")
 		return
 	end
 	local e = Selected()

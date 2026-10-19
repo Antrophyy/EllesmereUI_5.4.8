@@ -71,7 +71,7 @@ ns.FONT_CYRILLIC = {
 ns.FONT_MODULES = {
 	{ key = "actionBars", folder = "EllesmereUIActionBars", display = "Action Bars" },
 	{ key = "unitFrames", folder = "EllesmereUIUnitFrames", display = "Unit Frames" },
-	{ key = "raidFrames", folder = "EllesmereUIRaidFrames", display = "Raid Frames" },
+	{ key = "raidFrames", folder = "EllesmereUIRaidFrames", display = "Raid & Party Frames" },
 	{ key = "nameplates", folder = "EllesmereUINameplates", display = "Nameplates" },
 	{ key = "resourceBars", folder = "EllesmereUIResourceBars", display = "Resource Bars" },
 	{ key = "blizzardSkin", folder = "EllesmereUIBlizzardSkin", display = "Blizzard Skins+" },

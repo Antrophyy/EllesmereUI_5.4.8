@@ -2251,7 +2251,7 @@ function RF.RegisterWithUnlockMode()
 		ns.MakeUnlockElement({
 			key = "RF_RaidFrames",
 			label = "Raid Frames",
-			group = "Raid Frames",
+			group = "Raid & Party Frames",
 			order = 500,
 			noResize = true,
 			noInitHook = true,
@@ -2280,7 +2280,7 @@ function RF.RegisterWithUnlockMode()
 		ns.MakeUnlockElement({
 			key = "RF_PartyFrames",
 			label = "Party Frames",
-			group = "Raid Frames",
+			group = "Raid & Party Frames",
 			order = 501,
 			noResize = true,
 			getFrame = function()

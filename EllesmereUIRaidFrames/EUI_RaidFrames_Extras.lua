@@ -3076,7 +3076,7 @@ HM.RegisterUnlock = function()
 		ns.MakeUnlockElement({
 			key = "RF_HealerMana",
 			label = "Healer Mana Display",
-			group = "Raid Frames",
+			group = "Raid & Party Frames",
 			order = 502,
 			noResize = true,
 			isHidden = function()

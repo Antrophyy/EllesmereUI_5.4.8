@@ -195,7 +195,7 @@ local ADDONS = {
 	{ folder = "EllesmereUIActionBars", display = "Action Bars", svName = "EllesmereUIActionBarsDB" },
 	{ folder = "EllesmereUINameplates", display = "Nameplates", svName = "EllesmereUINameplatesDB" },
 	{ folder = "EllesmereUIUnitFrames", display = "Unit Frames", svName = "EllesmereUIUnitFramesDB" },
-	{ folder = "EllesmereUIRaidFrames", display = "Raid Frames", svName = "EllesmereUIRaidFramesDB" },
+	{ folder = "EllesmereUIRaidFrames", display = "Raid & Party Frames", svName = "EllesmereUIRaidFramesDB" },
 	{ folder = "EllesmereUIResourceBars", display = "Resource Bars", svName = "EllesmereUIResourceBarsDB" },
 	{ folder = "EllesmereUIQoL", display = "Quality of Life", svName = "EllesmereUIQoLDB" },
 	{ folder = "EllesmereUIBags", display = "Bags", svName = "EllesmereUIBagsDB" },

@@ -2225,7 +2225,7 @@ function O.BuildExtras(p, C)
 	p:Slider("Out of Range Alpha", nil, 10, 100, 1,
 		function() return floor(C.Val("oorAlpha", 0.4) * 100 + 0.5) end,
 		function(v) C.Set("oorAlpha", v / 100) end)
-	p:Dropdown("Show Raid Frames Tooltip", "Controls when the tooltip appears as you hover a raid or party frame",
+	p:Dropdown("Show Raid & Party Frames Tooltip", "Controls when the tooltip appears as you hover a raid or party frame",
 		function() return Items(O.TOOLTIP_MODE) end,
 		function() return O.TooltipMode(C) end,
 		function() return LabelOf(O.TOOLTIP_MODE, O.TooltipMode(C)) end,
@@ -2412,7 +2412,7 @@ function O.BuildRaidSync(p, C)
 		items[#items + 1] = { value = sec, name = RF._PARTY_SECTION_LABELS[sec] or sec }
 	end
 	p:MultiSelect("Use Raid Settings For",
-		"Checked sections use the Raid Frames settings. Uncheck a section to give the party frames their own settings for it.",
+		"Checked sections use the Raid tab settings. Uncheck a section to give the party frames their own settings for it.",
 		function() return items end, Synced,
 		function(k)
 			if Synced(k) then
@@ -2446,7 +2446,7 @@ function O.BuildRaidSync(p, C)
 		local prof = P()
 		return prof.showWhenSolo and not prof.partyShowWhenSolo
 	end
-	p:Toggle("Show When Solo", "Show the party frames when you are not in a group. Not available while only the Raid Frames Show When Solo is on.",
+	p:Toggle("Show When Solo", "Show the party frames when you are not in a group. Not available while only the Raid tab Show When Solo is on.",
 		function() return P().partyShowWhenSolo and true or false end,
 		function(v) P().partyShowWhenSolo = v end, SoloOff)
 	p:Cog("Show When Solo", {
@@ -2454,7 +2454,7 @@ function O.BuildRaidSync(p, C)
 			tip = "When you are solo, center the player frame on the party frame instead of anchoring it at the top.",
 			get = function() return P().partyCenterWhenSolo or false end,
 			set = function(v) P().partyCenterWhenSolo = v end },
-	}, { disabled = SoloOff, disabledTip = "Not available while only the Raid Frames Show When Solo is on." })
+	}, { disabled = SoloOff, disabledTip = "Not available while only the Raid tab Show When Solo is on." })
 end
 
 O.PARTY_GROWTH = { { "default", "Default" }, { "reversed", "Reversed" }, { "centered", "Centered" } }
@@ -2931,10 +2931,10 @@ end
 ---------------------------------------------------------------------------
 ns.RegisterSettingsModule({
 	key = "raidFrames",
-	name = "Raid Frames",
+	name = "Raid & Party Frames",
 	group = "Core Addons",
 	tabs = {
-		{ key = "frames", name = "Raid Frames", description = "Configure raid frame appearance and behavior.",
+		{ key = "frames", name = "Raid", description = "Configure raid frame appearance and behavior.",
 			build = O.BuildRaidPage, header = O.PreviewHeader, pageKey = O.RaidPageKey },
 		{ key = "party", name = "Party Frames", description = "Configure party frame appearance and behavior.",
 			build = O.BuildPartyPage, header = O.PreviewHeader, pageKey = O.PartyPageKey },
@@ -2943,7 +2943,7 @@ ns.RegisterSettingsModule({
 		O.ManagerTab("clickCast", "Click Casting", "Cast spells by clicking raid and party frames.", "ClickCast"),
 	},
 	reset = function() ERF:ResetProfile() end,
-	resetTip = "Set all Raid Frames settings back to default. Frame positions are reset too.",
+	resetTip = "Set all Raid & Party Frames settings back to default. Frame positions are reset too.",
 	onEnter = function()
 		O.view.entered = true
 		O.UpdatePreview()
