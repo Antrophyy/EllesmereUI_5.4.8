@@ -215,15 +215,18 @@ bankSearch:SetScript("OnEscapePressed", function(self)
     self:ClearFocus()
     C_Container.SetItemSearch("")
 end)
-bankSearch:SetScript("OnTextChanged", function(self)
-    local text = self:GetText()
-    searchPlaceholder:SetShown(text == "")
-    searchClear:SetShown(text ~= "")
+local bankSearchChanged = EUI_Bags.WatchSearchBox(bankSearch, function(text)
     C_Container.SetItemSearch(text)
     if EUI_Bank:IsVisible() then EUI_Bank:RefreshBank() end
     if EUI_Bags and EUI_Bags:IsVisible() and EUI_Bags.RefreshInventory then
         EUI_Bags:RefreshInventory()
     end
+end)
+bankSearch:SetScript("OnTextChanged", function(self, userInput)
+    local text = self:GetText()
+    searchPlaceholder:SetShown(text == "")
+    searchClear:SetShown(text ~= "")
+    bankSearchChanged(userInput)
 end)
 
 -- Sort button

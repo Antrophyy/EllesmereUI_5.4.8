@@ -9,6 +9,34 @@ EllesmereUI._ModuleNS["EllesmereUIBags"] = ns  -- LOD options files read this mo
 EUI_Bags = CreateFrame("Frame", "EUI_MainBagFrame", UIParent)
 EUI_Bags:SetToplevel(true)
 EUI_Bags:Hide()
+
+-- Search box typing applies once the typing pauses (retail 9.6
+-- WatchSearchBox): every keystroke used to re-filter and repaint the bags
+-- and an open bank. Text set by code (clear, Escape) applies at once.
+local SEARCH_DEBOUNCE = 0.1
+function EUI_Bags.WatchSearchBox(box, apply)
+    local armed, lastKeyAt = false, 0
+    local function flush()
+        local wait = lastKeyAt + SEARCH_DEBOUNCE - GetTime()
+        if wait > 0 then
+            C_Timer.After(wait, flush)
+            return
+        end
+        armed = false
+        apply(box:GetText())
+    end
+    return function(userInput)
+        if userInput then
+            lastKeyAt = GetTime()
+            if not armed then
+                armed = true
+                C_Timer.After(SEARCH_DEBOUNCE, flush)
+            end
+            return
+        end
+        apply(box:GetText())
+    end
+end
 -- Auto-size state: reset on close (next open sizes from its first/active tab);
 -- while open it only grows, never shrinks.
 EUI_Bags:HookScript("OnHide", function(self)
@@ -1707,10 +1735,7 @@ local function CreateHeader()
         self:ClearFocus()
         C_Container.SetItemSearch("")
     end)
-    search:SetScript("OnTextChanged", function(self)
-        local text = self:GetText()
-        placeholder:SetShown(text == "")
-        clear:SetShown(text ~= "")
+    local searchChanged = EUI_Bags.WatchSearchBox(search, function(text)
         C_Container.SetItemSearch(text)
         if EUI_Bags:IsVisible() then EUI_Bags:RefreshInventory() end
         -- SetItemSearch is client-global and the bank reads isFiltered too:
@@ -1719,6 +1744,12 @@ local function CreateHeader()
         if EUI_Bank and EUI_Bank:IsVisible() and EUI_Bank.RefreshBank then
             EUI_Bank:RefreshBank()
         end
+    end)
+    search:SetScript("OnTextChanged", function(self, userInput)
+        local text = self:GetText()
+        placeholder:SetShown(text == "")
+        clear:SetShown(text ~= "")
+        searchChanged(userInput)
     end)
 
     local close = CreateFrame("Button", nil, header)
