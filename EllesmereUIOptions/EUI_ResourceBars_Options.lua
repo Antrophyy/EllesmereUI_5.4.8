@@ -1686,6 +1686,20 @@ local function BuildSwing(p)
 	p:Slider("Text Size", nil, 6, 24, 1, Get(SW, "textSize", 10), Set(SW, "textSize"), Off)
 	p:Toggle("Show Time", "The time left until the next swing.", function() return SW().showTime ~= false end, Set(SW, "showTime"), Off)
 	p:Toggle("Show Weapon Label", nil, function() return SW().showLabel == true end, Set(SW, "showLabel"), Off)
+	p:Toggle("Show Spark", "A spark on each bar's moving edge.", function() return SW().showSpark == true end, Set(SW, "showSpark"), Off)
+	local function SparkColor(label, key)
+		return { type = "color", label = label,
+			get = function() local c = SW()[key] or {}; return c.r or 1, c.g or 1, c.b or 1 end,
+			set = function(r, g, b) SW()[key] = { r = r, g = g, b = b } end }
+	end
+	p:Cog("Spark", {
+		{ type = "slider", label = "Width", min = 1, max = 32, step = 1, get = Get(SW, "sparkWidth", 8), set = Set(SW, "sparkWidth") },
+		{ type = "slider", label = "Overhang", tip = "How far the spark reaches past the top and bottom of the bar.",
+		  min = 0, max = 20, step = 1, get = Get(SW, "sparkOverhang", 0), set = Set(SW, "sparkOverhang") },
+		SparkColor("Main Hand Color", "mhSparkColor"),
+		SparkColor("Off Hand Color", "ohSparkColor"),
+		SparkColor("Ranged Color", "rangedSparkColor"),
+	}, { disabled = function() return Off() or not SW().showSpark end })
 	p:Toggle("Hide When Idle", "Hide the bars while no swing is running.", function() return SW().hideWhenIdle ~= false end,
 		Set(SW, "hideWhenIdle"), Off)
 	p:Blank()

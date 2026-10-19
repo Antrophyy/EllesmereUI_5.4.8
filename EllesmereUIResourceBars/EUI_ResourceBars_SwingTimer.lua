@@ -8,7 +8,8 @@
 --  UnitRangedDamage. Parry haste and swing resets are not predicted.
 --  Settings (profile.swingTimer): enabled, width, height, spacing,
 --  combineHands (one row, main hand), showTime, showLabel, hideWhenIdle,
---  textSize, mhColor / ohColor / rangedColor, bgColor, unlockPos.
+--  textSize, mhColor / ohColor / rangedColor, bgColor, unlockPos, showSpark,
+--  sparkWidth, sparkOverhang, mhSparkColor / ohSparkColor / rangedSparkColor.
 -------------------------------------------------------------------------------
 local addonName, P = ...
 local ns = P.ns
@@ -24,6 +25,7 @@ local DEFAULT_COLORS = {
 	ranged = { r = 0.4, g = 0.8, b = 0.4 },
 }
 local AUTO_SHOT = 75
+local SPARK_TEX = P.MEDIA .. "cast_spark"
 
 local holder
 local rows = {}
@@ -68,6 +70,15 @@ local function Row(key)
 	r.time:SetPoint("RIGHT", r.sb, "RIGHT", -2, 0)
 	r.label = P.NewText(r.sb, 10)
 	r.label:SetPoint("LEFT", r.sb, "LEFT", 2, 0)
+	-- Leading-edge spark (Show Spark), on the fill's moving edge.
+	r.sparkFrame = CreateFrame("Frame", nil, r)
+	r.sparkFrame:SetAllPoints(r.sb)
+	r.sparkFrame:SetFrameLevel(r.sb:GetFrameLevel() + 2)
+	r.spark = r.sparkFrame:CreateTexture(nil, "OVERLAY")
+	r.spark:SetTexture(SPARK_TEX)
+	r.spark:SetBlendMode("ADD")
+	r.spark:SetPoint("CENTER", r.sb:GetStatusBarTexture(), "RIGHT", 0, 0)
+	r.spark:Hide()
 	rows[key] = r
 	return r
 end
@@ -86,9 +97,11 @@ local function Paint()
 				anyRunning = true
 				r.sb:SetValue(1 - left / s.dur)
 				r.time:SetText(c.showTime ~= false and format("%.1f", left) or "")
+				r.spark:SetShown(c.showSpark == true)
 			else
 				r.sb:SetValue(ERB.unlockActive and 0.6 or 0)
 				r.time:SetText("")
+				r.spark:SetShown(c.showSpark == true and ERB.unlockActive)
 			end
 		end
 	end
@@ -135,6 +148,16 @@ function ERB.LayoutSwingTimer()
 			P.SetFont(r.time, c.textSize or 10)
 			P.SetFont(r.label, c.textSize or 10)
 			r.label:SetText(c.showLabel and LABELS[key] or "")
+			-- Spark: width, overhang past the bar's top and bottom, and its own
+			-- colour per weapon (unset: white).
+			local over = c.sparkOverhang or 0
+			r.spark:SetSize(c.sparkWidth or 8, h + 2 * over)
+			local sc = c[key .. "SparkColor"]
+			if sc then
+				r.spark:SetVertexColor(sc.r or 1, sc.g or 1, sc.b or 1, sc.a or 1)
+			else
+				r.spark:SetVertexColor(1, 1, 1, 1)
+			end
 			r:Show()
 			n = n + 1
 		else

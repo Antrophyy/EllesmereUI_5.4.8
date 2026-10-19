@@ -261,6 +261,7 @@ local DEFAULTS = {
 		swingTimer = {
 			enabled = false, width = 214, height = 6, spacing = 2,
 			combineHands = false, showTime = true, showLabel = false, hideWhenIdle = true, textSize = 10,
+			showSpark = false, sparkWidth = 8, sparkOverhang = 0,
 		},
 		totemBar = {
 			iconSize = 30,
