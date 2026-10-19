@@ -1128,7 +1128,17 @@ local function BuildDisplay(p)
 	})
 
 	TexDrop(p, "Bar Texture", nil, "healthBarTexture", BarTextureItems)
+	p:Cog("Texture Settings", {
+		{ type = "toggle", label = "Textured Background",
+		  tip = "The health bar background on enemy nameplates uses the bar texture, tinted by the Background color.",
+		  get = Get("healthTextureBg", false), set = Set("healthTextureBg") },
+	})
 	TexDrop(p, "Cast Bar Texture", nil, "castBarTexture", BarTextureItems)
+	p:Cog("Cast Texture Settings", {
+		{ type = "toggle", label = "Textured Background",
+		  tip = "The cast bar background on enemy nameplates uses the cast bar texture, tinted by the Cast Background color.",
+		  get = Get("castTextureBg", false), set = Set("castTextureBg") },
+	})
 
 	-------------------------------------------------------------------
 	p:Section("Core Positions")

@@ -562,7 +562,7 @@ local function LayoutCastBar()
 	cb.clip:SetPoint("BOTTOMRIGHT", cb, "BOTTOMRIGHT", -right, inset)
 	cb.clip:SetFrameLevel(cb:GetFrameLevel() + 1)
 	cb.bar:SetStatusBarTexture(P.TexturePath(c.texture))
-	cb.bg:SetTexture(c.bgR or 0, c.bgG or 0, c.bgB or 0, c.bgA or 0.7)
+	P.PaintBg(cb.bg, c.textureBg and (c.fillOpacity or 100) >= 100, c.texture, c.bgR or 0, c.bgG or 0, c.bgB or 0, c.bgA or 0.7)
 	RestoreFill()
 	-- Spark.
 	if c.showSpark then
@@ -815,7 +815,7 @@ local function LayoutGCDBar()
 	gb.clip:SetPoint("BOTTOMRIGHT", gb, "BOTTOMRIGHT", -inset, inset)
 	gb.clip:SetFrameLevel(gb:GetFrameLevel() + 1)
 	gb.bar:SetStatusBarTexture(P.TexturePath(g.texture))
-	gb.bg:SetTexture(g.bgR or 0, g.bgG or 0, g.bgB or 0, g.bgA or 0.7)
+	P.PaintBg(gb.bg, g.textureBg and (g.fillOpacity or 100) >= 100, g.texture, g.bgR or 0, g.bgG or 0, g.bgB or 0, g.bgA or 0.7)
 	if ori == "VERTICAL_UP" then
 		gb.bar:SetOrientation("VERTICAL")
 		gb.bar:SetRotatesTexture(true)

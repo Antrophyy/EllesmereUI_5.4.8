@@ -546,8 +546,20 @@ local function BarTextureRow(p, unit, withInherit, sync)
 			end
 			return UF.BarTexturePath(v)
 		end })
+	p:Cog("Texture Settings", {
+		{ type = "toggle", label = "Textured Background",
+		  tip = withInherit and "The power bar background uses the bar texture, tinted by its background color. While Bar Texture is Inherit, this follows the main frame."
+			or "The power bar background uses the bar texture, tinted by its background color (while the power bar's opacity is 100). The health background already draws the bar texture.",
+		  get = function() return S(unit).textureBg == true end,
+		  set = function(v) S(unit).textureBg = v end,
+		  disabled = withInherit and function() local k = S(unit).healthBarTexture; return k == nil or k == "inherit" end or nil },
+		{ type = "toggle", label = "Cast Bar Textured Background",
+		  tip = "Every unit frame cast bar background uses the bar texture, tinted by the Cast Background color (while Fill Opacity is 100).",
+		  get = function() return UF.db.castTextureBg == true end,
+		  set = function(v) UF.db.castTextureBg = v end },
+	})
 	if sync then
-		Sync(p, "Apply Bar Texture to all Frames", unit, { "healthBarTexture" })
+		Sync(p, "Apply Bar Texture to all Frames", unit, { "healthBarTexture", "textureBg" })
 	end
 end
 

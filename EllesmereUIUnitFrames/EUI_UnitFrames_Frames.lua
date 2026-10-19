@@ -324,6 +324,22 @@ function UF.BarTextureFor(frame)
 	return UF.BarTexturePath(key)
 end
 
+-- Textured Background (per-frame textureBg): the power bar background takes
+-- the bar texture, tinted by its background color (the health background
+-- already draws the bar texture). A mini or boss frame follows its main
+-- frame while its Bar Texture is Inherit.
+function UF.TextureBgOn(frame)
+	local s = UF.Settings(frame.settingsKey)
+	if not s then return false end
+	if frame.isMini or frame.isBoss then
+		local key = s.healthBarTexture
+		if key == nil or key == "inherit" then
+			return UF.Donor(frame.settingsKey).textureBg == true
+		end
+	end
+	return s.textureBg == true
+end
+
 function UF.BorderSizeFor(frame)
 	local s = UF.Settings(frame.settingsKey)
 	if frame.isMini and s.borderSizeOverride then
@@ -840,6 +856,9 @@ local function LayoutCastbar(frame, s, frameW)
 		bar:SetAllPoints(holder)
 	end
 	bar:SetStatusBarTexture(UF.BarTextureFor(frame))
+	-- Textured Background (castTextureBg): the cast background takes the bar
+	-- texture, tinted by the Cast Background color.
+	holder.bg:SetTexture((UF.db.castTextureBg and (s.castFillOpacity or 100) >= 100) and UF.BarTextureFor(frame) or UF.WHITE)
 	ApplyBarFill(bar, s.castReverseFill, false)
 	holder.uninterruptible:ClearAllPoints()
 	holder.uninterruptible:SetAllPoints(bar:GetStatusBarTexture())
@@ -1041,6 +1060,7 @@ function UF.Layout(frame)
 	health:SetStatusBarTexture(texture)
 	health.bg:SetTexture(texture)
 	frame.Power:SetStatusBarTexture(texture)
+	frame.Power.bg:SetTexture((UF.TextureBgOn(frame) and (s.powerBarOpacity or 100) >= 100) and texture or UF.WHITE)
 	ApplyBarFill(health, s.healthReverseFill, s.healthVerticalFill)
 	frame.barWidth = s.frameWidth or 181
 	frame.barTexture = texture

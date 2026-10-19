@@ -868,6 +868,10 @@ local function BuildBarDisplay(p)
 		  get = function() local x = P(); return (x.splitTex and x.primary.barTexture) or "__match" end,
 		  set = function(v) ERB.SetBarTexture(P(), "primary", v ~= "__match" and v or nil) end,
 		  labelFn = function() local x = P(); local v = x.splitTex and x.primary.barTexture; return v and ERB.TextureLabel(v) or "Match Main Texture" end },
+		{ type = "toggle", label = "Textured Background",
+		  tip = "The health, power and class resource backgrounds use the bar texture, tinted by their background color. A bar whose Fill Opacity is below 100 keeps a flat background.",
+		  get = function() return P().general.barTextureBg == true end,
+		  set = function(v) P().general.barTextureBg = v end },
 	})
 	Drop(p, "Frame Strata", "Controls the order that overlapping elements display in. Set higher to show above other elements.",
 		STRATAS, function() return P().general end, "frameStrata", "MEDIUM")
@@ -1585,6 +1589,11 @@ local function BuildCastBar(p)
 	p:Dropdown("Bar Texture", nil, TextureItems, Get(CB, "texture", "none"),
 		function() return ERB.TextureLabel(CB().texture) end, Set(CB, "texture"),
 		{ texturePreview = true, previewPath = function(v) return ERB.TexturePath(v) end }, Off)
+	p:Cog("Texture Settings", {
+		{ type = "toggle", label = "Textured Background",
+		  tip = "The cast bar background uses the bar texture, tinted by the background color (while Fill Opacity is 100).",
+		  get = Get(CB, "textureBg", false), set = Set(CB, "textureBg") },
+	}, { disabled = Off, disabledTip = req })
 	local SPELL_SIDES = { { "none", "None" }, { "left", "Left" }, { "right", "Right" }, { "center", "Center" } }
 	p:Dropdown("Spell Text", nil, function() return Items(SPELL_SIDES) end,
 		function() return CB().showSpellText == false and "none" or (CB().spellTextSide or "left") end,
@@ -1707,6 +1716,11 @@ local function BuildGCD(p)
 	p:Dropdown("Bar Texture", nil, TextureItems, Get(GB, "texture", "none"),
 		function() return ERB.TextureLabel(GB().texture) end, Set(GB, "texture"),
 		{ texturePreview = true, previewPath = function(v) return ERB.TexturePath(v) end }, Off)
+	p:Cog("Texture Settings", {
+		{ type = "toggle", label = "Textured Background",
+		  tip = "The GCD bar background uses the bar texture, tinted by the background color (while Fill Opacity is 100).",
+		  get = Get(GB, "textureBg", false), set = Set(GB, "textureBg") },
+	}, { disabled = Off, disabledTip = req })
 	p:Toggle("Show Spark", "Show a small glowing spark that moves along the leading edge of the fill.", Get(GB, "showSpark", false), Set(GB, "showSpark"), Off)
 	p:Toggle("Deplete Fill", "Start the bar full and drain it as the global cooldown elapses, instead of filling it up.", Get(GB, "depleteFill", false), Set(GB, "depleteFill"), Off)
 	p:Blank()

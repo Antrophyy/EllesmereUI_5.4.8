@@ -279,6 +279,7 @@ local DEFAULTS = {
 			anchorY = -100,
 			orientation = "HORIZONTAL",
 			barTexture = "none",
+			barTextureBg = false,  -- Textured Background (health, power, class resource)
 			frameStrata = "MEDIUM",
 		},
 	},
@@ -658,6 +659,18 @@ function P.TexturePath(key)
 	return P.WHITE
 end
 ERB.TexturePath = P.TexturePath
+
+-- Bar backgrounds: a flat color, or with Textured Background (on) the bar
+-- texture tinted by that color.
+function P.PaintBg(tex, on, texKey, r, g, b, a)
+	if on then
+		tex:SetTexture(P.TexturePath(texKey))
+		tex:SetVertexColor(r, g, b, a)
+	else
+		tex:SetTexture(r, g, b, a)
+		tex:SetVertexColor(1, 1, 1, 1)
+	end
+end
 
 function ERB.TextureLabel(key)
 	if key and key:sub(1, 3) == "sm:" then

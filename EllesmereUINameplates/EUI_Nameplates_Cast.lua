@@ -118,6 +118,7 @@ function Plate:ApplyCastLayout()
 	end
 	cast:SetPoint("TOPLEFT", self.health, "BOTTOMLEFT", shiftX, offsetY)
 	cast:SetStatusBarTexture(P.TexturePath(p.castBarTexture))
+	self.castBG:SetTexture((p.castTextureBg and not self.isFriendly) and P.TexturePath(p.castBarTexture) or WHITE)
 	local bg = p.castBgColor or defaults.castBgColor
 	self.castBG:SetVertexColor(bg.r, bg.g, bg.b, p.castBgAlpha or 0.9)
 	local bc = p.castBorderColor or defaults.castBorderColor

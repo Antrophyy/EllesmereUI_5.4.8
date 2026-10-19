@@ -320,6 +320,9 @@ function Plate:ApplyLayout()
 	health:SetPoint("CENTER", self, "CENTER", 0, yOff)
 	health:SetSize(w, h)
 	health:SetStatusBarTexture(P.TexturePath(p.healthBarTexture))
+	-- Textured Background (enemy plates): the background takes the bar
+	-- texture, tinted by the Background color.
+	self.healthBG:SetTexture((p.healthTextureBg and not self.isFriendly) and P.TexturePath(p.healthBarTexture) or WHITE)
 	local bg = p.bgColor or defaults.bgColor
 	self.healthBG:SetVertexColor(bg.r, bg.g, bg.b, p.bgAlpha or 1)
 	self:ApplyBorder()
