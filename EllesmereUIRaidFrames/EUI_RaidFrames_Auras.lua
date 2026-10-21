@@ -1533,7 +1533,8 @@ end
 -- Debuffs: base row + grid tiles + effects. Returns the dispel candidate.
 local function PaintDebuffs(btn, d, unit, s, c)
 	local n = ScanHarmful(btn, d, unit, c)
-	local list = d.scratch
+	local list
+	list, n = ns.FilterDuplicateDiseases(d.scratch, n)
 	local host = HostOf(btn, s)
 	local cap = s.debuffCap or 3
 	-- Assign each aura: tile claim first, else the base row.

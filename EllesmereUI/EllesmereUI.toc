@@ -12,6 +12,8 @@ Libs\LibDeflate\LibDeflate.lua
 
 # Shared namespace (global EllesmereUI), saved data helpers, /eui, settings loader
 EllesmereUI.lua
+# Shared aura display handling (original UnitAura indices are preserved)
+EllesmereUI_Auras.lua
 # Bar texture and font lists for the settings
 EllesmereUI_Media.lua
 # Global Settings > General: themes, accent color, CVars, menu / minimap buttons, Spell ID, Uninstall

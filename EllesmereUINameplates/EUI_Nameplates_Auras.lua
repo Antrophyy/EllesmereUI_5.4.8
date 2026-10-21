@@ -68,10 +68,11 @@ local function InList(list, id)
 	return type(list) == "table" and id and list[id] == true
 end
 
-local function NewEntry(name, icon, count, dtype, duration, expires, caster, stealable, id)
+local function NewEntry(name, icon, count, dtype, duration, expires, caster, stealable, id, casterGUID)
 	return {
 		name = name, icon = icon, count = count or 0, dtype = dtype, duration = duration or 0,
 		expires = expires or 0, caster = caster, stealable = stealable, id = id,
+		casterGUID = casterGUID or (caster and UnitGUID(caster)),
 	}
 end
 
@@ -171,7 +172,7 @@ function P.AuraCombatLog(sub, srcGUID, dstGUID, spellId, spellName, auraType)
 		end
 		if sub == "SPELL_AURA_APPLIED" then
 			local _, _, icon = GetSpellInfo(spellId)
-			list[#list + 1] = NewEntry(spellName, icon, 0, nil, dur, now + dur, mine and "player" or nil, false, spellId)
+			list[#list + 1] = NewEntry(spellName, icon, 0, nil, dur, now + dur, mine and "player" or nil, false, spellId, srcGUID)
 			return true
 		end
 	end
@@ -483,6 +484,7 @@ local function Fill(plate, row, list, cap)
 	local kind = row.kind
 	local p = P.Profile()
 	if list then
+		if kind ~= "buffs" then list = ns.FilterDuplicateDiseases(list) end
 		for _, a in ipairs(list) do
 			if n >= cap then break end
 			if a.expires == 0 or a.expires > now then

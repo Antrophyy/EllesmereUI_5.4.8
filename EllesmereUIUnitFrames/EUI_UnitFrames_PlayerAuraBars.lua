@@ -759,7 +759,8 @@ end
 ---------------------------------------------------------------------------
 -- Aura scan (one pass per UNIT_AURA, shared by every bar)
 ---------------------------------------------------------------------------
-P.buffs, P.debuffs = {}, {}
+local rawDebuffs = {}
+P.buffs, P.debuffs = {}, rawDebuffs
 local pool = {}
 
 local function NewRecord()
@@ -768,7 +769,7 @@ local function NewRecord()
 end
 
 local function Scan()
-	for _, list in ipairs({ P.buffs, P.debuffs }) do
+	for _, list in ipairs({ P.buffs, rawDebuffs }) do
 		for i = #list, 1, -1 do
 			pool[#pool + 1] = wipe(list[i])
 			list[i] = nil
@@ -800,8 +801,9 @@ local function Scan()
 		r.duration, r.expires, r.caster, r.stealable, r.spellId = duration or 0, expires or 0, caster, stealable, spellId
 		r.canApply, r.isBoss = canApply, isBoss
 		r.raid = raid[(spellId or 0) .. ":" .. (expires or 0)] or nil
-		P.debuffs[#P.debuffs + 1] = r
+		rawDebuffs[#rawDebuffs + 1] = r
 	end
+	P.debuffs = ns.FilterDuplicateDiseases(rawDebuffs)
 end
 
 ---------------------------------------------------------------------------

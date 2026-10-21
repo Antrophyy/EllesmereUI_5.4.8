@@ -983,6 +983,17 @@ local function CastRows(p, unit)
 		disabled = function() return off() or not S(unit).castBorderCustom end })
 end
 
+local function DebuffBehaviorRows(p, unit, isDisabled)
+	Dropdown(p, "Debuff Growth Direction", "Direction the debuff icons extend. Auto follows their anchor; on Simple Boss Display it grows away from the frame. Choose Right to put the first icons on the left.",
+		AURA_GROWTH, unit, "debuffGrowth", "auto", isDisabled)
+	if unit == "target" or unit == "focus" or unit == "boss" then
+		Slider(p, "My Debuff Size (%)", "Size of your debuff icons relative to the normal icons, including your pet and vehicle. 100% keeps the normal size; try 125% for a modest increase. Simple Boss Display uses the frame height as its base size. Other casters, buffs, and text sizes are unchanged.",
+			100, 200, 5, unit, "debuffMineScale", 100, isDisabled)
+		Toggle(p, "My Debuffs First", "Group your debuffs (including your pet and vehicle) before other casters, keeping the client order within each group. Your debuffs get priority when Max Count is reached. Choose Debuff Growth Direction: Right to put yours on the left.",
+			unit, "debuffMineFirst", false, isDisabled)
+	end
+end
+
 -- Buff / debuff rows of main frames.
 local function AuraRows(p, unit)
 	local function buffOff() return S(unit).showBuffs == false end
@@ -1049,7 +1060,6 @@ local function AuraRows(p, unit)
 		function() return LabelOf(AURA_ANCHOR, S(unit).debuffAnchor or "bottomleft") end,
 		function(v) Swap("debuffAnchor", v) end)
 	local debuffRows = {
-		CD("Growth Direction", AURA_GROWTH, unit, "debuffGrowth", "auto"),
 		CS("Max Count", 1, 40, 1, unit, "maxDebuffs", 20),
 		{ type = "slider", label = "Max Per Row", min = 1, max = 40, step = 1,
 			get = function() return S(unit).debuffMaxPerRow or S(unit).maxDebuffs or 20 end, set = function(v) S(unit).debuffMaxPerRow = v end },
@@ -1069,6 +1079,7 @@ local function AuraRows(p, unit)
 		CS("Spacing X", -1, 10, 1, unit, "debuffSpacingX", 1),
 		CS("Spacing Y", -1, 10, 1, unit, "debuffSpacingY", 1),
 	}, { icon = "directions", disabled = debuffOff })
+	DebuffBehaviorRows(p, unit, debuffOff)
 
 	Toggle(p, "Show Debuff Duration", "Show the time left on the debuff icons.", unit, "debuffShowCooldownText", false, debuffOff)
 	p:Cog("Duration Text", {
@@ -2024,7 +2035,7 @@ local function BuildBoss(p)
 		CS("Stack Y", -100, 100, 1, unit, "buffStackTextOffsetY", 0),
 		CS("Zoom", 0, 0.2, 0.01, unit, "buffIconZoom", 0.07),
 	}, { icon = "directions", disabled = function() return simpleBuff() == "none" end })
-	p:Dropdown("Simple Debuff Display", "Force boss debuffs into a single large row matched to the frame height.",
+	p:Dropdown("Simple Debuff Display", "Anchor boss debuffs beside the frame, with the base icon size matched to its height. Debuff Growth Direction controls how the icons extend.",
 		function() return Items(SIMPLE_DISPLAY) end, simpleDebuff, function() return LabelOf(SIMPLE_DISPLAY, simpleDebuff()) end,
 		function(v)
 			local s = S(unit)
@@ -2084,7 +2095,6 @@ local function BuildBoss(p)
 		function() return LabelOf(AURA_ANCHOR, S(unit).debuffAnchor or "bottomleft") end,
 		function(v) S(unit).debuffAnchor = v end, nil, function() return simpleDebuff() ~= "none" end)
 	p:Cog("Debuff Settings", {
-		CD("Growth Direction", AURA_GROWTH, unit, "debuffGrowth", "auto"),
 		CS("Max Count", 1, 20, 1, unit, "maxDebuffs", 10),
 		{ type = "slider", label = "Max Per Row", min = 1, max = 20, step = 1,
 			get = function() return S(unit).debuffMaxPerRow or S(unit).maxDebuffs or 10 end, set = function(v) S(unit).debuffMaxPerRow = v end },
@@ -2099,6 +2109,9 @@ local function BuildBoss(p)
 		CS("Stack Y", -100, 100, 1, unit, "debuffStackTextOffsetY", 0),
 		CS("Zoom", 0, 0.2, 0.01, unit, "debuffIconZoom", 0.07),
 	}, { disabled = debuffOff })
+	DebuffBehaviorRows(p, unit, function()
+		return simpleDebuff() == "none" and (S(unit).debuffAnchor or "bottomleft") == "none"
+	end)
 	p:Slider("Stack Size", "Size of the stack number on buffs and debuffs.", 6, 100, 1,
 		function() return S(unit).debuffStackTextSize or 14 end,
 		function(v) S(unit).debuffStackTextSize = v S(unit).buffStackTextSize = v end)

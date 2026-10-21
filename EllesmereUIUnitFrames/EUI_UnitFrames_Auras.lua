@@ -172,6 +172,11 @@ local function BossSimpleMode(value, isDebuff)
 end
 UF.BossSimpleMode = BossSimpleMode
 
+local function HasOwnDebuffSettings(frame)
+	local key = frame.settingsKey
+	return key == "target" or key == "focus" or key == "boss"
+end
+
 -- Resolves where and how a container draws; nil = hidden.
 local function ContainerConfig(frame, kind)
 	local s = frame.settings
@@ -188,6 +193,9 @@ local function ContainerConfig(frame, kind)
 		cfg.height = cfg.size
 		cfg.anchor = simple == "left" and "left" or "right"
 		cfg.growth = simple == "left" and "left" or "right"
+		if kind == "debuff" and s.debuffGrowth and s.debuffGrowth ~= "auto" then
+			cfg.growth = s.debuffGrowth
+		end
 		cfg.max = kind == "buff" and (s.maxBuffs or 4) or (s.maxDebuffs or 10)
 		cfg.perRow = s[p .. "MaxPerRow"] or cfg.max
 		cfg.offX = s[kind == "buff" and "simpleBuffOffsetX" or "simpleDebuffOffsetX"] or s[p .. "OffsetX"] or 0
@@ -239,6 +247,8 @@ local function ContainerConfig(frame, kind)
 	cfg.precise = s[p .. "CooldownTextPrecision"]
 	cfg.timerColor = s[p .. "CooldownTextColor"]
 	cfg.stackColor = s[p .. "StackTextColor"]
+	cfg.mineScale = kind == "debuff" and HasOwnDebuffSettings(frame)
+		and max(100, min(200, tonumber(s.debuffMineScale) or 100)) / 100 or 1
 	cfg.max = min(40, cfg.max)
 	cfg.perRow = max(1, min(cfg.perRow, cfg.max))
 	return cfg
@@ -249,17 +259,18 @@ local STACK_POINTS = {
 	topright = { "TOPRIGHT", -1, 0 }, topleft = { "TOPLEFT", 1, 0 }, center = { "CENTER", 0, 0 },
 }
 
-local function StyleIcon(icon, cfg, s)
+local function StyleIcon(icon, cfg, s, width, height)
 	local px = UF.Pixel()
-	icon:SetSize(cfg.size, cfg.height)
+	icon:SetSize(width, height)
+	icon.auraWidth, icon.auraHeight = width, height
 	local bsize = (s.auraBorderSize or 1) * px
 	icon.tex:ClearAllPoints()
 	icon.tex:SetPoint("TOPLEFT", bsize, -bsize)
 	icon.tex:SetPoint("BOTTOMRIGHT", -bsize, bsize)
 	local z = cfg.zoom
 	local vcut = 0
-	if cfg.height < cfg.size then
-		vcut = (1 - cfg.height / cfg.size) / 2 * (1 - 2 * z)
+	if height < width then
+		vcut = (1 - height / width) / 2 * (1 - 2 * z)
 	end
 	icon.tex:SetTexCoord(z, 1 - z, z + vcut, 1 - z - vcut)
 	icon.border:SetBorderSize(bsize)
@@ -282,7 +293,7 @@ local function StyleIcon(icon, cfg, s)
 	icon:SetScript("OnUpdate", cfg.showTimer and IconOnUpdate or nil)
 end
 
--- Places container + icons (called on layout and when the count changes).
+-- Rows/columns advance by their largest icon so enlarged own debuffs fit.
 local function PlaceContainer(frame, container, cfg, count)
 	local px = UF.Pixel()
 	container:ClearAllPoints()
@@ -307,22 +318,22 @@ local function PlaceContainer(frame, container, cfg, count)
 	local horiz = (primary == "LEFT" or primary == "RIGHT") and primary or secondary
 	local vert = (primary == "UP" or primary == "DOWN") and primary or secondary
 	local corner = (vert == "UP" and "BOTTOM" or "TOP") .. (horiz == "LEFT" and "RIGHT" or "LEFT")
-	local stepX = cfg.size + cfg.spX * px
-	local stepY = cfg.height + cfg.spY * px
+	local horizontal = primary == "LEFT" or primary == "RIGHT"
+	local along, across, lineSize = 0, 0, 0
+	local alongGap = (horizontal and cfg.spX or cfg.spY) * px
+	local acrossGap = (horizontal and cfg.spY or cfg.spX) * px
 	for i = 1, count do
 		local icon = container.icons[i]
-		local n = i - 1
-		local a, b = n % cfg.perRow, floor(n / cfg.perRow)
-		local col, row
-		if primary == "LEFT" or primary == "RIGHT" then
-			col, row = a, b
-		else
-			col, row = b, a
+		if i > 1 and (i - 1) % cfg.perRow == 0 then
+			across = across + lineSize + acrossGap
+			along, lineSize = 0, 0
 		end
-		local x = col * stepX * (horiz == "LEFT" and -1 or 1)
-		local y = row * stepY * (vert == "UP" and 1 or -1)
+		local x = (horizontal and along or across) * (horiz == "LEFT" and -1 or 1)
+		local y = (horizontal and across or along) * (vert == "UP" and 1 or -1)
 		icon:ClearAllPoints()
 		icon:SetPoint(corner, container, fp[1], x, y)
+		along = along + (horizontal and icon.auraWidth or icon.auraHeight) + alongGap
+		lineSize = max(lineSize, horizontal and icon.auraHeight or icon.auraWidth)
 	end
 end
 
@@ -348,7 +359,9 @@ end
 -- Filters
 ---------------------------------------------------------------------------
 local function IsMine(caster)
-	return caster == "player" or caster == "pet" or caster == "vehicle"
+	if caster == "player" or caster == "pet" or caster == "vehicle" then return true end
+	return caster ~= nil and (UnitIsUnit(caster, "player") or UnitIsUnit(caster, "pet")
+		or UnitIsUnit(caster, "vehicle")) and true or false
 end
 
 local function CanDispel(dtype)
@@ -503,8 +516,11 @@ end
 
 local function ShowIcon(frame, container, cfg, n, data)
 	local icon = GetIcon(container, n)
-	if icon.styleStamp ~= container.styleStamp then
-		StyleIcon(icon, cfg, frame.settings)
+	local scale = cfg.mineScale > 1 and IsMine(data.caster) and cfg.mineScale or 1
+	local width, height = cfg.size * scale, cfg.height * scale
+	local resized = icon.auraWidth ~= width or icon.auraHeight ~= height
+	if icon.styleStamp ~= container.styleStamp or resized then
+		StyleIcon(icon, cfg, frame.settings, width, height)
 		icon.styleStamp = container.styleStamp
 	end
 	icon.index = data.index
@@ -534,9 +550,22 @@ local function ShowIcon(frame, container, cfg, n, data)
 	local glow = frame.settings.buffPurgeGlow
 	icon.stealable:SetShown(container.kind == "buff" and data.stealable and glow == 99 and true or false)
 	icon:Show()
+	return resized
 end
 
 local scratch = {}
+
+local function DebuffDisplayList(frame, list)
+	list = ns.FilterDuplicateDiseases(list)
+	if not HasOwnDebuffSettings(frame) or frame.settings.debuffMineFirst ~= true then return list end
+	local mine, others = {}, {}
+	for _, aura in ipairs(list) do
+		local group = IsMine(aura.caster) and mine or others
+		group[#group + 1] = aura
+	end
+	for _, aura in ipairs(others) do mine[#mine + 1] = aura end
+	return mine
+end
 
 local function Collect(frame, container, cfg)
 	local unit = frame.unit
@@ -546,15 +575,17 @@ local function Collect(frame, container, cfg)
 	if UF.IsFake(frame) or (frame.preview and UF.previewAuras) then
 		local src = container.kind == "buff" and PREVIEW_BUFFS or PREVIEW_DEBUFFS
 		local now = GetTime()
-		for i = 1, min(cfg.max, #src) do
+		for i = 1, #src do
 			local entry = src[i]
 			local id = type(entry) == "table" and entry[1] or entry
 			local _, _, iconTex = GetSpellInfo(id)
 			list[#list + 1] = {
 				icon = iconTex, count = (i == 2) and 3 or 0, duration = 30, expires = now + 10 + i * 4,
 				dtype = type(entry) == "table" and entry[2] or nil, stealable = i == 1,
+				caster = i % 2 == 1 and "player" or "party1",
 			}
 		end
+		if container.kind == "debuff" then return DebuffDisplayList(frame, list) end
 		return list
 	end
 	if not UnitExists(unit) then
@@ -576,7 +607,7 @@ local function Collect(frame, container, cfg)
 		if ok then
 			local entry = {
 				index = i, filter = filter, icon = icon, count = count, duration = duration, expires = expires,
-				dtype = dtype, stealable = stealable,
+				dtype = dtype, stealable = stealable, spellId = spellId, caster = caster,
 			}
 			-- Purgeable buffs lead the row while their glow is on.
 			if container.kind == "buff" and stealable and s.buffPurgeGlow == 99 then
@@ -589,6 +620,7 @@ local function Collect(frame, container, cfg)
 	for i = #stealables, 1, -1 do
 		table.insert(list, 1, stealables[i])
 	end
+	if container.kind == "debuff" then return DebuffDisplayList(frame, list) end
 	return list
 end
 
@@ -605,24 +637,32 @@ local function DebugAuras(msg)
 	local s = UF.Settings(frame.settingsKey)
 	local c = frame.Debuffs
 	local cfg = ContainerConfig(frame, "debuff")
+	local preview = UF.IsFake(frame) or (frame.preview and UF.previewAuras)
 	out:AddMessage(format("|cff0cd29fEUI auras|r %s: unit=%s exists=%s frameShown=%s mode=%s anchor=%s max=%s hasDuration=%s",
 		key, tostring(frame.unit), tostring(UnitExists(frame.unit)), tostring(frame:IsShown()),
 		UF.DebuffFilterMode(s), tostring(s.debuffAnchor), tostring(cfg and cfg.max), tostring(s.debuffHasDuration)))
-	local shown = 0
+	local shown, visible, kept = 0, {}, {}
 	for _, icon in ipairs(c.icons) do
 		if icon:IsShown() then
 			shown = shown + 1
+			if icon.index then visible[icon.index] = true end
 		end
+	end
+	for _, aura in ipairs(Collect(frame, c, cfg or { max = 40 })) do
+		if aura.index then kept[aura.index] = true end
 	end
 	out:AddMessage(format("  container: visible=%s icons=%d shown=%d", tostring(c:IsVisible()), #c.icons, shown))
 	for i = 1, 40 do
-		local name, _, _, count, dtype, duration, _, caster, _, _, spellId, _, isBoss = UnitAura(frame.unit, i, "HARMFUL")
+		local name, _, _, count, dtype, duration, expires, caster, _, _, spellId, _, isBoss = UnitAura(frame.unit, i, "HARMFUL")
 		if not name then
 			break
 		end
 		local ok = DebuffAllowed(frame, s, spellId, caster, dtype, duration, isBoss)
-		out:AddMessage(format("  %d. %s (%s) caster=%s dur=%s boss=%s -> %s", i, name, tostring(spellId), tostring(caster),
-			tostring(duration), tostring(isBoss), ok and "|cff00ff00shown|r" or "|cffff4040filtered|r"))
+		local state = not ok and "filtered" or preview and "preview active" or not kept[i] and "duplicate hidden"
+			or (cfg and visible[i] and c:IsVisible()) and "shown" or "eligible (not visible)"
+		out:AddMessage(format("  %d. %s (%s) caster=%s guid=%s dur=%s expires=%s stacks=%s boss=%s -> %s",
+			i, name, tostring(spellId), tostring(caster), tostring(caster and UnitGUID(caster)),
+			tostring(duration), tostring(expires), tostring(count), tostring(isBoss), state))
 	end
 end
 SLASH_EUIAURAS1 = "/euiauras"
@@ -645,11 +685,12 @@ function UF.UpdateAuras(frame)
 		local shown = 0
 		if cfg then
 			local list = Collect(frame, container, cfg)
+			local resized = false
 			for i = 1, min(#list, cfg.max) do
 				shown = shown + 1
-				ShowIcon(frame, container, cfg, shown, list[i])
+				if ShowIcon(frame, container, cfg, shown, list[i]) then resized = true end
 			end
-			if container.placedCount ~= shown then
+			if resized or container.placedCount ~= shown then
 				PlaceContainer(frame, container, cfg, shown)
 				container.placedCount = shown
 			end

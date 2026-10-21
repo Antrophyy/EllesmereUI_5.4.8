@@ -399,7 +399,6 @@ local scratch = {}
 local function CollectDebuffs(unit, t)
 	wipe(scratch)
 	local filter = (t.debuffFilter == "dispellable") and "HARMFUL|RAID" or "HARMFUL"
-	local cap = min(MAX_ICONS, t.debuffCap or 3)
 	for i = 1, 40 do
 		local name, _, icon, count, dispelType, duration, expires, caster, _, _, spellId, _, isBoss = UnitAura(unit, i, filter)
 		if not name then break end
@@ -407,11 +406,11 @@ local function CollectDebuffs(unit, t)
 			scratch[#scratch + 1] = {
 				index = i, filter = filter, icon = icon, count = count or 0,
 				dispelType = dispelType, duration = duration or 0, expires = expires or 0,
+				spellId = spellId, caster = caster,
 			}
-			if #scratch >= cap then break end
 		end
 	end
-	return scratch
+	return ns.FilterDuplicateDiseases(scratch)
 end
 
 function UpdateDebuffs(B)
@@ -438,7 +437,7 @@ function UpdateDebuffs(B)
 		return
 	end
 	local list = CollectDebuffs(B.unit, t)
-	local n = #list
+	local n = min(#list, MAX_ICONS, t.debuffCap or 3)
 	LayoutIcons(B, t, n)
 	for i = 1, n do
 		local d, b = list[i], icons[i]

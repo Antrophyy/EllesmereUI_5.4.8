@@ -159,6 +159,8 @@ local function Defaults()
 	target.showBuffs = true
 	target.onlyPlayerDebuffs = false
 	target.maxDebuffs = 20
+	target.debuffMineScale = 100
+	target.debuffMineFirst = false
 	target.castbarHeight = 14
 	target.castbarWidth = 181
 	target.showCastbar = true
@@ -202,6 +204,8 @@ local function Defaults()
 	local focus = MainFrameDefaults(160, 34, "right")
 	focus.rightTextContent = "perhp"
 	focus.onlyPlayerDebuffs = true
+	focus.debuffMineScale = 100
+	focus.debuffMineFirst = false
 	focus.castbarHeight = 14
 	focus.castbarWidth = 160
 	focus.showCastbar = true
@@ -264,6 +268,8 @@ local function Defaults()
 	boss.debuffAnchor = "bottomleft"
 	boss.debuffGrowth = "auto"
 	boss.maxDebuffs = 10
+	boss.debuffMineScale = 100
+	boss.debuffMineFirst = false
 	boss.showBuffs = false
 	boss.buffAnchor = "topleft"
 	boss.buffGrowth = "auto"
