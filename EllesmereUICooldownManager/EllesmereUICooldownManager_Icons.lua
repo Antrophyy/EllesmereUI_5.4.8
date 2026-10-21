@@ -315,20 +315,33 @@ local auraTarget, auraTargetName = {}, {}   -- target debuffs cast by the player
 local auraPlayerMine = {}                   -- player buffs cast by the player, by name
 CDM.auraDirty = true
 
+-- 5.4.8 often splits a brew into a stacking aura and an active aura of the
+-- same name (Tigereye Brew 125195 stacks / 116740 active, Elusive Brew
+-- 128939 / 115308): every aura takes the highest stack count of its name, so
+-- a tracked ID shows (and glows at) the stacks whichever of the two is up.
+local topStacks = {}
+
 local function ScanUnit(unit, filter, byID, byName, mineByName)
 	wipe(byID)
 	wipe(byName)
 	if mineByName then wipe(mineByName) end
 	if not UnitExists(unit) then return end
+	wipe(topStacks)
 	for i = 1, 40 do
 		local name, _, _, count, _, dur, exp, caster, _, _, sid = UnitAura(unit, i, filter)
 		if not name then break end
-		local a = { dur = dur or 0, exp = exp or 0, count = count or 0, caster = caster }
+		local a = { dur = dur or 0, exp = exp or 0, count = count or 0, caster = caster, name = name }
+		if a.count > (topStacks[name] or 0) then topStacks[name] = a.count end
 		if sid and not byID[sid] then byID[sid] = a end
 		if not byName[name] then byName[name] = a end
 		if mineByName and (caster == "player" or caster == "pet" or caster == "vehicle") and not mineByName[name] then
 			mineByName[name] = a
 		end
+	end
+	for _, a in pairs(byID) do a.count = topStacks[a.name] or a.count end
+	for _, a in pairs(byName) do a.count = topStacks[a.name] or a.count end
+	if mineByName then
+		for _, a in pairs(mineByName) do a.count = topStacks[a.name] or a.count end
 	end
 end
 
