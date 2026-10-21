@@ -512,7 +512,9 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 				else gr, gg, gb = bd.buffGlowR or 1, bd.buffGlowG or 1, bd.buffGlowB or 1 end
 			end
 			-- Pandemic glow: the last 30 % of the aura.
-			if not glowStyle and bd.pandemicGlow and dur and dur > 0 and (start + dur - now) <= dur * 0.3 then
+			-- (per spell "Pandemic Glow: Off" opts one buff out of the bar's).
+			if not glowStyle and bd.pandemicGlow and not (ss and ss.pandemicGlow == "off")
+				and dur and dur > 0 and (start + dur - now) <= dur * 0.3 then
 				local st = bd.pandemicGlowStyle or 1
 				if st < 1 then st = 1 end
 				glowStyle = st

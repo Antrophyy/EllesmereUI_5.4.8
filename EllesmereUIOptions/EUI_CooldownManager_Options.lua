@@ -834,6 +834,9 @@ function LP.SpellMenuRows(bd, idx)
 	if isBuff then
 		rows[#rows + 1] = LP.SubRow(bd, id, "Buff Glow", "buffGlow", function() return GlowFlyItems("Default") end)
 		rows[#rows + 1] = LP.ColorRow(bd, id, "Glow Effect Color", "buffGlowColor", "buffGlowColor")
+		rows[#rows + 1] = LP.SubRow(bd, id, "Pandemic Glow", "pandemicGlow", function()
+			return { { val = nil, label = "Default" }, { val = "off", label = "Off" } }
+		end, { tip = "Off: this buff never shows the bar's Pandemic Glow." })
 		rows[#rows + 1] = LP.SubRow(bd, id, "Always Show Buff", "alwaysShow", function()
 			return { { val = nil, label = "Default" }, { val = "on", label = "Show" }, { val = "off", label = "Hide" }, { val = "missing", label = "Show When Missing" } }
 		end)

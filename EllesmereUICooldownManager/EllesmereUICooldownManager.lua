@@ -319,8 +319,11 @@ function CDM.SpellSettings(bd, id)
 	local barTier = sd and sd.barSettings
 	local profTier = bd.barSpellSettings
 	if not (own or cas or barTier or profTier) then return nil end
-	local out = {}
-	for _, t in ipairs({ profTier, barTier, cas, own }) do
+	-- Not ipairs: it stops at the first missing tier, so a bar without
+	-- barSpellSettings dropped the spell's own settings.
+	local out, tiers = {}, { profTier, barTier, cas, own }
+	for i = 1, 4 do
+		local t = tiers[i]
 		if type(t) == "table" then
 			for k, v in pairs(t) do out[k] = v end
 		end

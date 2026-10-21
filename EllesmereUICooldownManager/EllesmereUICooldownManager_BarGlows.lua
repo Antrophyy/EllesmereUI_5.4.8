@@ -37,8 +37,9 @@ local BLIZZ_PREFIXES = {
 BG.BAR_ORDER = { 1, 2, 3, 4, 5, 9, 10 }
 BG.BAR_KEYS = BAR_KEYS
 
--- Retail default glow colour (ns.StartNativeGlow with no colour).
-BG.DEFAULT_R, BG.DEFAULT_G, BG.DEFAULT_B = 1.0, 0.788, 0.137
+-- Default glow colour: the CDM icon glows' default (Icons.lua buff glow), so
+-- a Bar Glow left on Default looks like every other CDM glow.
+BG.DEFAULT_R, BG.DEFAULT_G, BG.DEFAULT_B = 1, 0.82, 0.1
 local BLACKOUT = 8
 
 function BG.ActionButton(barIdx, btnIdx)
@@ -145,8 +146,18 @@ function BG.EntryColor(entry, style)
 	return BG.DEFAULT_R, BG.DEFAULT_G, BG.DEFAULT_B
 end
 
--- Starts entry's glow on frame o (w x h). bd = the CDM bar for an icon target
--- (Pixel Glow thickness), nil on action buttons.
+-- Pixel Glow thickness: the target's CDM bar, else (action buttons, options
+-- previews) the first CDM bar's, so the glow matches the CDM icon glows.
+function BG.Thickness(bd)
+	if bd and bd.pixelGlowThickness then return bd.pixelGlowThickness end
+	for _, b in ipairs(CDM.Bars()) do
+		if CDM.IsPortedBar(b) and b.pixelGlowThickness then return b.pixelGlowThickness end
+	end
+	return 1
+end
+
+-- Starts entry's glow on frame o (w x h). bd = the CDM bar for an icon target,
+-- nil on action buttons.
 function BG.StartOn(o, entry, w, h, bd)
 	local style = tonumber(entry.glowStyle) or 1
 	local r, g, b = BG.EntryColor(entry, style)
@@ -155,8 +166,8 @@ function BG.StartOn(o, entry, w, h, bd)
 		local opts
 		if style == BLACKOUT then
 			opts = { alpha = entry.glowAlpha }
-		elseif bd and bd.pixelGlowThickness then
-			opts = { th = bd.pixelGlowThickness }
+		else
+			opts = { th = BG.Thickness(bd) }
 		end
 		G.StartGlow(o, CDM.GlowShared(style), w, r, g, b, opts, h)
 	else
