@@ -895,10 +895,13 @@ local function DebuffContent(cfg, out, limit)
 		if v and c then hidden[#hidden + 1] = c.key end
 	end
 	-- Hide Exhaustion (retail cfg.hideExhaustion, off by default): Sated,
-	-- Exhaustion, Temporal Displacement, Insanity.
+	-- Exhaustion, Temporal Displacement, Insanity. Debuff Blacklist
+	-- (backport addition): spells that never show on this bar, in every mode.
 	local hideExh = cfg.hideExhaustion == true
+	local black = cfg.blacklist
 	local function Hidden(a)
-		if hideExh and P.EXHAUSTION[a.id] then return true end
+		local id = a.spellId
+		if id and ((hideExh and P.EXHAUSTION[id]) or (black and black[id])) then return true end
 		for _, k in ipairs(hidden) do
 			if ClassMatch(k, a) then return true end
 		end

@@ -5,7 +5,7 @@
 -- Layout: retail shows a tile sidebar (BUFF BARS / DEBUFF BARS) next to the
 -- selected bar. Here the content header holds the same choices: the Editing
 -- Spec picker, the bar picker with rename / delete, "+ Buff Bar" and
--- "+ Debuff Bar". The Filter Editor and the Buff Blacklist (retail popups)
+-- "+ Debuff Bar". The Filter Editor and the Buff / Debuff Blacklist (retail popups)
 -- are page modes with a "Back to Bars" button. The live bars show sample
 -- icons while this tab is open (retail draws a preview box on the page).
 --
@@ -501,6 +501,10 @@ local function BuildAssignedDebuffs(p, cfg)
 	p:LaneSelect("Filters", "Which debuffs this bar shows. Left box: show the category; red box: hide it.",
 		function()
 			local items = {
+				{ action = function()
+					mode = "blacklist"
+					Rebuild()
+				end, name = "Edit Blacklist" },
 				{ value = "__allDebuffs", name = "All Debuffs", tip = "Show every debuff. Use the Hide lane below to remove specific filters." },
 				{ value = "__debuffHasDuration", name = "Has Duration", tip = "Only show debuffs that have a duration, excluding permanent ones. Combines with the filters below; checked alone it shows every timed debuff." },
 				{ value = "__hideExhaustion", name = "Hide Exhaustion", tip = "Hides Sated, Exhaustion, Temporal Displacement and the other Bloodlust lockout debuffs." },
@@ -882,7 +886,8 @@ local function BuildBars(p)
 end
 
 ---------------------------------------------------------------------------
--- Filter Editor (retail modal) and Buff Blacklist (retail popup)
+-- Filter Editor (retail modal) and Buff Blacklist (retail popup). Debuff
+-- bars get a blacklist too (backport addition), applied in every filter mode.
 ---------------------------------------------------------------------------
 local function SelectedFilter()
 	local list = ns.PAB_Filters()
@@ -975,16 +980,22 @@ end
 local function BuildBlacklist(p)
 	local e = Selected()
 	local cfg = e and e.cfg
-	if not cfg or e.kind ~= "buff" then
+	if not cfg then
 		mode = "bars"
 		return BuildBars(p)
 	end
-	p:Section("Buff Blacklist")
-	p:Paragraph("Spells on this list never show on \"" .. e.label .. "\" while All Buffs or Has Duration is on.")
+	if e.kind == "buff" then
+		p:Section("Buff Blacklist")
+		p:Paragraph("Spells on this list never show on \"" .. e.label .. "\" while All Buffs or Has Duration is on.")
+	else
+		p:Section("Debuff Blacklist")
+		p:Paragraph("Spells on this list never show on \"" .. e.label .. "\", whatever its filters.")
+	end
 	p:Button("Add Spell ID", "Add a spell to the blacklist by its ID.", "Add Spell ID", function()
 		AskSpellId("Add Spell ID", "Enter the spell ID to blacklist.", function(id)
 			cfg.blacklist = cfg.blacklist or {}
 			cfg.blacklist[id] = true
+			ns.ApplySettingsChange()
 			Rebuild()
 		end)
 	end)
@@ -997,6 +1008,7 @@ local function BuildBlacklist(p)
 		p:InlineIcon("Remove", ns.MEDIA .. "ui\\eui-close", function()
 			cfg.blacklist[id] = nil
 			if not next(cfg.blacklist) then cfg.blacklist = nil end
+			ns.ApplySettingsChange()
 			Rebuild()
 		end)
 	end
@@ -1222,7 +1234,8 @@ local function HeaderFilters(page, host, width)
 	if mode == "blacklist" then
 		local title = Text(host, 14, 0.85)
 		title:SetPoint("LEFT", back, "RIGHT", 16, 0)
-		title:SetText("Buff Blacklist")
+		local e = Selected()
+		title:SetText(e and e.kind == "debuff" and "Debuff Blacklist" or "Buff Blacklist")
 		return y + DD_H + 14
 	end
 	local dd = page:HeaderDropdown(host, DD_W, DD_H,
