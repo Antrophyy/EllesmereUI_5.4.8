@@ -622,7 +622,9 @@ local function GetBreakdown(combat, dmType, src)
 				out[#out + 1] = {
 					label = name, icon = icon, amount = floor(ev.amount), spellID = ev.id,
 					heal = ev.heal, source = ev.source, ago = ev.at - t.at,
+					hp = ev.hp, overkill = ev.overkill, shield = ev.shield,
 				}
+				if ev.hp then out.hasHP = true end
 			end
 		end
 		return out
@@ -631,6 +633,26 @@ local function GetBreakdown(combat, dmType, src)
 	return out
 end
 DM.GetBreakdown = GetBreakdown
+
+-- Death recap line, Details style: "-1.2s Spell (Source)" and "-68.7K 12%".
+-- The bar shows the player's health after the event when it was recorded.
+local function DeathLine(e)
+	local label = e.label
+	if e.shield then label = label .. " (absorb)" end
+	if e.source then label = label .. " |cff999999(" .. ShortName(e.source) .. ")|r" end
+	if e.overkill then label = label .. " |cffff5f5f" .. Abbrev(e.overkill) .. " overkill|r" end
+	if e.ago then label = format("|cff999999%.1fs|r ", e.ago) .. label end
+	local amount = (e.heal and "|cff5fd35f+" or "|cffff5f5f-") .. Abbrev(e.amount) .. "|r"
+	if e.hp then amount = amount .. format(" %d%%", e.hp) end
+	return label, amount
+end
+DM.DeathLine = DeathLine
+
+-- Bar value and range of a death recap line: health % when the recap has it.
+local function DeathBar(list, e, top)
+	if list.hasHP then return e.hp or 0, 100 end
+	return e.amount, top > 0 and top or 1
+end
 
 -- Stored segments for the segment menu, newest first:
 -- { combat, name, time, boss, try, result, bossHP }.
@@ -1008,7 +1030,7 @@ local function ShowBreakdownTip(W, bar)
 	local n = min(#list, maxN)
 	local scale = (c.hoverTooltipScale or 100) / 100
 	tt:SetScale(scale)
-	tt:SetWidth(TT_W)
+	tt:SetWidth(W.curDMType == T.Deaths and TT_W + 75 or TT_W)
 	local r, g, b = ClassColor(bar.src.class)
 	tt.title:SetText(ShortName(bar.src.name))
 	tt.title:SetTextColor(r or 1, g or 1, b or 1, 1)
@@ -1032,8 +1054,14 @@ local function ShowBreakdownTip(W, bar)
 		bb:SetPoint("TOPLEFT", tt, "TOPLEFT", inset, -(TT_HDR_H + 4 + (i - 1) * (TT_BAR_H + 1)))
 		bb:SetPoint("TOPRIGHT", tt, "TOPRIGHT", -6, -(TT_HDR_H + 4 + (i - 1) * (TT_BAR_H + 1)))
 		bb:SetHeight(TT_BAR_H)
-		bb:SetMinMaxValues(0, top > 0 and top or 1)
-		bb:SetValue(e.amount)
+		if W.curDMType == T.Deaths then
+			local v, range = DeathBar(list, e, top)
+			bb:SetMinMaxValues(0, range)
+			bb:SetValue(v)
+		else
+			bb:SetMinMaxValues(0, top > 0 and top or 1)
+			bb:SetValue(e.amount)
+		end
 		local cr, cg, cb = ClassColor(e.class)
 		if e.heal then
 			bb:SetStatusBarColor(0.3, 0.8, 0.3, 0.8)
@@ -1052,10 +1080,9 @@ local function ShowBreakdownTip(W, bar)
 		end
 		local label = e.label
 		if W.curDMType == T.Deaths then
-			if e.source then label = label .. " |cff999999(" .. ShortName(e.source) .. ")|r" end
-			bb.name:SetText(label)
-			local ago = e.ago and format("%.1fs ", e.ago) or ""
-			bb.amount:SetText(ago .. (e.heal and "+" or "-") .. Abbrev(e.amount))
+			local name, amount = DeathLine(e)
+			bb.name:SetText(name)
+			bb.amount:SetText(amount)
 		else
 			bb.name:SetText(label)
 			local pct = total > 0 and (e.amount / total * 100) or 0
@@ -1617,8 +1644,14 @@ CreateDMWindow = function(idx)
 					r.fill:ClearAllPoints()
 					r.fill:SetPoint("TOPLEFT", r.row, "TOPLEFT", iconW, 0)
 					r.fill:SetPoint("BOTTOMRIGHT", r.row, "BOTTOMRIGHT", 0, 0)
-					r.fill:SetMinMaxValues(0, top > 0 and top or 1)
-					r.fill:SetValue(e.amount)
+					if W.curDMType == T.Deaths then
+						local v, range = DeathBar(list, e, top)
+						r.fill:SetMinMaxValues(0, range)
+						r.fill:SetValue(v)
+					else
+						r.fill:SetMinMaxValues(0, top > 0 and top or 1)
+						r.fill:SetValue(e.amount)
+					end
 					local cr, cg, cb = ClassColor(e.class or W.source.class)
 					if e.heal then
 						r.fill:SetStatusBarColor(0.3, 0.75, 0.3)
@@ -1633,7 +1666,9 @@ CreateDMWindow = function(idx)
 					r.label:SetTextColor(1, 1, 1, 1)
 					r.amount:SetTextColor(1, 1, 1, 1)
 					if W.curDMType == T.Deaths then
-						r.amount:SetText((e.heal and "+" or "-") .. Abbrev(e.amount))
+						local name, amount = DeathLine(e)
+						r.label:SetText(name)
+						r.amount:SetText(amount)
 					else
 						r.amount:SetText(format("%s (%.1f%%)", Abbrev(e.amount), total > 0 and e.amount / total * 100 or 0))
 					end
