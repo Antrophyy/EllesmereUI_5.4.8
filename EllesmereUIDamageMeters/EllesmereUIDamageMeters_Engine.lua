@@ -61,7 +61,8 @@ end
 
 ---------------------------------------------------------------------------
 -- Change notifications: E.Listen(fn) -> fn(what), what = "start" | "stop" |
--- "reset" (all data) | "overall" (Overall cleared) | "removed" (old fights dropped)
+-- "reset" (all data) | "overall" (Overall cleared) | "removed" (old fights dropped) |
+-- "death" (a group player died)
 ---------------------------------------------------------------------------
 local listeners = {}
 function E.Listen(fn) listeners[#listeners + 1] = fn end
@@ -202,6 +203,22 @@ end
 
 local shields -- forward (shield tracking below)
 
+-- The fight that ended last, kept or not: a death that arrives just after
+-- the fight ended (your own death drops you out of combat first) joins it.
+local lastStopped
+
+local function KeepSegment(seg)
+	tinsert(segments, 1, seg)
+	seg.kept = true
+	local keep = Cfg("segmentsToKeep", 18)
+	local removed = false
+	while #segments > keep do
+		tremove(segments)
+		removed = true
+	end
+	if removed then Fire("removed") end
+end
+
 local function StopFight()
 	if not current then return end
 	local seg = current
@@ -216,15 +233,9 @@ local function StopFight()
 	end
 	overall.duration = (overall.duration or 0) + (seg.finish - seg.start)
 	if not seg.name then seg.name = BiggestEnemy(seg) or "Combat" end
+	lastStopped = seg
 	if HasData(seg) and (seg.boss or #seg.deaths > 0 or seg.finish - seg.start >= MIN_FIGHT) then
-		tinsert(segments, 1, seg)
-		local keep = Cfg("segmentsToKeep", 18)
-		local removed = false
-		while #segments > keep do
-			tremove(segments)
-			removed = true
-		end
-		if removed then Fire("removed") end
+		KeepSegment(seg)
 	end
 	Fire("stop")
 end
@@ -238,6 +249,7 @@ function E.InCombat() return current ~= nil end
 function E.Reset()
 	if current then return false end
 	wipe(segments)
+	lastStopped = nil
 	ResetOverall()
 	Fire("reset")
 	return true
@@ -441,12 +453,21 @@ local function Count(srcGUID, srcName, srcFlags, id, field, listField)
 	end
 end
 
+local DEATH_JOIN = 5 -- seconds after a fight ended that a death still belongs to it
+local diedAt = {} -- guid -> time of the last recorded death (UNIT_DIED and PLAYER_DEAD both report yours)
 local function Died(dstGUID, dstName, dstFlags)
-	if band(dstFlags, AFFIL_GROUP) == 0 or band(dstFlags, TYPE_PLAYER) == 0 then return end
+	if not dstGUID or band(dstFlags, AFFIL_GROUP) == 0 or band(dstFlags, TYPE_PLAYER) == 0 then return end
 	local unit = unitOf[dstGUID]
 	if unit and UnitIsFeignDeath and UnitIsFeignDeath(unit) then return end
-	local seg = current or segments[1]
 	local now = GetTime()
+	if diedAt[dstGUID] and now - diedAt[dstGUID] < DEATH_JOIN then return end
+	diedAt[dstGUID] = now
+	local seg = current
+	if not seg and lastStopped and now - lastStopped.finish <= DEATH_JOIN then
+		seg = lastStopped
+		if not seg.kept then KeepSegment(seg) end
+	end
+	seg = seg or segments[1]
 	local events = deathLog[dstGUID] or {}
 	deathLog[dstGUID] = nil
 	local class
@@ -460,6 +481,7 @@ local function Died(dstGUID, dstName, dstFlags)
 		tinsert(seg.deaths, death)
 	end
 	overall.deaths[#overall.deaths + 1] = death
+	Fire("death")
 end
 
 ---------------------------------------------------------------------------
@@ -521,6 +543,11 @@ H.UNIT_DIED = function(sG, sN, sF, dG, dN, dF)
 	Died(dG, dN, dF)
 end
 
+-- Your own death, in case the combat log does not report it.
+function E.PlayerDied()
+	Died(playerGUID or UnitGUID("player"), UnitName("player"), 0x00000511) -- mine, friendly, player
+end
+
 -- Entry point (also used by the tests): the CLEU payload after the timestamp.
 function E.OnCombatLog(_, event, _, sG, sN, sF, _, dG, dN, dF, _, ...)
 	local h = H[event]
@@ -566,6 +593,7 @@ frame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 frame:RegisterEvent("INSPECT_READY")
 frame:RegisterEvent("PLAYER_REGEN_DISABLED")
 frame:RegisterEvent("PLAYER_REGEN_ENABLED")
+frame:RegisterEvent("PLAYER_DEAD")
 frame:RegisterEvent("ENCOUNTER_START")
 frame:RegisterEvent("ENCOUNTER_END")
 frame:RegisterEvent("WORLD_STATE_TIMER_START")
@@ -576,6 +604,8 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		StartFight()
 	elseif event == "PLAYER_REGEN_ENABLED" then
 		E.CheckEnd()
+	elseif event == "PLAYER_DEAD" then
+		E.PlayerDied()
 	elseif event == "ENCOUNTER_START" then
 		local _, name = ...
 		encounterName = name or "Boss"

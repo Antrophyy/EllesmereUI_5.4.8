@@ -326,6 +326,39 @@ Test("stored fights are capped and reset clears everything", function()
 	Equal(#DM.GetSources(E.GetOverall(), T.DamageDone), 0)
 end)
 
+Test("your death right after the fight ended still joins it", function()
+	-- Dying drops you out of combat, so the fight can end before UNIT_DIED.
+	inCombat = true
+	Log("SPELL_DAMAGE", ADD_GUID, "Add", ADD, playerGUID, "Alex", ME, 900, "Smash", 1, 5000, -1, 1, 0, 0, 0)
+	Tick(1)
+	inCombat = false
+	Fire("PLAYER_REGEN_ENABLED")
+	Equal(E.InCombat(), false)
+	Equal(#DM.GetSegments(), 0) -- one second: too short to keep on its own
+	Log("UNIT_DIED", nil, nil, 0, playerGUID, "Alex", ME)
+	Equal(#DM.GetSegments(), 1)
+	local deaths = DM.GetSources(E.GetCurrent(), T.Deaths)
+	Equal(#deaths, 1); Equal(deaths[1].isLocalPlayer, true)
+	-- PLAYER_DEAD for the same death is not counted twice.
+	Fire("PLAYER_DEAD")
+	Equal(#DM.GetSources(E.GetCurrent(), T.Deaths), 1)
+	Equal(#DM.GetSources(E.GetOverall(), T.Deaths), 1)
+end)
+
+Test("PLAYER_DEAD records your death when the combat log does not", function()
+	Tick(10)
+	inCombat = true
+	Log("SPELL_DAMAGE", ADD_GUID, "Add", ADD, playerGUID, "Alex", ME, 900, "Smash", 1, 5000, -1, 1, 0, 0, 0)
+	Tick(3)
+	Fire("PLAYER_DEAD")
+	inCombat = false
+	Tick(1)
+	local deaths = DM.GetSources(E.GetCurrent(), T.Deaths)
+	Equal(#deaths, 1); Equal(deaths[1].isLocalPlayer, true)
+	Equal(#DM.GetBreakdown(E.GetCurrent(), T.Deaths, deaths[1]), 1)
+	Equal(DM.ResetData(), true)
+end)
+
 Test("windows render engine data, breakdowns and the empty message", function()
 	Equal(#DM.windows, DM.DB().windowCount)
 	local window = DM.windows[1]
