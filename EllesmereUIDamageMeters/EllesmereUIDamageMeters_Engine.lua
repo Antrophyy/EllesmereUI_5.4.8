@@ -11,7 +11,8 @@
 --               dmgActive, healActive (activity seconds),
 --               dmgSpells, healSpells, intSpells, dispSpells = { [key] = { id, pet, amount } },
 --               takenFrom = { [key] = { name, class, amount } } }
---   death   = { name, class, at, time, events = { { heal, id, amount, at, source }, ... oldest first } }
+--   death   = { name, class, at, time, events = { { heal, id, amount, at, source, hp, overkill, absorbed, shield },
+--               ... oldest first } } (hp = health % after the event, as Details records it)
 -- Fights are saved per character at logout / reload (EllesmereUIDamageMetersFights)
 -- and restored when the addon loads.
 
@@ -24,7 +25,7 @@ local band = bit.band
 local GetTime, UnitGUID, UnitClass, UnitName = GetTime, UnitGUID, UnitClass, UnitName
 local UnitAffectingCombat, UnitIsFeignDeath = UnitAffectingCombat, UnitIsFeignDeath
 local tinsert, tremove, wipe, pairs, ipairs, type = table.insert, table.remove, wipe, pairs, ipairs, type
-local min = math.min
+local min, floor = math.min, math.floor
 
 -- Combat log object flags.
 local AFFIL_GROUP = 0x00000007 -- mine, party, raid
@@ -34,7 +35,7 @@ local REACT_HOSTILE_OR_NEUTRAL = 0x00000060
 local TYPE_PLAYER = 0x00000400
 
 local ACTIVITY_GAP = 3.5 -- seconds between hits that still count as active
-local DEATH_LOG_SIZE = 16
+local DEATH_LOG_SIZE = 32 -- Details keeps the last 32 events
 local MIN_FIGHT = 2 -- fights shorter than this (without a boss or a death) are dropped
 local PHANTOM_PULL = 5 -- a boss "pull" this short (or with no damage) right after a wipe on that boss is dropped
 local AFTER_WIPE = 60 -- seconds after a wipe that a short scuffle (the reset, dying ghosts) belongs to it
@@ -358,15 +359,28 @@ local function AddTaken(a, key, name, class, amount)
 	t.amount = t.amount + amount
 end
 
--- Death logs: the last events taken by each group player.
+-- Death logs: the last events taken by each group player, with the
+-- player's health right after each one (Details' death log).
 local deathLog = {}
-local function LogEvent(guid, heal, id, amount, source)
+local function HealthPct(guid)
+	local unit = unitOf[guid]
+	if not unit or not UnitHealth or not UnitHealthMax then return nil end
+	local max = UnitHealthMax(unit)
+	if not max or max <= 0 then return nil end
+	return min(100, floor(100 * (UnitHealth(unit) or 0) / max + 0.5))
+end
+local function LogEvent(guid, heal, id, amount, source, overkill, absorbed, shield)
 	local log = deathLog[guid]
 	if not log then
 		log = {}
 		deathLog[guid] = log
 	end
-	log[#log + 1] = { heal = heal, id = id, amount = amount, at = GetTime(), source = source }
+	log[#log + 1] = {
+		heal = heal, id = id, amount = amount, at = GetTime(), source = source, hp = HealthPct(guid),
+		overkill = overkill and overkill > 0 and overkill or nil,
+		absorbed = absorbed and absorbed > 0 and absorbed or nil,
+		shield = shield or nil,
+	}
 	if #log > DEATH_LOG_SIZE then tremove(log, 1) end
 end
 
@@ -401,9 +415,9 @@ local function RecordDamageToSeg(seg, srcGUID, srcName, srcFlags, dstGUID, dstNa
 	end
 end
 
-local function Damage(srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, id, amount, absorbed, school)
+local function Damage(srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, id, amount, absorbed, school, overkill)
 	if dstGUID and band(dstFlags, AFFIL_GROUP) ~= 0 and band(dstFlags, TYPE_PLAYER) ~= 0 and amount and amount > 0 then
-		LogEvent(dstGUID, false, id, amount, srcName)
+		LogEvent(dstGUID, false, id, amount, srcName, overkill, absorbed)
 	end
 	if absorbed and absorbed > 0 then E.CreditAbsorb(dstGUID, dstName, dstFlags, absorbed) end
 	if not amount or amount <= 0 then return end
@@ -427,10 +441,10 @@ local function RecordHealToSeg(seg, owner, ownerName, isPlayer, srcName, srcFlag
 	Activity(a, "healActive", "healLast", now)
 end
 
-local function Heal(srcGUID, srcName, srcFlags, dstGUID, dstFlags, id, amount, overheal)
+local function Heal(srcGUID, srcName, srcFlags, dstGUID, dstFlags, id, amount, overheal, shield)
 	local effective = (amount or 0) - (overheal or 0)
 	if dstGUID and band(dstFlags, AFFIL_GROUP) ~= 0 and band(dstFlags, TYPE_PLAYER) ~= 0 and effective > 0 then
-		LogEvent(dstGUID, true, id, effective, srcName)
+		LogEvent(dstGUID, true, id, effective, srcName, nil, nil, shield)
 	end
 	if not current or effective <= 0 then return end
 	if band(dstFlags, REACT_FRIENDLY) == 0 then return end
@@ -491,7 +505,7 @@ function E.CreditAbsorb(dstGUID, dstName, dstFlags, absorbed)
 		end
 	end
 	local s = list[1]
-	if s then Heal(s.src, s.srcName, s.srcFlags, dstGUID, dstFlags, s.id, absorbed, 0) end
+	if s then Heal(s.src, s.srcName, s.srcFlags, dstGUID, dstFlags, s.id, absorbed, 0, true) end
 end
 
 ---------------------------------------------------------------------------
@@ -545,10 +559,10 @@ end
 ---------------------------------------------------------------------------
 local H = {}
 H.SWING_DAMAGE = function(sG, sN, sF, dG, dN, dF, amount, overkill, school, resisted, blocked, absorbed)
-	Damage(sG, sN, sF, dG, dN, dF, 1, amount, absorbed, school)
+	Damage(sG, sN, sF, dG, dN, dF, 1, amount, absorbed, school, overkill)
 end
 local function SpellDamage(sG, sN, sF, dG, dN, dF, id, _, school, amount, overkill, _, resisted, blocked, absorbed)
-	Damage(sG, sN, sF, dG, dN, dF, id, amount, absorbed, school)
+	Damage(sG, sN, sF, dG, dN, dF, id, amount, absorbed, school, overkill)
 end
 H.SPELL_DAMAGE = SpellDamage
 H.SPELL_PERIODIC_DAMAGE = SpellDamage
@@ -558,7 +572,7 @@ H.DAMAGE_SHIELD = SpellDamage
 H.DAMAGE_SPLIT = SpellDamage
 H.ENVIRONMENTAL_DAMAGE = function(sG, sN, sF, dG, dN, dF, envType, amount, overkill, school, resisted, blocked, absorbed)
 	local name = envType and (envType:sub(1, 1) .. envType:sub(2):lower()) or "Environment"
-	Damage(nil, name, 0, dG, dN, dF, 0, amount, absorbed, school)
+	Damage(nil, name, 0, dG, dN, dF, 0, amount, absorbed, school, overkill)
 end
 H.SWING_MISSED = function(sG, sN, sF, dG, dN, dF, missType, offHand, amountMissed)
 	if missType == "ABSORB" then E.CreditAbsorb(dG, dN, dF, amountMissed or 0) end

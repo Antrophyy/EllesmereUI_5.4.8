@@ -554,5 +554,33 @@ Test("fights and Overall survive a reload, a fight in progress included", functi
 	Equal(DM.GetSources(E.GetOverall(), T.DamageDone)[1].total, 700)
 end)
 
+Test("death recaps keep 32 events with health, overkill and absorbs, like Details", function()
+	Fire("GROUP_ROSTER_UPDATE") -- the engine reloaded above; learn the group again
+	local hp = 1000
+	UnitHealth, UnitHealthMax = function() return hp end, function() return 1000 end
+	Log("SPELL_AURA_APPLIED", partyGUID, "Casey", PARTY, partyGUID, "Casey", PARTY, 17, "Power Word: Shield", 2, "BUFF", 5000)
+	for i = 1, 40 do
+		hp = hp - 20
+		Log("SPELL_DAMAGE", BOSS_GUID, "Boss", BOSS, partyGUID, "Casey", PARTY, 901, "Tick", 1, 20, -1, 1, 0, 0, 0)
+	end
+	Log("SPELL_MISSED", BOSS_GUID, "Boss", BOSS, partyGUID, "Casey", PARTY, 901, "Tick", 1, "ABSORB", false, 50)
+	hp = 0
+	Log("SPELL_DAMAGE", BOSS_GUID, "Boss", BOSS, partyGUID, "Casey", PARTY, 902, "Smash", 1, 900, 700, 1, 0, 0, 0)
+	Log("UNIT_DIED", nil, nil, 0, partyGUID, "Casey", PARTY)
+	UnitHealth, UnitHealthMax = nil, nil
+	local deaths = DM.GetSources(E.GetCurrent(), T.Deaths)
+	local recap = DM.GetBreakdown(E.GetCurrent(), T.Deaths, deaths[#deaths])
+	Equal(deaths[#deaths].name, "Casey")
+	Equal(#recap, 32); Equal(recap.hasHP, true, "hasHP")
+	Equal(recap[1].label, "Spell 902"); Equal(recap[1].hp, 0); Equal(recap[1].overkill, 700)
+	Equal(recap[2].shield, true, "shield"); Equal(recap[2].heal, true); Equal(recap[2].amount, 50)
+	Equal(recap[3].hp, 20); Equal(recap[32].hp, 78) -- the 30 newest of 40 ticks
+	local label, amount = DM.DeathLine(recap[1])
+	assert(label:find("Spell 902", 1, true) and label:find("Boss", 1, true) and label:find("700 overkill", 1, true), label)
+	assert(amount:find("900", 1, true) and amount:find(" 0%", 1, true), amount)
+	label = DM.DeathLine(recap[2])
+	assert(label:find("(absorb)", 1, true), label)
+end)
+
 print(string.format("%d passed, %d failed", passed, #failures))
 if #failures > 0 then error(table.concat(failures, "\n"), 0) end
