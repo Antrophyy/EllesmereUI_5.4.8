@@ -2019,7 +2019,9 @@ local function FireHoveredOnEnter()
 		if Forbidden(frame) then
 			break
 		end
-		local protected = frame.IsProtected and frame:IsProtected()
+		-- Action buttons are protected, but their OnEnter only builds the
+		-- tooltip (5.4.8 has no secret values), so peek can re-run it.
+		local protected = frame.IsProtected and frame:IsProtected() and frame.action == nil
 		if not protected and frame.GetScript then
 			local ok, onEnter = pcall(frame.GetScript, frame, "OnEnter")
 			if ok and onEnter then
@@ -2129,9 +2131,14 @@ local function InitAnchoring()
 		if down == 1 then
 			if parked and GameTooltip:IsShown() then
 				Unpark(GameTooltip)
-			else
-				FireHoveredOnEnter()
+				-- On 5.4.8 the hidden host hides the tooltip for the engine,
+				-- which empties it; an empty tip is rebuilt from the hover.
+				if (GameTooltip:NumLines() or 0) > 0 then
+					return
+				end
+				GameTooltip:Hide()
 			end
+			FireHoveredOnEnter()
 		elseif GameTooltip:IsShown() and Suppressed(GameTooltip) then
 			Park(GameTooltip)
 		end
