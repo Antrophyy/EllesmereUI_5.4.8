@@ -632,20 +632,76 @@ local function GetBreakdown(combat, dmType, src)
 end
 DM.GetBreakdown = GetBreakdown
 
--- Stored segments for the segment menu, newest first: { combat, name, time }.
+-- Stored segments for the segment menu, newest first:
+-- { combat, name, time, boss, try, result, bossHP }.
 function DM.GetSegments()
 	local out = {}
 	local segs = Engine().GetSegments()
 	for i = 1, #segs do
 		local c = segs[i]
-		out[#out + 1] = { combat = c, name = c.name or "Combat", time = CombatTime(c) }
+		out[#out + 1] = {
+			combat = c, name = c.name or "Combat", time = CombatTime(c),
+			boss = c.boss, try = c.try, result = c.result, bossHP = c.bossHP,
+		}
 	end
 	return out
+end
+
+-- Segment menu label (Details style): "Boss #3  Wipe 34%" / "Boss #4  Kill".
+local KILL_COLOR, WIPE_COLOR = "|cff5fd35f", "|cffff5f5f"
+function DM.SegmentLabel(s)
+	local text = s.name
+	if not s.boss then return text end
+	if s.try then text = text .. " #" .. s.try end
+	if s.result == "kill" then
+		text = text .. "  " .. KILL_COLOR .. "Kill|r"
+	elseif s.result == "wipe" then
+		local hp = s.bossHP and (" " .. floor(s.bossHP + 0.5) .. "%") or ""
+		text = text .. "  " .. WIPE_COLOR .. "Wipe" .. hp .. "|r"
+	end
+	return text
 end
 
 function DM.InCombat()
 	if Engine().InCombat() then return true end
 	return InCombatLockdown() or UnitAffectingCombat("player") and true or false
+end
+
+-- Segment menu items of a window: past fights (oldest first), Current, Overall.
+function DM.SegmentMenuItems(W)
+	local items = {}
+	local segs = DM.GetSegments()
+	local function entry(s)
+		return {
+			text = DM.SegmentLabel(s), timerText = FormatTimer(s.time), compact = true,
+			isActive = W.curSessionID == s.combat,
+			onClick = function() DM.ApplySegmentSelection(W, nil, s.combat) end,
+		}
+	end
+	-- Oldest first; two or more trash fights in a row fold into a Trash submenu.
+	local i = #segs
+	while i >= 1 do
+		local j = i
+		while j > 1 and not segs[i].boss and not segs[j - 1].boss do j = j - 1 end
+		if segs[i].boss or i == j then
+			items[#items + 1] = entry(segs[i])
+		else
+			local group = { text = "Trash (" .. (i - j + 1) .. ")", compact = true, children = {} }
+			for k = i, j, -1 do
+				local e = entry(segs[k])
+				group.children[#group.children + 1] = e
+				if e.isActive then group.isActive = true end
+			end
+			items[#items + 1] = group
+		end
+		i = j - 1
+	end
+	items[#items + 1] = "---"
+	items[#items + 1] = { text = "Current", isActive = not W.curSessionID and W.curSession == S.Current,
+		onClick = function() DM.ApplySegmentSelection(W, S.Current, nil) end }
+	items[#items + 1] = { text = "Overall", isActive = not W.curSessionID and W.curSession == S.Overall,
+		onClick = function() DM.ApplySegmentSelection(W, S.Overall, nil) end }
+	return items
 end
 
 ---------------------------------------------------------------------------
@@ -1946,22 +2002,7 @@ CreateDMWindow = function(idx)
 	end
 
 	function W.ShowSegmentMenu(anchor)
-		local items = {}
-		local segs = DM.GetSegments()
-		for i = #segs, 1, -1 do
-			local s = segs[i]
-			items[#items + 1] = {
-				text = s.name, timerText = FormatTimer(s.time), compact = true,
-				isActive = W.curSessionID == s.combat,
-				onClick = function() DM.ApplySegmentSelection(W, nil, s.combat) end,
-			}
-		end
-		items[#items + 1] = "---"
-		items[#items + 1] = { text = "Current", isActive = not W.curSessionID and W.curSession == S.Current,
-			onClick = function() DM.ApplySegmentSelection(W, S.Current, nil) end }
-		items[#items + 1] = { text = "Overall", isActive = not W.curSessionID and W.curSession == S.Overall,
-			onClick = function() DM.ApplySegmentSelection(W, S.Overall, nil) end }
-		ShowMenu(items, anchor)
+		ShowMenu(DM.SegmentMenuItems(W), anchor)
 	end
 
 	function W.ShowSettingsMenu(anchor)

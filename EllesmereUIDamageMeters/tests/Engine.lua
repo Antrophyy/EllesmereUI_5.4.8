@@ -415,6 +415,56 @@ Test("Combat Data tab edits the engine settings", function()
 	meter.build(all)
 end)
 
+Test("boss pulls are numbered with kill or wipe and boss health; trash folds together", function()
+	DM.DB().segmentsToKeep = 18
+	Equal(DM.ResetData(), true)
+	local bossHP = 100
+	function UnitExists(unit) return unit == "boss1" end
+	function UnitHealth() return bossHP end
+	function UnitHealthMax() return 100 end
+	local function Trash(name)
+		inCombat = true
+		Log("SPELL_DAMAGE", playerGUID, "Alex", ME, ADD_GUID, name, ADD, 100, "Shot", 1, 10, -1, 1, 0, 0, 0)
+		Tick(3)
+		inCombat = false
+		Tick(1)
+	end
+	local function Pull(hpLeft, success)
+		Fire("ENCOUNTER_START", 1, "Immerseus", 3, 10)
+		inCombat = true
+		bossHP = 100
+		Log("SPELL_DAMAGE", playerGUID, "Alex", ME, BOSS_GUID, "Immerseus", BOSS, 100, "Shot", 1, 500, -1, 1, 0, 0, 0)
+		Tick(1)
+		bossHP = hpLeft
+		Tick(1)
+		bossHP = 100 -- the boss resets after a wipe
+		Fire("ENCOUNTER_END", 1, "Immerseus", 3, 10, success)
+		inCombat = false
+		Tick(1)
+	end
+	Trash("Add A"); Trash("Add B")
+	Pull(34.4, 0)
+	Pull(0, 1)
+	Trash("Add C")
+	Pull(80, 0) -- the counter starts over after a kill
+	local segs = DM.GetSegments()
+	Equal(#segs, 6)
+	Equal(DM.SegmentLabel(segs[1]), "Immerseus #1  |cffff5f5fWipe 80%|r")
+	Equal(DM.SegmentLabel(segs[3]), "Immerseus #2  |cff5fd35fKill|r")
+	Equal(DM.SegmentLabel(segs[4]), "Immerseus #1  |cffff5f5fWipe 34%|r")
+	Equal(DM.SegmentLabel(segs[2]), "Add C")
+	local window = DM.windows[1]
+	window.curSessionID = segs[6].combat
+	local items = DM.SegmentMenuItems(window)
+	Equal(items[1].text, "Trash (2)"); Equal(items[1].isActive, true)
+	Equal(items[1].children[1].text, "Add A"); Equal(items[1].children[2].text, "Add B")
+	Equal(items[2].text, "Immerseus #1  |cffff5f5fWipe 34%|r")
+	Equal(items[4].text, "Add C") -- a single trash fight stays on its own
+	Equal(items[6], "---"); Equal(items[7].text, "Current")
+	window.curSessionID = nil
+	UnitExists, UnitHealth, UnitHealthMax = nil, nil, nil
+end)
+
 Test("fights and Overall survive a reload, a fight in progress included", function()
 	DM.DB().segmentsToKeep = 18; DM.DB().timeType = "effective"
 	Equal(DM.ResetData(), true)

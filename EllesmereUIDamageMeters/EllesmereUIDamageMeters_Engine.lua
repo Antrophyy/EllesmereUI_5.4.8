@@ -4,7 +4,8 @@
 -- taken, interrupts, dispels and death recaps, per fight and Overall.
 --
 -- Data model (read by EllesmereUIDamageMeters_Meter.lua):
---   segment = { name, start, finish, boss, actors = { [guid] = actor }, deaths = { death } }
+--   segment = { name, start, finish, boss, try, result ("kill" | "wipe"), bossHP (lowest %),
+--               actors = { [guid] = actor }, deaths = { death } }
 --   actor   = { guid, name, class, spec, group, enemy,
 --               damage, healing, taken, interrupts, dispels,
 --               dmgActive, healActive (activity seconds),
@@ -125,6 +126,7 @@ local segments = {} -- finished fights, newest first
 local current -- the fight in progress, or nil
 local overall
 local encounterName, lastBossName
+local tries = {} -- boss name -> pulls this session (back to 0 after a kill)
 
 local function NewSegment()
 	return { start = GetTime(), actors = {}, deaths = {} }
@@ -191,6 +193,7 @@ local function StartFight()
 	if encounterName then
 		current.boss = true
 		current.name = encounterName
+		current.try = tries[encounterName]
 	end
 	Fire("start")
 end
@@ -235,6 +238,9 @@ local function StopFight()
 	end
 	overall.duration = (overall.duration or 0) + (seg.finish - seg.start)
 	if not seg.name then seg.name = BiggestEnemy(seg) or "Combat" end
+	if seg.boss and not seg.result then
+		seg.result = (seg.bossHP and seg.bossHP <= 0) and "kill" or "wipe"
+	end
 	lastStopped = seg
 	if HasData(seg) and (seg.boss or #seg.deaths > 0 or seg.finish - seg.start >= MIN_FIGHT) then
 		KeepSegment(seg)
@@ -251,6 +257,7 @@ function E.InCombat() return current ~= nil end
 function E.Reset()
 	if current then return false end
 	wipe(segments)
+	wipe(tries)
 	lastStopped = nil
 	ResetOverall()
 	Fire("reset")
@@ -590,6 +597,11 @@ local function RestoreFights()
 		end
 	end
 	local o = saved.overall
+	if type(saved.tries) == "table" then
+		for name, n in pairs(saved.tries) do
+			if type(name) == "string" and type(n) == "number" then tries[name] = n end
+		end
+	end
 	if Restorable(o) and o.isOverall and type(o.duration) == "number" then
 		ClearActivity(o)
 		overall = o
@@ -602,6 +614,7 @@ local function SaveFights()
 	if current then StopFight() end
 	_G.EllesmereUIDamageMetersFights = {
 		version = SAVE_VERSION, segments = segments, overall = overall, lastBossName = lastBossName,
+		tries = tries,
 	}
 end
 
@@ -610,7 +623,23 @@ end
 -- on ENCOUNTER_END, with a fallback when the group has left combat).
 ---------------------------------------------------------------------------
 local outSince
+-- Lowest health of the encounter's bosses, for the boss % of a wipe.
+local function TrackBossHP()
+	if not current or not current.boss or not UnitExists then return end
+	for i = 1, 5 do
+		local unit = "boss" .. i
+		if UnitExists(unit) then
+			local max = UnitHealthMax(unit)
+			if max and max > 0 then
+				local pct = 100 * UnitHealth(unit) / max
+				if not current.bossHP or pct < current.bossHP then current.bossHP = pct end
+			end
+		end
+	end
+end
+
 function E.CheckEnd()
+	TrackBossHP()
 	if not current then
 		outSince = nil
 		return
@@ -671,13 +700,22 @@ frame:SetScript("OnEvent", function(_, event, ...)
 			Fire("overall")
 		end
 		lastBossName = encounterName
+		tries[encounterName] = (tries[encounterName] or 0) + 1
 		if current then
 			current.boss = true
 			current.name = encounterName
+			current.try = tries[encounterName]
 		else
 			StartFight()
 		end
 	elseif event == "ENCOUNTER_END" then
+		local _, name, _, _, success = ...
+		local seg = current or lastStopped
+		if seg and seg.boss then
+			seg.result = success == 1 and "kill" or "wipe"
+			if success == 1 then seg.bossHP = 0 end
+		end
+		if success == 1 and name then tries[name] = nil end
 		encounterName = nil
 		E.CheckEnd()
 	elseif event == "WORLD_STATE_TIMER_START" then
