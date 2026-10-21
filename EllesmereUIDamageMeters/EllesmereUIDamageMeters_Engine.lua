@@ -36,6 +36,7 @@ local TYPE_PLAYER = 0x00000400
 local ACTIVITY_GAP = 3.5 -- seconds between hits that still count as active
 local DEATH_LOG_SIZE = 16
 local MIN_FIGHT = 2 -- fights shorter than this (without a boss or a death) are dropped
+local PHANTOM_PULL = 5 -- a boss "pull" this short (or with no damage) right after a wipe on that boss is dropped
 
 -- Damage-absorbing auras of 5.4.8 credited as healing to their caster
 -- (from the Details! 5.4.8 absorb list, MoP class spells and consumables).
@@ -206,6 +207,14 @@ local function HasData(seg)
 	return false
 end
 
+local function GroupDamage(seg)
+	local n = 0
+	for _, a in pairs(seg.actors) do
+		if a.group then n = n + a.damage end
+	end
+	return n
+end
+
 local shields -- forward (shield tracking below)
 
 -- The fight that ended last, kept or not: a death that arrives just after
@@ -242,6 +251,21 @@ local function StopFight()
 		seg.result = (seg.bossHP and seg.bossHP <= 0) and "kill" or "wipe"
 	end
 	lastStopped = seg
+	-- After a wipe the server can start the encounter again for a moment: a
+	-- few seconds of "pull" right after a wipe on the same boss is not a try.
+	-- Its deaths (players still dying in the reset) go to the real wipe.
+	local prev = segments[1]
+	if seg.boss and seg.result == "wipe" and (seg.finish - seg.start < PHANTOM_PULL or GroupDamage(seg) == 0)
+		and prev and prev.boss and prev.result == "wipe" and prev.name == seg.name then
+		for _, death in ipairs(seg.deaths) do
+			death.time = death.at - prev.start
+			tinsert(prev.deaths, death)
+		end
+		if seg.try and tries[seg.name] == seg.try then tries[seg.name] = seg.try - 1 end
+		lastStopped = prev
+		Fire("stop")
+		return
+	end
 	if HasData(seg) and (seg.boss or #seg.deaths > 0 or seg.finish - seg.start >= MIN_FIGHT) then
 		KeepSegment(seg)
 	end

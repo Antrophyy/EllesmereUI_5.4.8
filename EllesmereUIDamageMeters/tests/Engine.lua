@@ -447,9 +447,24 @@ Test("boss pulls are numbered with kill or wipe and boss health; trash folds tog
 	Pull(0, 1)
 	Trash("Add C")
 	Pull(80, 0) -- the counter starts over after a kill
+	-- The server's moment of encounter right after a wipe is no try; its deaths join the wipe.
+	Fire("ENCOUNTER_START", 1, "Immerseus", 3, 10)
+	Log("UNIT_DIED", nil, nil, 0, partyGUID, "Casey", PARTY)
+	Tick(1)
+	Fire("ENCOUNTER_END", 1, "Immerseus", 3, 10, 0)
+	Tick(1)
+	-- Same with no damage at all, however long it lasts.
+	Fire("ENCOUNTER_START", 1, "Immerseus", 3, 10)
+	Log("SPELL_DAMAGE", BOSS_GUID, "Immerseus", BOSS, playerGUID, "Alex", ME, 200, "Swell", 1, 100, -1, 1, 0, 0, 0)
+	for _ = 1, 30 do Tick(0.5) end
 	local segs = DM.GetSegments()
 	Equal(#segs, 6)
 	Equal(DM.SegmentLabel(segs[1]), "Immerseus #1  |cffff5f5fWipe 80%|r")
+	Equal(#segs[1].combat.deaths, 1)
+	Fire("ENCOUNTER_START", 1, "Immerseus", 3, 10)
+	Equal(E.GetCurrent().try, 2) -- the next real pull is #2
+	Fire("ENCOUNTER_END", 1, "Immerseus", 3, 10, 0)
+	Tick(1)
 	Equal(DM.SegmentLabel(segs[3]), "Immerseus #2  |cff5fd35fKill|r")
 	Equal(DM.SegmentLabel(segs[4]), "Immerseus #1  |cffff5f5fWipe 34%|r")
 	Equal(DM.SegmentLabel(segs[2]), "Add C")
