@@ -459,7 +459,7 @@ local TIME_TYPES = {
 
 local function BuildCombatDataPage(p)
 	p:Section("COMBAT HISTORY")
-	p:Paragraph("EllesmereUI records the combat log itself; no other damage meter addon is needed. Fights are kept until you reload or log out.")
+	p:Paragraph("EllesmereUI records the combat log itself; no other damage meter addon is needed. Fights are kept across reloads and logouts (per character) until you reset them.")
 	p:Dropdown("DPS / HPS Time Measurement", "Effective Time divides by the whole fight duration. Activity Time divides by each player's own active time.",
 		function() return KeyItems(TIME_TYPES) end,
 		function() return Cfg("timeType") or "effective" end,

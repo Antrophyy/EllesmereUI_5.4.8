@@ -11,8 +11,10 @@
 --               dmgSpells, healSpells, intSpells, dispSpells = { [key] = { id, pet, amount } },
 --               takenFrom = { [key] = { name, class, amount } } }
 --   death   = { name, class, at, time, events = { { heal, id, amount, at, source }, ... oldest first } }
--- Fights are kept for the session only (not saved across reloads).
+-- Fights are saved per character at logout / reload (EllesmereUIDamageMetersFights)
+-- and restored when the addon loads.
 
+local addonName = ...
 local ns = EllesmereUI
 local E = {}
 ns.EDMEngine = E
@@ -555,6 +557,55 @@ function E.OnCombatLog(_, event, _, sG, sN, sF, _, dG, dN, dF, _, ...)
 end
 
 ---------------------------------------------------------------------------
+-- Fights across a reload or relog: the stored fights and Overall are saved
+-- per character at logout and restored when the addon loads. Only the
+-- differences between times of one fight are read, so GetTime() starting
+-- over after a game restart does not matter.
+---------------------------------------------------------------------------
+local SAVE_VERSION = 1
+
+local function Restorable(seg)
+	return type(seg) == "table" and type(seg.actors) == "table" and type(seg.deaths) == "table"
+		and type(seg.start) == "number"
+end
+
+local function ClearActivity(seg)
+	for _, a in pairs(seg.actors) do
+		a.dmgLast, a.healLast = nil, nil
+	end
+end
+
+local function RestoreFights()
+	local saved = _G.EllesmereUIDamageMetersFights
+	_G.EllesmereUIDamageMetersFights = nil
+	if type(saved) ~= "table" or saved.version ~= SAVE_VERSION then return end
+	if type(saved.segments) == "table" then
+		local keep = Cfg("segmentsToKeep", 18)
+		for _, seg in ipairs(saved.segments) do
+			if #segments >= keep then break end
+			if Restorable(seg) and type(seg.finish) == "number" then
+				ClearActivity(seg)
+				segments[#segments + 1] = seg
+			end
+		end
+	end
+	local o = saved.overall
+	if Restorable(o) and o.isOverall and type(o.duration) == "number" then
+		ClearActivity(o)
+		overall = o
+	end
+	if type(saved.lastBossName) == "string" then lastBossName = saved.lastBossName end
+end
+
+local function SaveFights()
+	-- A reload during a fight keeps the fight so far.
+	if current then StopFight() end
+	_G.EllesmereUIDamageMetersFights = {
+		version = SAVE_VERSION, segments = segments, overall = overall, lastBossName = lastBossName,
+	}
+end
+
+---------------------------------------------------------------------------
 -- Fight end: nobody in the group is in combat any more (a boss fight ends
 -- on ENCOUNTER_END, with a fallback when the group has left combat).
 ---------------------------------------------------------------------------
@@ -585,6 +636,8 @@ frame:SetScript("OnUpdate", function(_, elapsed)
 	E.CheckEnd()
 end)
 frame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+frame:RegisterEvent("ADDON_LOADED")
+frame:RegisterEvent("PLAYER_LOGOUT")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("GROUP_ROSTER_UPDATE")
@@ -600,6 +653,10 @@ frame:RegisterEvent("WORLD_STATE_TIMER_START")
 frame:SetScript("OnEvent", function(_, event, ...)
 	if event == "COMBAT_LOG_EVENT_UNFILTERED" then
 		E.OnCombatLog(...)
+	elseif event == "ADDON_LOADED" then
+		if ... == addonName then RestoreFights() end
+	elseif event == "PLAYER_LOGOUT" then
+		SaveFights()
 	elseif event == "PLAYER_REGEN_DISABLED" then
 		StartFight()
 	elseif event == "PLAYER_REGEN_ENABLED" then

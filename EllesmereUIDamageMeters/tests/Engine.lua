@@ -415,5 +415,46 @@ Test("Combat Data tab edits the engine settings", function()
 	meter.build(all)
 end)
 
+Test("fights and Overall survive a reload, a fight in progress included", function()
+	DM.DB().segmentsToKeep = 18; DM.DB().timeType = "effective"
+	Equal(DM.ResetData(), true)
+	inCombat = true
+	Log("SPELL_DAMAGE", playerGUID, "Alex", ME, BOSS_GUID, "Boss", BOSS, 100, "Shot", 1, 600, -1, 1, 0, 0, 0)
+	Tick(5)
+	Log("UNIT_DIED", nil, nil, 0, partyGUID, "Casey", PARTY)
+	inCombat = false
+	Tick(1)
+	Tick(10)
+	inCombat = true
+	Log("SPELL_DAMAGE", playerGUID, "Alex", ME, ADD_GUID, "Add", ADD, 100, "Shot", 1, 50, -1, 1, 0, 0, 0)
+	Tick(3)
+	Fire("PLAYER_LOGOUT") -- /reload during the second fight
+	local saved = EllesmereUIDamageMetersFights
+	assert(type(saved) == "table", "fights must be saved at logout")
+	-- A fresh engine (the reload), with GetTime() starting over.
+	for _, frame in ipairs(frames) do frame.events = {} end
+	now, inCombat = 5, false
+	EllesmereUIDamageMetersFights = saved
+	assert(loadfile("EllesmereUIDamageMeters/EllesmereUIDamageMeters_Engine.lua"))("EllesmereUIDamageMeters")
+	E = EllesmereUI.EDMEngine
+	Fire("ADDON_LOADED", "EllesmereUIDamageMeters")
+	Equal(EllesmereUIDamageMetersFights, nil)
+	local segs = DM.GetSegments()
+	Equal(#segs, 2); Equal(segs[1].name, "Add"); Equal(segs[2].name, "Boss")
+	Equal(segs[2].time, 6)
+	Equal(DM.GetSources(segs[2].combat, T.DamageDone)[1].total, 600)
+	Equal(#DM.GetSources(segs[2].combat, T.Deaths), 1)
+	Equal(E.GetCurrent(), segs[1].combat)
+	Equal(DM.GetSources(E.GetOverall(), T.DamageDone)[1].total, 650)
+	-- Recording carries on into the restored Overall.
+	inCombat = true
+	Log("SPELL_DAMAGE", playerGUID, "Alex", ME, ADD_GUID, "Add", ADD, 100, "Shot", 1, 50, -1, 1, 0, 0, 0)
+	Tick(3)
+	inCombat = false
+	Tick(1)
+	Equal(#DM.GetSegments(), 3)
+	Equal(DM.GetSources(E.GetOverall(), T.DamageDone)[1].total, 700)
+end)
+
 print(string.format("%d passed, %d failed", passed, #failures))
 if #failures > 0 then error(table.concat(failures, "\n"), 0) end
