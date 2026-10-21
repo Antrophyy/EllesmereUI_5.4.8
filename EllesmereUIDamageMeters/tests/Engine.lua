@@ -457,10 +457,32 @@ Test("boss pulls are numbered with kill or wipe and boss health; trash folds tog
 	Fire("ENCOUNTER_START", 1, "Immerseus", 3, 10)
 	Log("SPELL_DAMAGE", BOSS_GUID, "Immerseus", BOSS, playerGUID, "Alex", ME, 200, "Swell", 1, 100, -1, 1, 0, 0, 0)
 	for _ = 1, 30 do Tick(0.5) end
+	-- A moment of combat in the reset ("Combat", 0:00): someone dies, nobody does anything.
+	inCombat = true
+	Log("SPELL_DAMAGE", ADD_GUID, "Add", ADD, playerGUID, "Alex", ME, 300, "Smash", 1, 100, -1, 1, 0, 0, 0)
+	Log("UNIT_DIED", nil, nil, 0, playerGUID, "Alex", ME)
+	inCombat = false
+	Tick(0.5)
+	-- A pull in which the boss is never touched.
+	Fire("ENCOUNTER_START", 1, "Immerseus", 3, 10)
+	inCombat = true
+	bossHP = 100
+	Log("SPELL_DAMAGE", playerGUID, "Alex", ME, ADD_GUID, "Add", ADD, 100, "Shot", 1, 50, -1, 1, 0, 0, 0)
+	Tick(6)
+	Fire("ENCOUNTER_END", 1, "Immerseus", 3, 10, 0)
+	inCombat = false
+	Tick(1)
+	-- Away from a wipe, being hit without doing anything (and nobody dying) is no fight.
+	Tick(120)
+	inCombat = true
+	Log("SPELL_DAMAGE", ADD_GUID, "Add", ADD, playerGUID, "Alex", ME, 300, "Smash", 1, 100, -1, 1, 0, 0, 0)
+	Tick(3)
+	inCombat = false
+	Tick(1)
 	local segs = DM.GetSegments()
 	Equal(#segs, 6)
 	Equal(DM.SegmentLabel(segs[1]), "Immerseus #1  |cffff5f5fWipe 80%|r")
-	Equal(#segs[1].combat.deaths, 1)
+	Equal(#segs[1].combat.deaths, 2)
 	Fire("ENCOUNTER_START", 1, "Immerseus", 3, 10)
 	Equal(E.GetCurrent().try, 2) -- the next real pull is #2
 	Fire("ENCOUNTER_END", 1, "Immerseus", 3, 10, 0)

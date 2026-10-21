@@ -37,6 +37,7 @@ local ACTIVITY_GAP = 3.5 -- seconds between hits that still count as active
 local DEATH_LOG_SIZE = 16
 local MIN_FIGHT = 2 -- fights shorter than this (without a boss or a death) are dropped
 local PHANTOM_PULL = 5 -- a boss "pull" this short (or with no damage) right after a wipe on that boss is dropped
+local AFTER_WIPE = 60 -- seconds after a wipe that a short scuffle (the reset, dying ghosts) belongs to it
 
 -- Damage-absorbing auras of 5.4.8 credited as healing to their caster
 -- (from the Details! 5.4.8 absorb list, MoP class spells and consumables).
@@ -215,6 +216,14 @@ local function GroupDamage(seg)
 	return n
 end
 
+local function GroupHealing(seg)
+	local n = 0
+	for _, a in pairs(seg.actors) do
+		if a.group then n = n + a.healing end
+	end
+	return n
+end
+
 local shields -- forward (shield tracking below)
 
 -- The fight that ended last, kept or not: a death that arrives just after
@@ -251,18 +260,32 @@ local function StopFight()
 		seg.result = (seg.bossHP and seg.bossHP <= 0) and "kill" or "wipe"
 	end
 	lastStopped = seg
-	-- After a wipe the server can start the encounter again for a moment: a
-	-- few seconds of "pull" right after a wipe on the same boss is not a try.
-	-- Its deaths (players still dying in the reset) go to the real wipe.
+	-- Not real fights, dropped: after a wipe the server can start the
+	-- encounter again for a moment (a few seconds, no damage, or the boss
+	-- never touched), and the reset leaves short scuffles (players taking
+	-- damage or dying, nothing done). Elsewhere a fight in which the group
+	-- did no damage and no healing is dropped unless someone died. Deaths
+	-- of a dropped fight go to the fight just before when it ended recently.
 	local prev = segments[1]
-	if seg.boss and seg.result == "wipe" and (seg.finish - seg.start < PHANTOM_PULL or GroupDamage(seg) == 0)
-		and prev and prev.boss and prev.result == "wipe" and prev.name == seg.name then
-		for _, death in ipairs(seg.deaths) do
-			death.time = death.at - prev.start
-			tinsert(prev.deaths, death)
+	local short = seg.finish - seg.start < PHANTOM_PULL
+	local idle = GroupDamage(seg) == 0 and GroupHealing(seg) == 0
+	local afterWipe = prev and prev.boss and prev.result == "wipe" and seg.start - prev.finish < AFTER_WIPE
+	local phantom
+	if seg.boss then
+		phantom = seg.result == "wipe" and prev and prev.boss and prev.result == "wipe" and prev.name == seg.name
+			and (short or GroupDamage(seg) == 0 or (seg.bossHP and seg.bossHP >= 99.5))
+	else
+		phantom = (afterWipe and (short or idle)) or (idle and #seg.deaths == 0)
+	end
+	if phantom then
+		if prev and seg.start - prev.finish < AFTER_WIPE then
+			for _, death in ipairs(seg.deaths) do
+				death.time = death.at - prev.start
+				tinsert(prev.deaths, death)
+			end
+			lastStopped = prev
 		end
 		if seg.try and tries[seg.name] == seg.try then tries[seg.name] = seg.try - 1 end
-		lastStopped = prev
 		Fire("stop")
 		return
 	end
