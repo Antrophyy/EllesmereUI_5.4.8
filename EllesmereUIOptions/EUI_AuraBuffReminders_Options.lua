@@ -273,6 +273,9 @@ local function BuildReminders(p)
 	p:Slider("Show Below Pre-Key (min)", "Reminder threshold while you are in a Challenge Mode dungeon before the timer starts. Set it high enough that you top up buffs and food before pulling.\n0 = only when fully expired.\nIgnored once the timer runs or you are in combat (then only when the buff is fully gone).", 0, 60, 1,
 		function() return DDB().showUnderMPlus or 40 end,
 		function(v) DDB().showUnderMPlus = v end, off)
+	p:Toggle("Show Remaining Time", "Show the time left on a reminder whose buff is still up but below the Show Below threshold.",
+		function() return DDB().showRemaining ~= false end,
+		function(v) DDB().showRemaining = v end, off)
 	p:Toggle("Show Tooltips", "Show item or spell tooltips when hovering reminder icons.",
 		function() return DDB().showTooltips ~= false end,
 		function(v) DDB().showTooltips = v end, off)

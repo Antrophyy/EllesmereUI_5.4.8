@@ -78,6 +78,7 @@ local DEFAULTS = {
 		borderBehind = false,
 		showUnder = 5,
 		showUnderMPlus = 40,
+		showRemaining = true,
 	},
 	raidBuffs = {
 		enabled = {
@@ -424,6 +425,15 @@ function EABR.GetShowUnderMinutes()
 	return disp.showUnder or 5
 end
 
+-- Soonest expiry that IsUnderDuration found below the threshold since the
+-- last UnderTake(): the countdown shown on an about-to-expire reminder.
+local _underExp = nil
+local function UnderTake()
+	local exp = _underExp
+	_underExp = nil
+	return exp
+end
+
 local function IsUnderDuration(duration, expirationTime)
 	if not (duration and expirationTime) or duration <= 0 or expirationTime <= 0 then return false end
 	if InCombat() or InChallengeRun() then return false end
@@ -431,7 +441,10 @@ local function IsUnderDuration(duration, expirationTime)
 	-- Strictly longer only: MoP shouts / Horn of Winter last exactly 5 min,
 	-- the default threshold, and would always count as "about to expire".
 	if threshold > 0 and duration > threshold then
-		return (expirationTime - GetTime()) < threshold
+		if (expirationTime - GetTime()) < threshold then
+			if not _underExp or expirationTime < _underExp then _underExp = expirationTime end
+			return true
+		end
 	end
 	return false
 end
@@ -964,7 +977,9 @@ local function ApplyCountText(f, m, sz)
 	end
 end
 
-local function EatingTick(self, elapsed)
+-- Centered countdown: the eating channel, or the time left on a buff that
+-- is about to expire (Show Below).
+local function CountdownTick(self, elapsed)
 	self._eatAcc = (self._eatAcc or 0) + elapsed
 	if self._eatAcc < 0.2 then return end
 	self._eatAcc = 0
@@ -983,17 +998,22 @@ end
 local function ApplyEatingVisual(f, m)
 	f:SetScript("OnUpdate", nil)
 	f._count:Hide()
-	if not m.isEating then return end
-	f._icon:SetDesaturated(false)
-	f._icon:SetTexture(D.EATING_ICON)
-	StopGlow(f)
-	if not m.eatingExpires or m.eatingExpires <= 0 then return end
 	local p = EABR.Profile().display
+	local exp
+	if m.isEating then
+		f._icon:SetDesaturated(false)
+		f._icon:SetTexture(D.EATING_ICON)
+		StopGlow(f)
+		exp = m.eatingExpires
+	elseif p.showRemaining ~= false then
+		exp = m.expires
+	end
+	if not exp or exp <= 0 then return end
 	SetABRFont(f._count, ResolveFontPath(), max(14, floor((p.textSize or 11) * 1.15)))
-	f._eatExp = m.eatingExpires
+	f._eatExp = exp
 	f._eatAcc = 1
-	EatingTick(f, 0)
-	f:SetScript("OnUpdate", EatingTick)
+	CountdownTick(f, 0)
+	f:SetScript("OnUpdate", CountdownTick)
 end
 
 local function ApplyNameText(f, m)
@@ -1244,6 +1264,7 @@ local function CollectRaidBuffs(missing, playerClass, inInstance)
 	for _, buff in ipairs(D.RAID_BUFFS) do
 		if rb.enabled[buff.key] and buff.class == playerClass and Known(buff.castSpell) then
 			local isMissing, have, total = false, nil, nil
+			UnderTake()
 			if othersMissing and grouped then
 				have, total = CountCoverage(buff.cats, buff.benefit)
 				isMissing = total > 0 and have < total
@@ -1255,6 +1276,7 @@ local function CollectRaidBuffs(missing, playerClass, inInstance)
 				end
 				if not mine and UnitBenefits("player", buff.benefit) then isMissing = true; have, total = nil, nil end
 			end
+			local expires = UnderTake()
 			local ownActive = UnitHasAnyBuff("player", ToSet({ buff.castSpell, buff.altCast or 0 }), true)
 			if buff.group then
 				local gp = groupPick[buff.group]
@@ -1263,12 +1285,12 @@ local function CollectRaidBuffs(missing, playerClass, inInstance)
 					groupPick[buff.group] = gp
 				end
 				if ownActive then gp.own = buff end
-				gp.list[#gp.list + 1] = { buff = buff, missing = isMissing, have = have, total = total }
+				gp.list[#gp.list + 1] = { buff = buff, missing = isMissing, have = have, total = total, expires = expires }
 			elseif isMissing then
 				local cast = (buff.altCast and Known(buff.altCast)) and buff.altCast or buff.castSpell
 				local e = AddSpell(missing, "raidbuff", buff.key, cast, ShortLabel(SpellName(buff.castSpell) or buff.name), "player")
 				e.groupHave, e.groupTotal = have, total
-				e.data = buff
+				e.data, e.expires = buff, expires
 			end
 		end
 	end
@@ -1300,14 +1322,17 @@ local function CollectRaidBuffs(missing, playerClass, inInstance)
 			local e = AddSpell(missing, "raidbuff", pick.buff.key, pick.buff.castSpell,
 				ShortLabel(SpellName(pick.buff.castSpell) or pick.buff.name), "player")
 			e.groupHave, e.groupTotal = pick.have, pick.total
-			e.data = pick.buff
+			e.data, e.expires = pick.buff, pick.expires
 		end
 	end
 
 	-- Receiver view: I lack a category a groupmate's class can cast.
 	if iAmMissing and groupClasses then
 		for _, cat in ipairs(D.CATEGORY_ORDER) do
-			if not PlayerHasCategory(cat) then
+			UnderTake()
+			local catMissing = not PlayerHasCategory(cat)
+			local expires = UnderTake()
+			if catMissing then
 				for _, buff in ipairs(D.RAID_BUFFS) do
 					local fills = false
 					for c = 1, #buff.cats do if buff.cats[c] == cat then fills = true end end
@@ -1317,6 +1342,7 @@ local function CollectRaidBuffs(missing, playerClass, inInstance)
 						e.mode, e.texture, e.spellID = "texture", Tex(buff.castSpell), buff.castSpell
 						e.label = ShortLabel(SpellName(buff.castSpell) or buff.name)
 						e.cat, e.dismissKey, e.data = "raidbuff", "raidbuff:" .. buff.key, buff
+						e.expires = expires
 						missing[#missing + 1] = e
 						break
 					end
@@ -1370,6 +1396,7 @@ local function CollectAuras(missing, playerClass, specID, inInstance, inCombat)
 						if start and duration and duration > 1.5 then isMissing = false end
 					end
 				else
+					UnderTake()
 					local has = PlayerHasAura(aura.buffIDs)
 					if not has and aura.nameFallback then has = PlayerHasAuraNamed(SpellName(cast) or aura.name) end
 					isMissing = not has
@@ -1379,6 +1406,7 @@ local function CollectAuras(missing, playerClass, specID, inInstance, inCombat)
 				local e = AddSpell(missing, "aura", aura.key, cast, ShortLabel(SpellName(cast) or aura.name),
 					(aura.check == nil) and "player" or nil)
 				e.data = aura
+				if aura.check == nil and not aura.stance then e.expires = UnderTake() end
 			end
 		end
 	end
@@ -1388,23 +1416,28 @@ local function CollectSpecials(missing, playerClass, specID, inCombat)
 	local co = EABR.Profile().consumables
 	if playerClass == "ROGUE" then
 		local activeL, activeNL, missL, missNL = false, false, nil, nil
+		local expL, expNL
 		for _, poison in ipairs(D.ROGUE_POISONS) do
 			if Known(poison.castSpell) then
+				UnderTake()
 				local active = PlayerHasAura({ poison.castSpell })
+				local exp = UnderTake()
 				if poison.cat == "lethal" then
+					expL = expL or exp
 					if active then activeL = true elseif co.enabled[poison.key] and not missL then missL = poison end
 				else
+					expNL = expNL or exp
 					if active then activeNL = true elseif co.enabled[poison.key] and not missNL then missNL = poison end
 				end
 			end
 		end
 		if missL and not activeL then
 			local e = AddSpell(missing, "consumable", "rogue_lethal", missL.castSpell, ShortLabel(missL.name, "ROGUE"))
-			e.data = missL
+			e.data, e.expires = missL, expL
 		end
 		if missNL and not activeNL then
 			local e = AddSpell(missing, "consumable", "rogue_nonlethal", missNL.castSpell, ShortLabel(missNL.name, "ROGUE"))
-			e.data = missNL
+			e.data, e.expires = missNL, expNL
 		end
 	elseif playerClass == "PALADIN" then
 		local n = GetNumShapeshiftForms and GetNumShapeshiftForms() or 0
@@ -1436,10 +1469,12 @@ local function CollectSpecials(missing, playerClass, specID, inCombat)
 				if key and co.enabled[key] and HasWeapon(invSlot) then
 					local imbue = nil
 					for _, it in ipairs(D.SHAMAN_IMBUES) do if it.key == key then imbue = it end end
+					UnderTake()
 					local need = (slot == "mh") and Need(hasMH, mhExp) or Need(hasOH, ohExp)
+					local expires = UnderTake()
 					if imbue and Known(imbue.castSpell) and need then
 						local e = AddSpell(missing, "consumable", "imbue_" .. slot, imbue.castSpell, ShortLabel(imbue.name, "SHAMAN_IMBUE"))
-						e.data = imbue
+						e.data, e.expires = imbue, expires
 					end
 				end
 			end
@@ -1447,9 +1482,10 @@ local function CollectSpecials(missing, playerClass, specID, inCombat)
 		if not inCombat then
 			local basic, ally = D.SHAMAN_SHIELDS[1], D.SHAMAN_SHIELDS[2]
 			local cast = (specID == 264 and Known(D.WATER_SHIELD)) and D.WATER_SHIELD or basic.castSpell
+			UnderTake()
 			if co.enabled[basic.key] ~= false and Known(cast) and not PlayerHasAura(basic.buffIDs) then
 				local e = AddSpell(missing, "consumable", basic.key, cast, ShortLabel(basic.name, "SHAMAN_SHIELD"), "player")
-				e.data = basic
+				e.data, e.expires = basic, UnderTake()
 			end
 			if co.enabled[ally.key] == true and Known(ally.castSpell) and AnyGroupMemberNear()
 				and not OwnBuffOnGroup(ToSet(ally.buffIDs), false) then
@@ -1486,6 +1522,7 @@ local function CollectConsumables(missing, playerClass, specID, inInstance, inCo
 	end
 	local shows = EABR.SectionShows(co.whereToShow, inInstance)
 	if shows and not inCombat and not InChallengeRun() then
+		UnderTake()
 		if co.enabled.flask and not PlayerHasFlask() then
 			local id, hasBags = ResolveItem(D.FLASK_ITEMS, co.preferredFlask, p.lastUsedFlask)
 			if id and (co.showWithoutItem ~= false or hasBags) then
@@ -1494,9 +1531,11 @@ local function CollectConsumables(missing, playerClass, specID, inInstance, inCo
 				e.label = "Flask"
 				e.bagCount, e.desaturated = Count(id), not hasBags
 				e.cat, e.dismissKey = "consumable", "consumable:flask"
+				e.expires = UnderTake()
 				missing[#missing + 1] = e
 			end
 		end
+		UnderTake()
 		if co.enabled.food and not PlayerHasWellFed() then
 			local id, hasBags = ResolveItem(D.FOOD_ITEMS, co.preferredFood, p.lastUsedFood)
 			if id and (co.showWithoutItem ~= false or hasBags) then
@@ -1505,6 +1544,7 @@ local function CollectConsumables(missing, playerClass, specID, inInstance, inCo
 				e.label = "Food"
 				e.bagCount, e.desaturated = Count(id), not hasBags
 				e.cat, e.dismissKey = "consumable", "consumable:food"
+				e.expires = UnderTake()
 				local eating, expires = PlayerEating()
 				if eating then e.isEating, e.eatingExpires = true, expires end
 				missing[#missing + 1] = e
@@ -1533,7 +1573,9 @@ local function CollectConsumables(missing, playerClass, specID, inInstance, inCo
 	if shows and not inCombat and type(co.customIDs) == "table" then
 		for _, id in ipairs(co.customIDs) do
 			local name = SpellName(id)
+			UnderTake()
 			if name and not PlayerHasAura({ id }) and not PlayerHasAuraNamed(name) then
+				local expires = UnderTake()
 				local e
 				if Known(id) then
 					e = AddSpell(missing, "consumable", "custom" .. id, id, ShortLabel(name))
@@ -1543,6 +1585,7 @@ local function CollectConsumables(missing, playerClass, specID, inInstance, inCo
 					e.cat, e.dismissKey = "consumable", "consumable:custom" .. id
 					missing[#missing + 1] = e
 				end
+				e.expires = expires
 			end
 		end
 	end
