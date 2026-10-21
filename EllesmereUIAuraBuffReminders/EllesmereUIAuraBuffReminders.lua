@@ -1010,6 +1010,12 @@ local function ApplyEatingVisual(f, m)
 	end
 	if not exp or exp <= 0 then return end
 	SetABRFont(f._count, ResolveFontPath(), max(14, floor((p.textSize or 11) * 1.15)))
+	-- Eating stays white; a buff about to expire counts down in red.
+	if m.isEating then
+		f._count:SetTextColor(1, 1, 1, 1)
+	else
+		f._count:SetTextColor(1, 0.2, 0.2, 1)
+	end
 	f._eatExp = exp
 	f._eatAcc = 1
 	CountdownTick(f, 0)
