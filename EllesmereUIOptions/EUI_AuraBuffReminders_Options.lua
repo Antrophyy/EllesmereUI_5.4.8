@@ -453,7 +453,7 @@ local function BuildReminders(p)
 		end,
 		function(v) CDB().preferredFood = v end, nil,
 		function() return CDB().enabled.food == false end)
-	p:Toggle("Healthstone", "Remind you to take a Healthstone when a Warlock is in your group and you carry none.",
+	p:Toggle("Healthstone", "Remind you to take a Healthstone when a Warlock is in your group and you have fewer than 3/3 charges.",
 		function() return CDB().enabled.healthstone ~= false end,
 		function(v) CDB().enabled.healthstone = v end)
 	p:Toggle("Runeforge", "Death Knight: remind you when a weapon has no rune.",

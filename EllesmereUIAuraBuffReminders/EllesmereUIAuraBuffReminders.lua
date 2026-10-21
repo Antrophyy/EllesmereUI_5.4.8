@@ -956,7 +956,9 @@ local function ApplyCountText(f, m, sz)
 	local fs = f._bagCount
 	f._outOfStock = nil
 	local txt, r, g, b = nil, 1, 1, 1
-	if m.groupTotal and m.groupTotal > 0 then
+	if m.chargeText then
+		txt, r, g, b = m.chargeText, 1, 0.2, 0.2
+	elseif m.groupTotal and m.groupTotal > 0 then
 		txt = m.groupHave .. "/" .. m.groupTotal
 	elseif p.showCount ~= false and not m.isEating then
 		if m.itemID and m.desaturated then
@@ -1557,7 +1559,8 @@ local function CollectConsumables(missing, playerClass, specID, inInstance, inCo
 			end
 		end
 	end
-	-- Healthstone: a Warlock is in the group and you carry none.
+	-- Healthstone: a Warlock is in the group and you have fewer than all
+	-- 3 charges (red "charges/3" badge).
 	if shows and InGroup() and co.enabled.healthstone ~= false and (not inCombat or playerClass == "WARLOCK") then
 		local hasWarlock = playerClass == "WARLOCK"
 		if not hasWarlock then
@@ -1566,10 +1569,12 @@ local function CollectConsumables(missing, playerClass, specID, inInstance, inCo
 				if cls == "WARLOCK" then hasWarlock = true; break end
 			end
 		end
-		if hasWarlock and Count(D.HEALTHSTONE_ITEM) == 0 then
+		local charges = GetItemCount(D.HEALTHSTONE_ITEM, false, true) or 0
+		if hasWarlock and charges < 3 then
 			local e = AcquireEntry()
 			e.mode, e.texture, e.label = "texture", D.HEALTHSTONE_ICON, "HS"
 			e.itemID = nil
+			e.chargeText = charges .. "/3"
 			e.cat, e.dismissKey = "consumable", "consumable:healthstone"
 			missing[#missing + 1] = e
 		end
