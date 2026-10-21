@@ -486,6 +486,18 @@ end
 --  Sources
 -------------------------------------------------------------------------------
 local hiddenBars = setmetatable({}, { __mode = "k" })
+
+-- Pull, break and custom (/dbm timer) bars are not boss abilities: they stay
+-- DBM bars (never hidden) and never go on the timeline. DBM creates all of
+-- them with the Borrowed Time icon; pull and break also have fixed names.
+local function IsUtilityBar(bar)
+	local id = bar.id
+	if id ~= nil and (id == DBM_CORE_TIMER_PULL or id == DBM_CORE_TIMER_BREAK) then return true end
+	local fname = bar.frame and bar.frame:GetName()
+	local iconTex = fname and _G[fname .. "BarIcon1"]
+	local icon = iconTex and iconTex:GetTexture()
+	return type(icon) == "string" and icon:lower():find("borrowedtime", 1, true) ~= nil
+end
 local dbmHooked = false
 
 local function HideDBMBar(bar)
@@ -505,7 +517,8 @@ local function HookDBMBars(bar)
 	dbmHooked = true
 	local function after(self)
 		local p = P()
-		if p and p.enabled and p.useDBM and p.hideBossModBars and not self.dummy and not self.dead then
+		if p and p.enabled and p.useDBM and p.hideBossModBars and not self.dummy and not self.dead
+			and not IsUtilityBar(self) then
 			HideDBMBar(self)
 		end
 	end
@@ -530,7 +543,8 @@ local function PollDBM(p, now)
 	if type(bars) ~= "table" then return end
 	wipe(dbmSeen)
 	for bar in pairs(bars) do
-		if type(bar) == "table" and not bar.dummy and not bar.dead and bar.frame and bar.timer and bar.timer > 0 then
+		if type(bar) == "table" and not bar.dummy and not bar.dead and bar.frame and bar.timer and bar.timer > 0
+			and not IsUtilityBar(bar) then
 			HookDBMBars(bar)
 			local fname = bar.frame:GetName()
 			local nameFS = fname and _G[fname .. "BarName"]
@@ -571,6 +585,8 @@ end
 local function OnBWStart(_, module, key, text, time, icon)
 	local p = P()
 	if not (p and p.enabled and p.useBigWigs) or not text or not time then return end
+	-- Pull, break and custom bars come from BigWigs plugins without a key.
+	if key == nil then return end
 	SetEvent("bw:" .. tostring(text), text, BWIcon(icon), time, time)
 end
 
