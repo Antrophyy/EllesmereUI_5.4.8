@@ -132,12 +132,57 @@ local function FixLineHeight(line, size, fullHeight)
 	end
 end
 
+-- Text Alignment "RIGHT": the text keeps the width Blizzard gave it but ends
+-- at the right edge of the tracker (before the quest item, where Blizzard
+-- leaves room for one) and is right-justified; the dashes are hidden.
+-- Reset() does not re-anchor the text, so "LEFT" puts back the template
+-- anchor on lines we moved.
+local ITEM_W = 33  -- WATCHFRAME_ITEM_WIDTH
+local movedText = setmetatable({}, { __mode = "k" })  -- line -> true
+
+local function IsRightAligned() return EQT.Cfg("textAlign") == "RIGHT" end
+
+local function AlignLine(line, hasItem)
+	local text, dash = line.text, line.dash
+	if IsRightAligned() then
+		local maxW = WATCHFRAME_MAXLINEWIDTH or 192
+		local itemW = WATCHFRAME_ITEM_WIDTH or ITEM_W
+		-- Blizzard takes the item width off the first two lines of a quest only.
+		local reserved = hasItem and (maxW - (text:GetWidth() or maxW)) >= itemW
+		text:ClearAllPoints()
+		text:SetPoint("RIGHT", line, "LEFT", maxW - (reserved and itemW or 0), -0.5)
+		text:SetJustifyH("RIGHT")
+		if dash then dash:SetAlpha(0) end
+		movedText[line] = true
+	elseif movedText[line] then
+		text:ClearAllPoints()
+		text:SetPoint("LEFT", dash, "RIGHT")
+		text:SetJustifyH("LEFT")
+		if dash then dash:SetAlpha(1) end
+		movedText[line] = nil
+	end
+end
+
 local function OnSetLine(line, anchor, verticalOffset, isHeader, text, dash, hasItem, fullHeight)
 	if not line or not line.text then return end
 	local size = isHeader and GetTitleSize() or GetObjSize()
 	StyleFS(line.text, size)
 	if line.dash then StyleFS(line.dash, GetObjSize()) end
 	FixLineHeight(line, size, fullHeight)
+	AlignLine(line, hasItem)
+end
+
+-- Text Alignment changed: Blizzard sets every line again.
+local lastAlign
+function EQT.ApplyTextAlign()
+	local align = IsRightAligned() and "RIGHT" or "LEFT"
+	if lastAlign == nil then
+		lastAlign = align
+		return
+	end
+	if align == lastAlign then return end
+	lastAlign = align
+	if WatchFrame_Update and _G.WatchFrame then pcall(WatchFrame_Update, _G.WatchFrame) end
 end
 
 -------------------------------------------------------------------------------

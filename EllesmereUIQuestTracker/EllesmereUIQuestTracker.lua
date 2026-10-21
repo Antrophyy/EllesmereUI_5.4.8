@@ -38,6 +38,8 @@ local QT_DEFAULTS = {
 	bgB                  = 0.035,
 	bgAlpha              = 0.75,
 	showTopLine          = true,
+	-- "LEFT" / "RIGHT": alignment of the quest titles and objectives (5.4.8 only).
+	textAlign            = "LEFT",
 	titleR = 1.000, titleG = 0.910, titleB = 0.471,
 	completedR = 0.251, completedG = 1.000, completedB = 0.349,
 	focusR = 0.871, focusG = 0.251, focusB = 1.000,
@@ -167,6 +169,7 @@ function EQT.ApplyAll()
 	if not db then return end
 	if EQT.RefreshFonts then EQT.RefreshFonts() end
 	if EQT.RestyleAll then EQT.RestyleAll() end
+	if EQT.ApplyTextAlign then EQT.ApplyTextAlign() end
 	if EQT.ApplyMasterHeaderVisibility then EQT.ApplyMasterHeaderVisibility() end
 	if EQT.ApplyBackground then EQT.ApplyBackground() end
 	if EQT.ApplyForceOnScreen then EQT.ApplyForceOnScreen() end

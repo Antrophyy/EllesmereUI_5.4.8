@@ -113,6 +113,11 @@ local RAID_ITEMS = {
 	{ value = "boss", name = "Boss Combat" },
 }
 
+local ALIGN_ITEMS = {
+	{ value = "LEFT", name = "Left" },
+	{ value = "RIGHT", name = "Right" },
+}
+
 local function FontItems()
 	local lead = { { name = "EUI Global Font", value = "__global" } }
 	return U and U.FontItems and U.FontItems(lead) or lead
@@ -226,6 +231,11 @@ local function Build(p)
 		function() return ListLabel(FontItems(), Cfg("font") or "__global") end,
 		function(v) Set("font", v) end,
 		{ fontPreview = true, fontPath = FontPreview })
+	p:Dropdown("Text Alignment", "Aligns the quest titles and objectives to the left or right edge of the tracker. Right hides the objective dashes.",
+		function() return ALIGN_ITEMS end,
+		function() return Cfg("textAlign") or "LEFT" end,
+		function() return ListLabel(ALIGN_ITEMS, Cfg("textAlign") or "LEFT") end,
+		function(v) Set("textAlign", v) end)
 
 	p:Toggle("Hide All Objectives",
 		"Hides the master header and its minimize button at the top of the tracker. When shown, it's skinned to match the section headers below it (Quests, Achievements, ...).",
