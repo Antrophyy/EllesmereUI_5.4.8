@@ -461,6 +461,17 @@ Test("boss pulls are numbered with kill or wipe and boss health; trash folds tog
 	Equal(items[2].text, "Immerseus #1  |cffff5f5fWipe 34%|r")
 	Equal(items[4].text, "Add C") -- a single trash fight stays on its own
 	Equal(items[6], "---"); Equal(items[7].text, "Current")
+	-- Mouse wheel on the header steps through the fights; the title names the fight.
+	window.curSessionID, window.curSession = nil, DM.S.Current
+	window.StepSegment(1)
+	Equal(window.curSessionID, segs[2].combat)
+	window.StepSegment(1); window.StepSegment(1)
+	Equal(window.curSessionID, segs[4].combat)
+	Equal(window.fullTitle, "Immerseus #1 - " .. DM.TYPE_NAMES[window.curDMType])
+	for _ = 1, 10 do window.StepSegment(1) end
+	Equal(window.curSessionID, segs[6].combat) -- stops at the oldest
+	for _ = 1, 10 do window.StepSegment(-1) end
+	Equal(window.curSessionID, nil); Equal(window.curSession, DM.S.Current)
 	window.curSessionID = nil
 	UnitExists, UnitHealth, UnitHealthMax = nil, nil, nil
 end)

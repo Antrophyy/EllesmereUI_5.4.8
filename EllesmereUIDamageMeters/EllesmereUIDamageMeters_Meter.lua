@@ -1455,7 +1455,10 @@ CreateDMWindow = function(idx)
 		end
 	end
 
-	-- Drag by the header (unlocked windows), right-click = home screen.
+	-- Drag by the header (unlocked windows), left-click on a locked window =
+	-- segment menu, right-click = home screen, mouse wheel = older / newer fight.
+	header:EnableMouseWheel(true)
+	header:SetScript("OnMouseWheel", function(_, delta) W.StepSegment(delta) end)
 	header:SetScript("OnMouseDown", function(_, button)
 		if button == "LeftButton" and not W.windowLocked and not unlockOn then
 			W.dragging = true
@@ -1467,7 +1470,10 @@ CreateDMWindow = function(idx)
 			if not W.dragging then W.ToggleHome() end
 			return
 		end
-		if not W.dragging then return end
+		if not W.dragging then
+			if button == "LeftButton" and header:IsMouseOver() then W.ShowSegmentMenu(W.segmentBtn) end
+			return
+		end
 		W.dragging = false
 		frame:StopMovingOrSizing()
 		local left, top = frame:GetLeft(), frame:GetTop()
@@ -1956,6 +1962,10 @@ CreateDMWindow = function(idx)
 		else
 			local isOverall = not W.curSessionID and W.curSession == S.Overall
 			W.fullTitle = isOverall and ("Overall " .. typeName) or typeName
+			local seg = W.curSessionID
+			if seg then
+				W.fullTitle = (seg.name or "Combat") .. (seg.try and (" #" .. seg.try) or "") .. " - " .. typeName
+			end
 		end
 		W.UpdateTimerText()
 		W.FitTitle()
@@ -2003,6 +2013,23 @@ CreateDMWindow = function(idx)
 
 	function W.ShowSegmentMenu(anchor)
 		ShowMenu(DM.SegmentMenuItems(W), anchor)
+	end
+
+	-- Mouse wheel on the header: up = an older fight, down = a newer one,
+	-- past the newest = Current.
+	function W.StepSegment(delta)
+		local segs = Engine().GetSegments()
+		-- Out of combat Current shows the newest fight, so it counts as that one.
+		local pos = (not W.curSessionID and W.curSession == S.Current and not Engine().InCombat()) and 1 or 0
+		for i = 1, #segs do
+			if segs[i] == W.curSessionID then pos = i end
+		end
+		pos = max(0, min(#segs, pos + (delta > 0 and 1 or -1)))
+		if pos == 0 then
+			DM.ApplySegmentSelection(W, S.Current, nil)
+		else
+			DM.ApplySegmentSelection(W, nil, segs[pos])
+		end
 	end
 
 	function W.ShowSettingsMenu(anchor)
