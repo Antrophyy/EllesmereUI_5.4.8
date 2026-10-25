@@ -1903,10 +1903,18 @@ local origParent
 local suppressHost = CreateFrame("Frame", nil, UIParent)
 suppressHost:Hide()
 
+-- Set only while handling MODIFIER_STATE_CHANGED: inside that event
+-- IsAltKeyDown() and friends still report the old state (press re-parked the
+-- peeked tip, release left it shown), so the event's own value wins there.
+local peekEventDown
+
 local function ShowModifierHeld()
 	local mod = Get("tooltipShowModifier") or "none"
 	if mod == "none" then
 		return false
+	end
+	if peekEventDown ~= nil then
+		return peekEventDown
 	end
 	return ModifierHeld(mod)
 end
@@ -2128,20 +2136,28 @@ local function InitAnchoring()
 		if mod == "none" or not KeyMatches(key, mod) then
 			return
 		end
-		if down == 1 then
+		peekEventDown = down == 1 or down == true
+		if peekEventDown then
+			-- On 5.4.8 the hidden host hides the tooltip for the engine,
+			-- which empties it; an empty tip is rebuilt from the hover.
+			local kept = false
 			if parked and GameTooltip:IsShown() then
 				Unpark(GameTooltip)
-				-- On 5.4.8 the hidden host hides the tooltip for the engine,
-				-- which empties it; an empty tip is rebuilt from the hover.
-				if (GameTooltip:NumLines() or 0) > 0 then
-					return
+				kept = (GameTooltip:NumLines() or 0) > 0
+				if kept then
+					-- Laid out while hidden it has no size yet: re-show to size it.
+					GameTooltip:Show()
+				else
+					GameTooltip:Hide()
 				end
-				GameTooltip:Hide()
 			end
-			FireHoveredOnEnter()
+			if not kept then
+				FireHoveredOnEnter()
+			end
 		elseif GameTooltip:IsShown() and Suppressed(GameTooltip) then
 			Park(GameTooltip)
 		end
+		peekEventDown = nil
 	end)
 	UpdateStateWatcher()
 end
