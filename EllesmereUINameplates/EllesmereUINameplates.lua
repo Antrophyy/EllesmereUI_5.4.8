@@ -319,6 +319,8 @@ local defaults = {
     -- minus raid-marker/classification reserves). Wrap off = single line + ellipsis, on = 2 lines.
     enemyNameWidthPct = 100,
     enemyNameWrap = false,
+    enemyNameShorten = "none",  -- Shorten Enemy Names: none|abbrev|truncate
+    enemyNameShortenLen = 20,  -- characters before shortening kicks in / truncation length
     targetScale = 100,
     nonTargetKeepFocus = true,
     outOfRangeAlpha = 50,

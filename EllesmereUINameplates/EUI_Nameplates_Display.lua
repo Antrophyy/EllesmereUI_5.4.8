@@ -719,9 +719,53 @@ function Plate:ToTName()
 	return name
 end
 
+-- Shorten Enemy Names (ElvUI [name:abbrev] / [name:short] style).
+-- "abbrev": every word but the last becomes its initial ("Kor'kron Dark
+-- Shaman" -> "K. D. Shaman"), only when the name is longer than the limit.
+-- "truncate": cut to the limit in characters. UTF-8 safe.
+local UTF8_CHAR = "[%z\1-\127\194-\244][\128-\191]*"
+local function Utf8Len(s)
+	local n = 0
+	for _ in s:gmatch(UTF8_CHAR) do n = n + 1 end
+	return n
+end
+local function Utf8Sub(s, len)
+	local out, n = {}, 0
+	for c in s:gmatch(UTF8_CHAR) do
+		n = n + 1
+		if n > len then break end
+		out[n] = c
+	end
+	return table.concat(out)
+end
+local shortCache, shortMode, shortLen = {}, nil, nil
+local function ShortName(name, mode, len)
+	if mode ~= shortMode or len ~= shortLen then
+		wipe(shortCache)
+		shortMode, shortLen = mode, len
+	end
+	local v = shortCache[name]
+	if v then return v end
+	v = name
+	if Utf8Len(name) > len then
+		if mode == "abbrev" then
+			v = name:gsub("(%S+)%s+", function(w) return Utf8Sub(w, 1) .. ". " end)
+		elseif mode == "truncate" then
+			v = Utf8Sub(name, len)
+		end
+	end
+	shortCache[name] = v
+	return v
+end
+
 function Plate:UpdateTexts()
 	local p = P.Profile()
 	local name = self.name or ""
+	local fullName = name
+	local sm = p.enemyNameShorten
+	if sm == "abbrev" or sm == "truncate" then
+		name = ShortName(name, sm, p.enemyNameShortenLen or 20)
+	end
 	for _, s in ipairs(TEXT_SLOTS) do
 		local fs = self.texts[s.key]
 		local el = fs.element
@@ -767,7 +811,7 @@ function Plate:UpdateTexts()
 		end
 	end
 	-- Friendly name-only text.
-	self.friendlyName:SetText(name)
+	self.friendlyName:SetText(fullName)
 	local cur, mx = self:HealthValues()
 	self:UpdateHealthTexts(cur, mx)
 	self:ColorTexts()

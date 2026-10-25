@@ -2080,6 +2080,16 @@ local function BuildGeneral(p)
 		50, 200, 5, Get("castScale", 100), Set("castScale"))
 	p:Toggle("Hide Enemy Name While Casting", "Hide the enemy name text while that nameplate's cast bar is visible.",
 		On("hideEnemyNameWhileCasting"), Set("hideEnemyNameWhileCasting"))
+	local SHORTEN_MODES = { { "none", "Off" }, { "abbrev", "Abbreviate (K. D. Shaman)" }, { "truncate", "Truncate" } }
+	Drop(p, "Shorten Enemy Names",
+		"Shortens long enemy names. Abbreviate turns every word but the last into its initial (Kor'kron Dark Shaman becomes K. D. Shaman). Truncate cuts the name to the length set in the cog.",
+		SHORTEN_MODES, "enemyNameShorten", "none")
+	p:Cog("Shorten Enemy Names", {
+		{ type = "slider", label = "Max Length", min = 5, max = 40,
+		  tip = "Names longer than this many characters are shortened.",
+		  get = Get("enemyNameShortenLen", 20), set = Set("enemyNameShortenLen") },
+	}, { icon = "resize", disabled = function() return (Val("enemyNameShorten") or "none") == "none" end,
+		disabledTip = "This option requires Shorten Enemy Names to be enabled" })
 	p:Toggle("Name Raid Marker",
 		"Shows the target marker directly before the enemy name text. Uses its own size and does not use the Core Positions raid marker slot.",
 		On("nameRaidMarkerEnabled"), Set("nameRaidMarkerEnabled"))
