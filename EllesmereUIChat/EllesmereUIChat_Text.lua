@@ -583,6 +583,91 @@ local function Transform(cf, msg)
 	return msg
 end
 
+-------------------------------------------------------------------------------
+--  Icon fade: 5.4.8 draws icons in chat text (raid markers, role icons) at
+--  full alpha whatever the chat frame's alpha, so while chat is faded the
+--  window's lines are re-added with each icon's vertex color scaled down
+--  (and dropped when chat is fully hidden).
+-------------------------------------------------------------------------------
+local iconDim = 1
+
+local function DimIcon(spec)
+	local f = { strsplit(":", spec) }
+	if iconDim <= 0.05 then
+		return ""
+	end
+	local h = f[2] or "0"
+	local w = f[3] or h
+	local x, y = f[4] or "0", f[5] or "0"
+	local tw, th, l, r, t, b = f[6], f[7], f[8], f[9], f[10], f[11]
+	if not (tw and th and l and r and t and b) then
+		tw, th, l, r, t, b = "100", "100", "0", "100", "0", "100"
+	end
+	local function C(v)
+		return floor((tonumber(v) or 255) * iconDim + 0.5)
+	end
+	return "|T" .. table.concat({ f[1], h, w, x, y, tw, th, l, r, t, b, C(f[12]), C(f[13]), C(f[14]) }, ":") .. "|t"
+end
+
+local function DimIcons(text)
+	if iconDim >= 1 or not text:find("|T", 1, true) then
+		return text
+	end
+	return (text:gsub("(|+)T([^|]*)|t", function(pipes, spec)
+		if #pipes % 2 == 0 then
+			return nil
+		end
+		return pipes:sub(2) .. DimIcon(spec)
+	end))
+end
+
+local function RebuildLines(cf, d)
+	local n = d.count
+	if cf.GetMaxLines then
+		n = min(n, cf:GetMaxLines())
+	end
+	local hasIcon = false
+	for i = 1, n do
+		local line = d.lines[(d.head - i) % COPY_LINES + 1]
+		if line and line:find("|T", 1, true) then
+			hasIcon = true
+			break
+		end
+	end
+	if not hasIcon then
+		return
+	end
+	local offset = cf.GetCurrentScroll and cf:GetCurrentScroll()
+	cf:Clear()
+	for i = n, 1, -1 do
+		local k = (d.head - i) % COPY_LINES + 1
+		local c = d.colors[k]
+		d.orig(cf, DimIcons(d.lines[k]), c and c[1], c and c[2], c and c[3], c and c[4])
+	end
+	if offset and offset > 0 and cf.SetScrollOffset then
+		cf:SetScrollOffset(offset)
+	end
+end
+
+-- level: the chat alpha the icons should match (1 = untouched).
+function ECHAT.SetIconDim(level)
+	level = floor(max(0, min(1, level)) * 20 + 0.5) / 20
+	if level == iconDim then
+		return
+	end
+	iconDim = level
+	P.ForEachChatFrame(function(cf)
+		local d = FD(cf)
+		if d.orig and d.count > 0 and not IsCombatLogFrame(cf) then
+			RebuildLines(cf, d)
+		end
+	end)
+end
+
+function ECHAT.GetIconDim()
+	return iconDim
+end
+
 function ECHAT.HookChatFrameText(cf)
 	local d = FD(cf)
 	if d.textHooked then
@@ -591,9 +676,11 @@ function ECHAT.HookChatFrameText(cf)
 	d.textHooked = true
 	-- Copy buffer: a ring of the last COPY_LINES lines (the combat log is busy).
 	d.lines = {}
+	d.colors = {}
 	d.head = 0
 	d.count = 0
 	local orig = cf.AddMessage
+	d.orig = orig
 	cf.AddMessage = function(self, msg, r, g, b, id, ...)
 		if type(msg) == "string" then
 			if not restoring then
@@ -601,6 +688,9 @@ function ECHAT.HookChatFrameText(cf)
 			end
 			d.head = d.head % COPY_LINES + 1
 			d.lines[d.head] = msg
+			local c = d.colors[d.head] or {}
+			c[1], c[2], c[3], c[4] = r, g, b, id
+			d.colors[d.head] = c
 			if d.count < COPY_LINES then
 				d.count = d.count + 1
 			end
@@ -610,6 +700,9 @@ function ECHAT.HookChatFrameText(cf)
 				if id and wake[id] and self:IsShown() and ECHAT.OnActiveMessage then
 					ECHAT.OnActiveMessage()
 				end
+			end
+			if iconDim < 1 and not IsCombatLogFrame(self) then
+				return orig(self, DimIcons(msg), r, g, b, id, ...)
 			end
 		end
 		return orig(self, msg, r, g, b, id, ...)

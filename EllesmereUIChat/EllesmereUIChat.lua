@@ -1997,29 +1997,26 @@ local function SetPassthrough(on)
 	ECHAT.ApplySidebarIcons()
 end
 
--- 5.4.8 draws icons in chat text (raid markers, role icons) with the frame
--- alpha they had when the line was laid out, so a new alpha needs a re-layout:
--- a font size bump and back redraws every line.
-local lastRedraw = 0
-local function RedrawText(cf)
-	local font, size, flags = cf:GetFont()
-	if font and size then
-		cf:SetFont(font, size + 1, flags)
-		cf:SetFont(font, size, flags)
+-- Icons in chat text ignore the frame alpha (ECHAT.SetIconDim re-adds the
+-- lines with dimmed icons): bright as soon as chat fades in, dimmed in a few
+-- steps while it fades out.
+local function ApplyIconDim(a)
+	if not ECHAT.SetIconDim then
+		return
+	end
+	if alphaTarget > a then
+		ECHAT.SetIconDim(1)
+	elseif a == alphaTarget or ECHAT.GetIconDim() - a >= 0.2 then
+		ECHAT.SetIconDim(a)
 	end
 end
 
-function ECHAT.ApplyAlpha(a, skipRedraw)
+function ECHAT.ApplyAlpha(a)
 	P.alphaCur = a
 	SetPassthrough(a <= 0)
-	if not skipRedraw then
-		lastRedraw = GetTime()
-	end
+	ApplyIconDim(a)
 	P.ForEachChatFrame(function(cf)
 		cf:SetAlpha(a)
-		if not skipRedraw and cf:IsVisible() then
-			RedrawText(cf)
-		end
 		local tab = _G[cf:GetName() .. "Tab"]
 		if tab and not cf.isDocked then
 			tab:SetAlpha(a)
@@ -2078,8 +2075,7 @@ fadeFrame:SetScript("OnUpdate", function(self, dt)
 		return
 	end
 	fadeAccum = 0
-	-- Text redraws are throttled mid-fade; the last step always redraws.
-	ECHAT.ApplyAlpha(cur, cur ~= alphaTarget and GetTime() - lastRedraw < 0.1)
+	ECHAT.ApplyAlpha(cur)
 	if cur == alphaTarget then
 		self:Hide()
 	end
