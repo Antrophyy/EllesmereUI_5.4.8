@@ -312,6 +312,10 @@ local function BuildMeterPage(p)
 			get = function() return Cfg("showAllBreakdownSpells") ~= false end,
 			set = function(v) Set("showAllBreakdownSpells", v) end },
 	}, { disabled = function() return Cfg("showHoverTooltip") == false end })
+	p:Toggle("Death Recap on Release", "When you die, shows what killed you under the Release Spirit popup, already expanded.",
+		function() return Cfg("deathRecapPopup") ~= false end,
+		function(v) Set("deathRecapPopup", v) end)
+	p:Blank()
 	p:Slider("Background", "Opacity of the track behind each bar.", 0, 100, 1,
 		function() return floor((Cfg("barBgAlpha") or 0) * 100 + 0.5) end,
 		function(v) Set("barBgAlpha", v / 100) end)

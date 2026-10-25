@@ -582,5 +582,35 @@ Test("death recaps keep 32 events with health, overkill and absorbs, like Detail
 	assert(label:find("(absorb)", 1, true), label)
 end)
 
+Test("your death recap opens under the Release Spirit popup", function()
+	local hooks, popup = {}, CreateFrame("Frame", "StaticPopup1", UIParent)
+	popup.which, popup.width = "DEATH", 320
+	function hooksecurefunc(name, fn) hooks[name] = fn end
+	function StaticPopup_Visible(which) return popup:IsShown() and popup.which == which and "StaticPopup1" or nil end
+	assert(loadfile("EllesmereUIDamageMeters/EllesmereUIDamageMeters_DeathRecap.lua"))("EllesmereUIDamageMeters")
+	Tick(6)
+	Log("SPELL_DAMAGE", BOSS_GUID, "Boss", BOSS, playerGUID, "Alex", ME, 903, "Crush", 1, 5000, 1200, 1, 0, 0, 0)
+	popup:Show()
+	hooks.StaticPopup_Show("DEATH") -- Blizzard shows the popup before the engine hears of the death
+	Tick(0.2)
+	local panel = EllesmereUIDMDeathRecap
+	Equal(panel ~= nil and panel:IsShown() or false, false, "no death yet")
+	Log("UNIT_DIED", nil, nil, 0, playerGUID, "Alex", ME)
+	Tick(0.2)
+	panel = EllesmereUIDMDeathRecap
+	Equal(panel:IsShown(), true, "shown")
+	assert(panel.sub:GetText():find("Killed by Spell 903", 1, true), panel.sub:GetText())
+	assert(panel.lines[1].name:GetText():find("Spell 903", 1, true), panel.lines[1].name:GetText())
+	-- Released or resurrected: the popup goes and the recap with it.
+	popup:Hide()
+	Tick(0.3)
+	Equal(panel:IsShown(), false, "hidden with the popup")
+	DM.DB().deathRecapPopup = false
+	popup:Show(); hooks.StaticPopup_Show("DEATH"); Tick(0.2)
+	Equal(panel:IsShown(), false, "option off")
+	DM.DB().deathRecapPopup = nil
+	hooksecurefunc, StaticPopup_Visible = nil, nil
+end)
+
 print(string.format("%d passed, %d failed", passed, #failures))
 if #failures > 0 then error(table.concat(failures, "\n"), 0) end

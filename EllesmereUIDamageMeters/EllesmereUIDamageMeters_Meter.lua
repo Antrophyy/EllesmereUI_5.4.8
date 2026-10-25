@@ -89,6 +89,7 @@ local function CreateDefaults()
 		showClassColor = true,
 		showPinnedSelf = false,
 		showHoverTooltip = true,
+		deathRecapPopup = true,
 		showSpellTooltips = true,
 		showAllBreakdownSpells = true,
 		breakdownAnchorPoint = "row",

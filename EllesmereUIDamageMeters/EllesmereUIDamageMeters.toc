@@ -11,3 +11,4 @@
 EllesmereUIDamageMeters_Engine.lua
 EllesmereUIDamageMeters_SpellHistory.lua
 EllesmereUIDamageMeters_Meter.lua
+EllesmereUIDamageMeters_DeathRecap.lua
