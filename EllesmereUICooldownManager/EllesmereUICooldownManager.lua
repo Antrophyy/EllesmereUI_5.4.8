@@ -472,6 +472,11 @@ function CDM.IsKnownSpell(id)
 	return false
 end
 
+-- Base spell -> talent that replaces it on the action bar (and has its own cooldown).
+CDM.SPELL_REPLACED_BY = {
+	[101546] = 116847,   -- Spinning Crane Kick -> Rushing Jade Wind
+}
+
 -- Hosted buff marker (retail: a buff shown on a cooldown bar).
 local HOSTED_BASE = 2000000000
 
@@ -528,6 +533,12 @@ function CDM.ResolveEntry(bd, id, sd)
 	local sid = id
 	if CDM.ALL_RACIALS[sid] and not isBuffBar then
 		sid = CDM.MyRacial() or sid
+	end
+	-- Talent replaces the spell: track the talent's icon and cooldown (a bar
+	-- holding both shows it once, BarEntries dedupes by spellID).
+	local rep = CDM.SPELL_REPLACED_BY[sid]
+	if rep and not isBuffBar and ((IsPlayerSpell and IsPlayerSpell(rep)) or IsSpellKnown(rep)) then
+		sid = rep
 	end
 	local name, _, icon = GetSpellInfo(sid)
 	if not name then return nil end
