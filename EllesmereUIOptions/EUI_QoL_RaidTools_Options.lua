@@ -143,7 +143,7 @@ ns.QoLO_BuildRaidToolsPage = function(p)
 				BT().text = (v ~= "" and v ~= ns.BreakTimerDefaults.text) and v or nil
 				ns.BreakTimerPreview()
 			end, ns.BreakTimerDefaults.text)
-		p:Slider("Text Size", "Size of the break timer text.", 10, 72, 1,
+		p:Slider("Text Size", "Size of the break timer text (the game draws no font larger than 32).", 10, 32, 1,
 			function() return BGet("textSize") end, BSet("textSize"), BreakOff)
 		p:Dropdown("Font", "Font of the break timer text. EUI Global Default follows the Quality of Life module font.",
 			FontItems,

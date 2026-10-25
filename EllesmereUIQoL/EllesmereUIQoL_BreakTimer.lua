@@ -170,14 +170,20 @@ local function Outline()
 	return (ns.GetFontOutlineFlag and ns.GetFontOutlineFlag(FONT_KEY)) or "OUTLINE"
 end
 
+local MAX_FONT = 32  -- the 5.4.8 client draws no font larger
+
+local function TextSize()
+	return math.min(Get("textSize"), MAX_FONT)
+end
+
 local function Size()
-	local s = Get("textSize")
+	local s = TextSize()
 	return s * 8, s + 14
 end
 
 local function ApplyDisplay()
 	if not display then return end
-	local size, flags = Get("textSize"), Outline()
+	local size, flags = TextSize(), Outline()
 	local fs = display.text
 	fs:SetFont(FontPath(), size, flags)
 	if not fs:GetFont() then fs:SetFont(STANDARD_TEXT_FONT, size, flags) end
