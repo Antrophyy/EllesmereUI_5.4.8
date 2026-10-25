@@ -227,8 +227,9 @@ end
 
 -- Static facts of the unit on a (re)shown plate.
 function Plate:ReadIdentity()
-	local name = StripRealm(self.bName:GetText())
-	self.name = name or ""
+	local raw = self.bName:GetText()
+	self._rawName = raw
+	self.name = StripRealm(raw) or ""
 	local lvl = self.bLevel:GetObjectType() == "FontString" and tonumber(self.bLevel:GetText()) or nil
 	self.boss = self.bBoss:IsShown() and true or false
 	self.elite = self.bElite:IsShown() and true or false
@@ -624,6 +625,21 @@ function Plate:OnShown()
 	self:Refresh()
 end
 
+-- Blizzard can hand a shown plate to another unit without hiding it (seen
+-- on Siege of Orgrimmar adds): start over as if the plate were re-shown.
+function Plate:Reidentify()
+	SetGUID(self, nil)
+	self.unit = nil
+	self.isTarget, self.isMouseover, self.isFocus = nil, nil, nil
+	self._offTankHeld, self._offTankSeen = nil, nil
+	if self.OnCleared then
+		self:OnCleared()
+	end
+	self:ReadIdentity()
+	self:UpdateUnit()
+	self:Refresh()
+end
+
 function Plate:OnHidden()
 	self.shown = false
 	visible[self] = nil
@@ -688,6 +704,9 @@ local function OnUpdate(_, elapsed)
 	end
 	for plate in pairs(visible) do
 		local blizz = plate.blizz
+		if plate.bName:GetText() ~= plate._rawName then
+			plate:Reidentify()
+		end
 		local isTarget = false
 		if hasTarget then
 			local a = blizz:GetAlpha()
