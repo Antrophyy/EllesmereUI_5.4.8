@@ -702,6 +702,11 @@ local function OnUpdate(_, elapsed)
 			offTankCount = 0
 		end
 	end
+	-- The target can change name without PLAYER_TARGET_CHANGED (an add that
+	-- transforms, e.g. Claw of Burning Anger -> Nameless Windwalker Spirit).
+	if hasTarget then
+		targetName = UnitName("target")
+	end
 	for plate in pairs(visible) do
 		local blizz = plate.blizz
 		if plate.bName:GetText() ~= plate._rawName then
