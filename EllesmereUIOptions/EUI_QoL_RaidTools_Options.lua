@@ -102,4 +102,70 @@ ns.QoLO_BuildRaidToolsPage = function(p)
 				c.pullTimes[slot] = v
 			end, PullDisabled)
 	end
+
+	-- Break Timer text (EllesmereUIQoL_BreakTimer.lua): movable countdown of
+	-- the DBM break timer. Setters store and show a short sample.
+	if ns.GetBreakTimerDB then
+		local Q = ns.QoL
+		local function BT() return ns.GetBreakTimerDB() end
+		local function BGet(k) return ns.BreakTimerGet(k) end
+		local function BSet(k) return function(v) BT()[k] = v; ns.BreakTimerPreview() end end
+		local function BreakOff() return not BGet("enabled") end
+		local OUTLINES, OUTLINE_LABEL = Items({
+			"__global", "EUI Global Default",
+			"none", "Drop Shadow",
+			"outline", "Outline",
+			"thick", "Thick Outline",
+		})
+		local U = ns.OptionsUtil
+		local function FontItems()
+			local lead = { { name = "EUI Global Default", value = "__global" } }
+			return U and U.FontItems and U.FontItems(lead) or lead
+		end
+
+		p:Section("Break Timer")
+		p:Toggle("Show Break Timer Text", "Shows the DBM break timer as a movable text (e.g. \"Break 4:32\"), in and out of combat. Move it in Unlock Mode (Break Timer).",
+			function() return BGet("enabled") and true or false end, BSet("enabled"))
+		p:Swatch("Text Color",
+			function() local c = BGet("color"); return c.r, c.g, c.b end,
+			function(r, g, b) BT().color = { r = r, g = g, b = b }; BT().useClassColor = false; ns.BreakTimerPreview() end,
+			{ disabled = BreakOff, active = function() return not BGet("useClassColor") end,
+			  onClick = function()
+				  if BGet("useClassColor") then BT().useClassColor = false; ns.BreakTimerPreview(); return true end
+			  end })
+		p:Swatch("Class Color", function() if Q and Q.ClassColor then return Q.ClassColor() end return 1, 1, 1 end, function() end,
+			{ readonly = true, disabled = BreakOff, active = function() return BGet("useClassColor") and true or false end,
+			  onClick = function() BT().useClassColor = true; ns.BreakTimerPreview(); return true end })
+		p:TextInput("Label", "Text in front of the time.",
+			function() return BGet("text") end,
+			function(v)
+				v = tostring(v or ""):gsub("|", "")
+				BT().text = (v ~= "" and v ~= ns.BreakTimerDefaults.text) and v or nil
+				ns.BreakTimerPreview()
+			end, ns.BreakTimerDefaults.text)
+		p:Slider("Text Size", "Size of the break timer text.", 10, 72, 1,
+			function() return BGet("textSize") end, BSet("textSize"), BreakOff)
+		p:Dropdown("Font", "Font of the break timer text. EUI Global Default follows the Quality of Life module font.",
+			FontItems,
+			function() return BGet("font") end,
+			function()
+				local v = BGet("font")
+				for _, item in ipairs(FontItems()) do
+					if item.value == v then return item.name end
+				end
+				return tostring(v)
+			end,
+			BSet("font"),
+			{ fontPreview = true, fontPath = function(v)
+				if v == "__global" then return ns.GetFontPath("qol") end
+				return ns.ResolveFontName(v)
+			end }, BreakOff)
+		p:Dropdown("Font Outline", "Outline of the break timer text.",
+			OUTLINES, function() return BGet("outlineMode") end, function() return OUTLINE_LABEL(BGet("outlineMode")) end,
+			BSet("outlineMode"), nil, BreakOff)
+		p:Toggle("Red for the Last Minute", "Turns the text red when less than a minute of the break is left.",
+			function() return BGet("warnLastMinute") and true or false end, BSet("warnLastMinute"), BreakOff)
+		p:Toggle("Show \"Break is over\"", "Shows \"Break is over\" for a few seconds when the break runs out.",
+			function() return BGet("showOver") and true or false end, BSet("showOver"), BreakOff)
+	end
 end
