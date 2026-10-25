@@ -659,6 +659,10 @@ function P.RefreshTargetInfo()
 	hasTarget = UnitExists("target") and true or false
 	targetName = hasTarget and UnitName("target") or nil
 end
+-- For /enp target: what the driver compares each plate against.
+function P.TargetMatchInfo()
+	return hasTarget, targetName
+end
 
 local slowTimer = 0
 local driver = CreateFrame("Frame")
@@ -686,7 +690,9 @@ local function OnUpdate(_, elapsed)
 		local blizz = plate.blizz
 		local isTarget = false
 		if hasTarget then
-			isTarget = blizz:GetAlpha() >= 0.99 and plate.name == targetName
+			local a = blizz:GetAlpha()
+			plate._blizzAlpha = a
+			isTarget = a >= 0.99 and plate.name == targetName
 			blizz:SetAlpha(1)
 		end
 		local isMouseover = plate.bHighlight:IsShown() and true or false

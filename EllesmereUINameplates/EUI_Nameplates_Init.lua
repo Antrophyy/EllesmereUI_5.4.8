@@ -229,7 +229,84 @@ ev:SetScript("OnEvent", OnEvent)
 --  /enp opens the Nameplates settings
 -------------------------------------------------------------------------------
 SLASH_EUINAMEPLATES1 = "/enp"
+-- /enp target: why the current target's plate does (not) show the target
+-- effects. Printed to chat and kept (last 10) in EllesmereUINameplatesDB.targetDebug.
+local function YN(v) return v and "Y" or "n" end
+local function TargetDebug()
+	local lines = {}
+	local function out(s) lines[#lines + 1] = s end
+	local p = P.Profile()
+	local hasT, matchName = P.TargetMatchInfo()
+	local tName, tRealm = UnitName("target")
+	local tGUID = UnitGUID("target")
+	out(("time=%s zone=%s active=%s combat=%s"):format(date("%H:%M:%S"), tostring(GetRealZoneText()),
+		tostring(ENP.active), tostring(InCombatLockdown())))
+	if not UnitExists("target") then
+		out("no target")
+	else
+		out(("target=%s realm=%s guid=%s enemy=%s player=%s dead=%s | driver hasTarget=%s name=%s"):format(
+			tostring(tName), tostring(tRealm), tostring(tGUID), tostring(UnitCanAttack("player", "target")),
+			tostring(UnitIsPlayer("target")), tostring(UnitIsDead("target")), tostring(hasT), tostring(matchName)))
+	end
+	out(("settings: style=%s euiGlow=%s highlight=%s borderColor=%s borderSize=%s arrows=%s overlay=%s friendlyFx=%s"):format(
+		tostring(p.targetGlowStyle), tostring(P.TargetGlowEUI()), tostring(P.TargetGlowHighlight()),
+		tostring(P.TargetGlowBorderColor()), tostring(P.TargetGlowBorderSize()), tostring(p.showTargetArrows),
+		tostring(p.targetOverlayTexture), tostring(p.friendlyTargetBorderFx)))
+	local nVis, nTarget, nMatch = 0, 0, 0
+	local verdict
+	P.ForEachVisible(function(plate)
+		nVis = nVis + 1
+		local live = P.StripRealm(plate.bName:GetText())
+		local a = plate._blizzAlpha or -1
+		local nameHit = tName and (plate.name == tName or live == tName)
+		if plate.isTarget then nTarget = nTarget + 1 end
+		if nameHit then nMatch = nMatch + 1 end
+		if nameHit or plate.isTarget or a >= 0.99 then
+			out(("  plate name=%q live=%q blizzA=%.2f isTarget=%s hidden=%s nameOnly=%s friendly=%s kind=%s unit=%s guidMatch=%s ourA=%.2f shown=%s glow=%s hl=%s arrows=%s"):format(
+				tostring(plate.name), tostring(live), a, YN(plate.isTarget), YN(plate.hiddenPlate), YN(plate.nameOnly),
+				YN(plate.isFriendly), tostring(plate.kind), tostring(plate.unit),
+				YN(tGUID and plate.guid == tGUID), plate:GetAlpha() or -1, YN(plate:IsShown()),
+				YN(plate.glow and plate.glow:IsShown()), YN(plate.targetHighlight:IsShown()), YN(plate.leftArrow:IsShown())))
+			if nameHit and not verdict then
+				if plate.name ~= tName then
+					verdict = "STALE NAME: plate name was read at show and no longer matches the plate's text"
+				elseif a < 0.99 then
+					verdict = "BLIZZ ALPHA: name matches but Blizzard alpha < 0.99, so the plate is not seen as target"
+				elseif not plate.isTarget then
+					verdict = "NOT FLAGGED: name and alpha match but isTarget is off"
+				elseif plate.hiddenPlate or plate.nameOnly then
+					verdict = "HIDDEN/NAME-ONLY: plate is target but its mode suppresses the effects"
+				end
+			end
+		end
+	end)
+	if UnitExists("target") and not verdict then
+		if nMatch == 0 then
+			verdict = "NO PLATE with the target's name is visible"
+		elseif nTarget > 1 then
+			verdict = "MULTIPLE plates flagged as target"
+		else
+			verdict = "target plate looks correct"
+		end
+	end
+	out(("visible=%d flagged=%d nameMatches=%d verdict=%s"):format(nVis, nTarget, nMatch, tostring(verdict)))
+	for i, s in ipairs(lines) do
+		print((i == 1 and "|cff0cd29fENP target:|r " or "  ") .. s)
+	end
+	local sv = EllesmereUINameplatesDB
+	if type(sv) == "table" then
+		sv.targetDebug = sv.targetDebug or {}
+		table.insert(sv.targetDebug, lines)
+		while #sv.targetDebug > 10 do table.remove(sv.targetDebug, 1) end
+		print("  Saved. /reload or log out to write it to disk.")
+	end
+end
+
 SlashCmdList.EUINAMEPLATES = function(msg)
+	if msg and msg:lower():match("^%s*target") then
+		TargetDebug()
+		return
+	end
 	-- /enp debug: what the plates look like to the stacking code.
 	if msg and msg:lower():match("^%s*debug") then
 		local p = P.Profile()
