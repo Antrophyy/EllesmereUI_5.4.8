@@ -587,6 +587,8 @@ Test("your death recap opens under the Release Spirit popup", function()
 	popup.which, popup.width = "DEATH", 320
 	function hooksecurefunc(name, fn) hooks[name] = fn end
 	function StaticPopup_Visible(which) return popup:IsShown() and popup.which == which and "StaticPopup1" or nil end
+	local dead = true
+	function UnitIsDeadOrGhost() return dead end
 	assert(loadfile("EllesmereUIDamageMeters/EllesmereUIDamageMeters_DeathRecap.lua"))("EllesmereUIDamageMeters")
 	Tick(6)
 	Log("SPELL_DAMAGE", BOSS_GUID, "Boss", BOSS, playerGUID, "Alex", ME, 903, "Crush", 1, 5000, 1200, 1, 0, 0, 0)
@@ -601,15 +603,60 @@ Test("your death recap opens under the Release Spirit popup", function()
 	Equal(panel:IsShown(), true, "shown")
 	assert(panel.sub:GetText():find("Killed by Spell 903", 1, true), panel.sub:GetText())
 	assert(panel.lines[1].name:GetText():find("Spell 903", 1, true), panel.lines[1].name:GetText())
-	-- Released or resurrected: the popup goes and the recap with it.
-	popup:Hide()
+	-- The collapse button hides the lines and keeps the summary; it is remembered.
+	panel.toggle.scripts.OnClick(panel.toggle)
+	Equal(panel.lines[1]:IsShown(), false, "collapsed"); Equal(panel.toggle.text:GetText(), "+")
+	Equal(DM.DB().deathRecapCollapsed, true)
+	panel.toggle.scripts.OnClick(panel.toggle)
+	Equal(panel.lines[1]:IsShown(), true, "expanded"); Equal(panel.toggle.text:GetText(), "-")
+	-- A resurrection offer replaces the DEATH popup: the recap stays, under it.
+	popup.which = "RESURRECT"
 	Tick(0.3)
-	Equal(panel:IsShown(), false, "hidden with the popup")
+	Equal(panel:IsShown(), true, "kept for the resurrection offer")
+	popup:Hide(); Tick(0.3)
+	Equal(panel:IsShown(), true, "kept while dead without a popup")
+	-- Alive again: gone.
+	dead = false; Tick(0.3)
+	Equal(panel:IsShown(), false, "hidden once alive")
+	popup.which = "DEATH"; dead = true
 	DM.DB().deathRecapPopup = false
 	popup:Show(); hooks.StaticPopup_Show("DEATH"); Tick(0.2)
 	Equal(panel:IsShown(), false, "option off")
 	DM.DB().deathRecapPopup = nil
-	hooksecurefunc, StaticPopup_Visible = nil, nil
+	-- A hit long before the death is not the killing blow.
+	Tick(6)
+	Log("SPELL_DAMAGE", BOSS_GUID, "Boss", BOSS, playerGUID, "Alex", ME, 904, "Gust", 1, 100, -1, 1, 0, 0, 0)
+	Tick(20)
+	Log("UNIT_DIED", nil, nil, 0, playerGUID, "Alex", ME)
+	Tick(0.2)
+	assert(panel.sub:GetText():find("not in the combat log (last event 20.0s before)", 1, true), panel.sub:GetText())
+	-- Instant kills are the cause of death.
+	Tick(6)
+	Log("SPELL_INSTAKILL", BOSS_GUID, "Boss", BOSS, playerGUID, "Alex", ME, 905, "Doom", 1)
+	Log("UNIT_DIED", nil, nil, 0, playerGUID, "Alex", ME)
+	Tick(0.2)
+	assert(panel.sub:GetText():find("Killed by Spell 905", 1, true) and panel.sub:GetText():find("Instant kill", 1, true), panel.sub:GetText())
+	popup:Hide(); dead = false; Tick(0.3)
+	Equal(panel:IsShown(), false)
+	hooksecurefunc, StaticPopup_Visible, UnitIsDeadOrGhost = nil, nil, nil
+end)
+
+Test("a stalled combat log is cleared after a cast with no log events", function()
+	local cleared = 0
+	function CombatLogClearEntries() cleared = cleared + 1 end
+	Fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Shot", "", 1, 100)
+	Fire("COMBAT_LOG_EVENT_UNFILTERED", now, "SPELL_CAST_SUCCESS", false, playerGUID, "Alex", ME, 0, nil, nil, 0, 0, 100, "Shot", 1)
+	Tick(1)
+	Equal(cleared, 0, "log working")
+	Fire("UNIT_SPELLCAST_SUCCEEDED", "party1", "Frostbolt", "", 1, 116)
+	Tick(1)
+	Equal(cleared, 0, "someone else's cast")
+	Fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Shot", "", 1, 100)
+	Tick(1)
+	Equal(cleared, 1, "stalled log cleared")
+	Tick(1)
+	Equal(cleared, 1, "once")
+	CombatLogClearEntries = nil
 end)
 
 print(string.format("%d passed, %d failed", passed, #failures))

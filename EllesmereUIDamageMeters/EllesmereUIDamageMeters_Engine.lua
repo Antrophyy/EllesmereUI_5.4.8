@@ -369,7 +369,7 @@ local function HealthPct(guid)
 	if not max or max <= 0 then return nil end
 	return min(100, floor(100 * (UnitHealth(unit) or 0) / max + 0.5))
 end
-local function LogEvent(guid, heal, id, amount, source, overkill, absorbed, shield)
+local function LogEvent(guid, heal, id, amount, source, overkill, absorbed, shield, instakill)
 	local log = deathLog[guid]
 	if not log then
 		log = {}
@@ -380,6 +380,7 @@ local function LogEvent(guid, heal, id, amount, source, overkill, absorbed, shie
 		overkill = overkill and overkill > 0 and overkill or nil,
 		absorbed = absorbed and absorbed > 0 and absorbed or nil,
 		shield = shield or nil,
+		instakill = instakill or nil,
 	}
 	if #log > DEATH_LOG_SIZE then tremove(log, 1) end
 end
@@ -597,6 +598,12 @@ H.SPELL_AURA_REFRESH = AuraOn
 H.SPELL_AURA_REMOVED = function(sG, sN, sF, dG, dN, dF, id)
 	if ABSORBS[id] then ShieldRemoved(sG, dG, id) end
 end
+-- Instant kills (no damage event): the cause of death, logged like Details.
+H.SPELL_INSTAKILL = function(sG, sN, sF, dG, dN, dF, id)
+	if dG and band(dF, AFFIL_GROUP) ~= 0 and band(dF, TYPE_PLAYER) ~= 0 then
+		LogEvent(dG, false, id, 0, sN, nil, nil, nil, true)
+	end
+end
 H.SPELL_INTERRUPT = function(sG, sN, sF, dG, dN, dF, id)
 	Count(sG, sN, sF, id, "interrupts", "intSpells")
 end
@@ -740,9 +747,27 @@ frame:RegisterEvent("PLAYER_DEAD")
 frame:RegisterEvent("ENCOUNTER_START")
 frame:RegisterEvent("ENCOUNTER_END")
 frame:RegisterEvent("WORLD_STATE_TIMER_START")
+frame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+
+-- The 5.4.8 client's combat log can stall: no events reach addons for
+-- minutes (damage, heals and deaths all go missing) until it is cleared.
+-- Every cast you finish logs SPELL_CAST_SUCCESS, so a cast with no combat
+-- log event shortly after means the log is stuck: clear it (CombatLogFix).
+local LOG_STALL = 0.5
+local lastLogAt, castAt = 0, nil
+local fixer = CreateFrame("Frame")
+fixer:SetScript("OnUpdate", function()
+	if not castAt or GetTime() - castAt < LOG_STALL then return end
+	if lastLogAt < castAt and CombatLogClearEntries then CombatLogClearEntries() end
+	castAt = nil
+end)
+
 frame:SetScript("OnEvent", function(_, event, ...)
 	if event == "COMBAT_LOG_EVENT_UNFILTERED" then
+		lastLogAt = GetTime()
 		E.OnCombatLog(...)
+	elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+		if ... == "player" and not castAt then castAt = GetTime() end
 	elseif event == "ADDON_LOADED" then
 		if ... == addonName then RestoreFights() end
 	elseif event == "PLAYER_LOGOUT" then

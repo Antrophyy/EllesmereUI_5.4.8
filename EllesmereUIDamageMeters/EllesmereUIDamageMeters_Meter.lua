@@ -90,6 +90,7 @@ local function CreateDefaults()
 		showPinnedSelf = false,
 		showHoverTooltip = true,
 		deathRecapPopup = true,
+		deathRecapCollapsed = false,
 		showSpellTooltips = true,
 		showAllBreakdownSpells = true,
 		breakdownAnchorPoint = "row",
@@ -623,7 +624,7 @@ local function GetBreakdown(combat, dmType, src)
 				out[#out + 1] = {
 					label = name, icon = icon, amount = floor(ev.amount), spellID = ev.id,
 					heal = ev.heal, source = ev.source, ago = ev.at - t.at,
-					hp = ev.hp, overkill = ev.overkill, shield = ev.shield,
+					hp = ev.hp, overkill = ev.overkill, shield = ev.shield, instakill = ev.instakill,
 				}
 				if ev.hp then out.hasHP = true end
 			end
@@ -644,6 +645,7 @@ local function DeathLine(e)
 	if e.overkill then label = label .. " |cffff5f5f" .. Abbrev(e.overkill) .. " overkill|r" end
 	if e.ago then label = format("|cff999999%.1fs|r ", e.ago) .. label end
 	local amount = (e.heal and "|cff5fd35f+" or "|cffff5f5f-") .. Abbrev(e.amount) .. "|r"
+	if e.instakill then amount = "|cffff5f5fInstant kill|r" end
 	if e.hp then amount = amount .. format(" %d%%", e.hp) end
 	return label, amount
 end

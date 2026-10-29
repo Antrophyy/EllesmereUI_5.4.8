@@ -11,8 +11,10 @@ local MAX_LINES = 12
 local LINE_H = 18
 local HDR_H = 38
 local RECENT = 60 -- seconds: only a death this recent belongs to the popup
+local KILL_WINDOW = 3 -- seconds: a hit this close to the death is what killed you
 
 local panel, anchor
+local Show, Place, AnchorPopup -- forward
 
 -- Your newest death in Overall (deaths join Overall whatever fight they belong to).
 local function LastDeath()
@@ -85,35 +87,79 @@ local function Build()
 	panel.sub:SetJustifyH("LEFT")
 	panel.sub:SetWordWrap(false)
 	panel.lines = {}
-	-- Follow the popup: gone (released, resurrected) means gone.
+	-- Collapse / expand the event lines (remembered).
+	panel.toggle = CreateFrame("Button", nil, panel)
+	panel.toggle:SetSize(18, 18)
+	panel.toggle:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -4, -3)
+	panel.toggle.text = panel.toggle:CreateFontString(nil, "OVERLAY")
+	panel.toggle.text:SetPoint("CENTER", panel.toggle, "CENTER", 0, 0)
+	panel.toggle:SetScript("OnClick", function()
+		local c = DM.DB()
+		c.deathRecapCollapsed = not c.deathRecapCollapsed
+		Show()
+	end)
+	panel.toggle:SetScript("OnEnter", function(self) self.text:SetTextColor(1, 1, 1, 1) end)
+	panel.toggle:SetScript("OnLeave", function(self) self.text:SetTextColor(1, 1, 1, 0.6) end)
+	-- Stay while you are dead (a resurrection offer replaces the DEATH popup,
+	-- releasing hides it): follow whichever popup is up, gone once alive.
 	panel.elapsed = 0
 	panel:SetScript("OnUpdate", function(self, dt)
 		self.elapsed = self.elapsed + dt
 		if self.elapsed < 0.2 then return end
 		self.elapsed = 0
-		if not anchor or not anchor:IsShown() or anchor.which ~= "DEATH" then self:Hide() end
+		if UnitIsDeadOrGhost and not UnitIsDeadOrGhost("player") then
+			self:Hide()
+			return
+		end
+		local popup = AnchorPopup()
+		if popup ~= anchor or (anchor and not anchor:IsShown()) then Place(popup) end
 	end)
 	return panel
 end
 
-local function Popup()
-	local name = StaticPopup_Visible and StaticPopup_Visible("DEATH")
+local function Popup(which)
+	local name = StaticPopup_Visible and StaticPopup_Visible(which or "DEATH")
 	return name and _G[name] or nil
 end
 
-local function Show()
+-- The popup the recap hangs under while you are dead.
+local ANCHORS = { "DEATH", "RESURRECT", "RESURRECT_NO_SICKNESS", "RESURRECT_NO_TIMER" }
+function AnchorPopup()
+	for i = 1, #ANCHORS do
+		local popup = Popup(ANCHORS[i])
+		if popup then return popup end
+	end
+	return nil
+end
+
+-- Under the popup, or where the first popup sits when none is up.
+function Place(popup)
+	anchor = popup
+	panel:ClearAllPoints()
+	if popup then
+		panel:SetPoint("TOP", popup, "BOTTOM", 0, -4)
+		panel:SetWidth(math.max(popup:GetWidth() or 320, 320))
+	else
+		panel:SetPoint("TOP", UIParent, "TOP", 0, -135)
+		panel:SetWidth(320)
+	end
+end
+
+function Show()
 	if DM.DB().deathRecapPopup == false then
 		if panel then panel:Hide() end
 		return
 	end
-	local popup = Popup()
+	-- Opened by the DEATH popup; already open (collapse click), it stays.
+	local popup = Popup() or (panel and panel:IsShown() and AnchorPopup())
 	local death, overall = LastDeath()
-	if not popup or not death then
+	if not death and panel and panel:IsShown() then death, overall = panel.death, panel.overall end
+	if not (popup or (panel and panel:IsShown())) or not death then
 		if panel then panel:Hide() end
 		return
 	end
 	Build()
-	anchor = popup
+	panel.death, panel.overall = death, overall
 	local list = DM.GetBreakdown(overall, DM.T.Deaths, { death = death })
 	local tex = DM.TexturePath(DM.DB().barTexture)
 	DM.SetFont(panel.title, 12)
@@ -124,18 +170,31 @@ local function Show()
 	for i = 1, #list do
 		if not list[i].heal then killer = list[i] break end
 	end
+	-- Only a hit right before the death killed you. An older one means the
+	-- killing blow never reached the combat log (out of range, scripted kill).
+	if killer and (killer.ago or 0) < -KILL_WINDOW then killer = nil end
 	if killer then
 		local text = "Killed by " .. killer.label
 		if killer.source then text = text .. " |cff999999(" .. killer.source .. ")|r" end
-		text = text .. " |cffff5f5f" .. DM.Abbrev(killer.amount) .. "|r"
+		if killer.instakill then
+			text = text .. " |cffff5f5fInstant kill|r"
+		else
+			text = text .. " |cffff5f5f" .. DM.Abbrev(killer.amount) .. "|r"
+		end
 		if killer.overkill then text = text .. " |cff999999(" .. DM.Abbrev(killer.overkill) .. " overkill)|r" end
 		panel.sub:SetText(text)
+	elseif list[1] and list[1].ago then
+		panel.sub:SetText(format("|cff999999Killing blow not in the combat log (last event %.1fs before).|r", -list[1].ago))
 	else
 		panel.sub:SetText("|cff999999No damage recorded.|r")
 	end
 	local top = 1
 	for i = 1, #list do if list[i].amount > top then top = list[i].amount end end
-	local n = math.min(#list, MAX_LINES)
+	local collapsed = DM.DB().deathRecapCollapsed and true or false
+	DM.SetFont(panel.toggle.text, 14)
+	panel.toggle.text:SetText(collapsed and "+" or "-")
+	panel.toggle.text:SetTextColor(1, 1, 1, 0.6)
+	local n = collapsed and 0 or math.min(#list, MAX_LINES)
 	for i = 1, n do
 		local e, l = list[i], Line(i)
 		DM.SetFont(l.name, 11)
@@ -160,10 +219,8 @@ local function Show()
 		l:Show()
 	end
 	for i = n + 1, #panel.lines do panel.lines[i]:Hide() end
-	panel:ClearAllPoints()
-	panel:SetPoint("TOP", popup, "BOTTOM", 0, -4)
-	panel:SetWidth(math.max(popup:GetWidth() or 320, 320))
-	panel:SetHeight(HDR_H + n * (LINE_H + 1) + 4)
+	Place(AnchorPopup())
+	panel:SetHeight(n > 0 and (HDR_H + n * (LINE_H + 1) + 4) or (HDR_H - 2))
 	panel.elapsed = 0
 	panel:Show()
 end
