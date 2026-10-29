@@ -96,6 +96,14 @@ local function BuildGeneral(p)
 	p:Toggle("Hide Tutorial Pop-ups", "Hides Blizzard's tutorial UI: the tutorial pop-ups and the glowing (i) help-plate buttons on the spellbook, talents and other panels.",
 		Get("hideTutorials"), Set("hideTutorials"))
 
+	-- Retail: Forever Essentials > General > WORLD MAP (same EllesmereUIDB.worldMapFade keys).
+	local function MapFadeGet(k) return function() return Q.MapFadeCfg()[k] and true or false end end
+	local function MapFadeSet(k) return function(v) Q.MapFadeCfg()[k] = v end end
+	p:Toggle("Fade Map While Moving", "The world map fades while you move and comes back when you stop or hover it.",
+		MapFadeGet("enabled"), MapFadeSet("enabled"))
+	p:Toggle("Show the Game Behind the Map", "Lightens the black behind the maximized world map.",
+		MapFadeGet("dim"), MapFadeSet("dim"))
+
 	-- Hide Loot Rolls Window | Combat Alert
 	local function lootHistOff() return not On("hideLootHistory") end
 	local MODES, MODE_LABEL = Items({ "hide", "Hide Completely", "autoclose", "Close After Delay" })
