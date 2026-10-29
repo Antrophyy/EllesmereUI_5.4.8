@@ -517,6 +517,79 @@ function Q.ApplyMapCoords()
 end
 
 ---------------------------------------------------------------------------
+-- World Map Fade (EllesmereUIDB.worldMapFade = { enabled, dim }, retail keys)
+---------------------------------------------------------------------------
+-- Retail turns on the game's mapFade CVar, which 5.4.8 does not have: the
+-- map fades here itself while you move, back when you stop or hover it.
+-- "dim" lightens the black behind the maximized map (BlackoutWorld).
+local MAP_FADE_ALPHA, MAP_FADE_SPEED, MAP_DIM_ALPHA = 0.35, 3, 0.2
+local mapFader, mapDimmed
+
+local function MapFadeCfg()
+	local c = R().worldMapFade
+	return type(c) == "table" and c or {}
+end
+Q.MapFadeCfg = function()
+	local root = R()
+	if type(root.worldMapFade) ~= "table" then root.worldMapFade = {} end
+	return root.worldMapFade
+end
+
+local function MapWindowed()
+	local s = WORLDMAP_SETTINGS and WORLDMAP_SETTINGS.size
+	return s ~= nil and s == WORLDMAP_WINDOWED_SIZE
+end
+
+-- The maximized map is screen sized: there only the map and quest panel count.
+local function MapHovered()
+	if MapWindowed() then return WorldMapFrame:IsMouseOver() end
+	for _, n in ipairs({ "WorldMapDetailFrame", "WorldMapQuestScrollFrame",
+		"WorldMapQuestDetailScrollFrame", "WorldMapQuestRewardScrollFrame" }) do
+		local f = _G[n]
+		if f and f:IsVisible() and f:IsMouseOver() then return true end
+	end
+	return false
+end
+
+local function MapFadeUpdate(self, elapsed)
+	local target = 1
+	if GetUnitSpeed("player") > 0 and not UnitOnTaxi("player") and not MapHovered() then
+		target = MAP_FADE_ALPHA
+	end
+	local a = WorldMapFrame:GetAlpha()
+	if a == target then return end
+	local step = MAP_FADE_SPEED * elapsed
+	if a < target then
+		a = math.min(target, a + step)
+	else
+		a = math.max(target, a - step)
+	end
+	WorldMapFrame:SetAlpha(a)
+end
+
+function Q.ApplyMapFade()
+	if not WorldMapFrame then return end
+	local cfg = MapFadeCfg()
+	if cfg.enabled then
+		if not mapFader then
+			mapFader = CreateFrame("Frame", nil, WorldMapFrame)
+			-- Opens at full alpha, not where the last fade left it.
+			mapFader:SetScript("OnHide", function() WorldMapFrame:SetAlpha(1) end)
+		end
+		mapFader:SetScript("OnUpdate", MapFadeUpdate)
+		mapFader:Show()
+	elseif mapFader then
+		mapFader:SetScript("OnUpdate", nil)
+		WorldMapFrame:SetAlpha(1)
+	end
+	local blackout = _G.BlackoutWorld
+	if blackout and (cfg.dim or mapDimmed) then
+		blackout:SetAlpha(cfg.dim and MAP_DIM_ALPHA or 1)
+		mapDimmed = cfg.dim and true or nil
+	end
+end
+
+---------------------------------------------------------------------------
 -- Suppress Lua Errors (suppressErrors; same key and CVar as Global Settings)
 ---------------------------------------------------------------------------
 function Q.ApplySuppressErrors()
@@ -999,6 +1072,7 @@ function Q.ApplyGeneral()
 	Q.ApplyPartyPanel()
 	Q.ApplyQuickLoot()
 	Q.ApplyMapCoords()
+	Q.ApplyMapFade()
 	Q.ApplyHideErrors()
 	Q.ApplyHideTutorials()
 	Q.ApplyHideLootHistory()
