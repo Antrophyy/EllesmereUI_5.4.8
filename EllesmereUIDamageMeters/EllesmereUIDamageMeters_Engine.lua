@@ -68,7 +68,7 @@ end
 ---------------------------------------------------------------------------
 -- Change notifications: E.Listen(fn) -> fn(what), what = "start" | "stop" |
 -- "reset" (all data) | "overall" (Overall cleared) | "removed" (old fights dropped) |
--- "death" (a group player died)
+-- "death" (a group player died) | "sync" (numbers raised by the group sync)
 ---------------------------------------------------------------------------
 local listeners = {}
 function E.Listen(fn) listeners[#listeners + 1] = fn end
@@ -84,11 +84,17 @@ end
 ---------------------------------------------------------------------------
 local unitOf, petOwner, specOf = {}, {}, {}
 local playerGUID
+local byShortGUID = {} -- group sync: GUID without "0x" and leading zeros -> GUID
+
+local function ShortGUID(guid)
+	return (guid:gsub("^0[xX]", ""):gsub("^0+", ""))
+end
 
 local function ScanUnit(unit)
 	local guid = UnitGUID(unit)
 	if not guid then return end
 	unitOf[guid] = unit
+	byShortGUID[ShortGUID(guid)] = guid
 	local pet = UnitGUID(unit .. "pet")
 	if pet then petOwner[pet] = guid end
 	if unit == "player" then
@@ -103,6 +109,7 @@ end
 
 local function ScanRoster()
 	wipe(unitOf)
+	wipe(byShortGUID)
 	playerGUID = UnitGUID("player")
 	ScanUnit("player")
 	local n = GetNumGroupMembers and GetNumGroupMembers() or 0
@@ -526,12 +533,23 @@ end
 
 local DEATH_JOIN = 5 -- seconds after a fight ended that a death still belongs to it
 local diedAt = {} -- guid -> time of the last recorded death (UNIT_DIED and PLAYER_DEAD both report yours)
-local function Died(dstGUID, dstName, dstFlags)
-	if not dstGUID or band(dstFlags, AFFIL_GROUP) == 0 or band(dstFlags, TYPE_PLAYER) == 0 then return end
+local lastDeath = {} -- guid -> that death
+local SendDeath -- forward (group sync below)
+
+-- Records a death of a group player. synced: reported by another EllesmereUI
+-- user (events = their killing blow only); a death seen here afterwards
+-- replaces those events with the full recap.
+local function AddDeath(dstGUID, dstName, events, synced)
 	local unit = unitOf[dstGUID]
-	if unit and UnitIsFeignDeath and UnitIsFeignDeath(unit) then return end
 	local now = GetTime()
-	if diedAt[dstGUID] and now - diedAt[dstGUID] < DEATH_JOIN then return end
+	if diedAt[dstGUID] and now - diedAt[dstGUID] < DEATH_JOIN then
+		local known = lastDeath[dstGUID]
+		if not synced and known and known.synced then
+			known.events, known.synced = events, nil
+			Fire("death")
+		end
+		return
+	end
 	diedAt[dstGUID] = now
 	local seg = current
 	if not seg and lastStopped and now - lastStopped.finish <= DEATH_JOIN then
@@ -539,20 +557,29 @@ local function Died(dstGUID, dstName, dstFlags)
 		if not seg.kept then KeepSegment(seg) end
 	end
 	seg = seg or segments[1]
-	local events = deathLog[dstGUID] or {}
-	deathLog[dstGUID] = nil
 	local class
 	if unit then
 		local _
 		_, class = UnitClass(unit)
 	end
-	local death = { name = dstName, class = class, at = now, events = events }
+	local death = { name = dstName, class = class, at = now, events = events, synced = synced or nil }
+	lastDeath[dstGUID] = death
 	if seg then
 		death.time = now - seg.start
 		tinsert(seg.deaths, death)
 	end
 	overall.deaths[#overall.deaths + 1] = death
+	if not synced then SendDeath(dstGUID, events) end
 	Fire("death")
+end
+
+local function Died(dstGUID, dstName, dstFlags)
+	if not dstGUID or band(dstFlags, AFFIL_GROUP) == 0 or band(dstFlags, TYPE_PLAYER) == 0 then return end
+	local unit = unitOf[dstGUID]
+	if unit and UnitIsFeignDeath and UnitIsFeignDeath(unit) then return end
+	local events = deathLog[dstGUID] or {}
+	deathLog[dstGUID] = nil
+	AddDeath(dstGUID, dstName, events)
 end
 
 ---------------------------------------------------------------------------
@@ -630,6 +657,245 @@ function E.OnCombatLog(_, event, _, sG, sN, sF, _, dG, dN, dF, _, ...)
 	local h = H[event]
 	if h then h(sG, sN, sF or 0, dG, dN, dF or 0, ...) end
 end
+
+---------------------------------------------------------------------------
+-- Group sync: EllesmereUI users in the group share their numbers of the
+-- fight in progress about every 10 seconds (and once when it ends), so a
+-- player teleported away or out of combat log range still sees everyone's
+-- real damage, healing, damage taken, interrupts, dispels and active time.
+-- For each player and number the higher value wins; what a sync adds shows
+-- in the breakdown as "Synced from group". Deaths are shared as they
+-- happen: one you missed is added with the killing blow as its recap, and
+-- replaced by the full recap if you see the death yourself.
+--   totals: "T\t<fight seconds>\t<guid>,<n1>,...,<n7>;<guid>,..." (base 36)
+--   death:  "D\t<guid>\t<spell>\t<amount>\t<overkill>\t<instakill 0/1>\t<source>"
+-- Messages stay under 255 bytes and go out one per half second.
+---------------------------------------------------------------------------
+local SYNC_PREFIX = "EUIDM"
+local SYNC_INTERVAL = 10
+local SYNC_MAX_LEN = 240
+local SYNC_ALIGN = 15 -- fights whose lengths differ more than this are not the same fight
+local SYNC_RECENT = 10 -- seconds after a fight ended that late totals still join it
+local SYNC_ID = "Synced from group"
+local SYNC_FIELDS = { "damage", "healing", "taken", "interrupts", "dispels", "dmgActive", "healActive" }
+local SYNC_LIST = { damage = "dmgSpells", healing = "healSpells", interrupts = "intSpells", dispels = "dispSpells" }
+
+local function SyncOn() return Cfg("groupSync", true) ~= false end
+
+local function SyncChannel()
+	if LE_PARTY_CATEGORY_INSTANCE and IsInGroup and IsInGroup(LE_PARTY_CATEGORY_INSTANCE)
+		and not IsInGroup(LE_PARTY_CATEGORY_HOME) then
+		return "INSTANCE_CHAT"
+	end
+	if IsInRaid and IsInRaid() then return "RAID" end
+	if IsInGroup and IsInGroup() then return "PARTY" end
+	return nil
+end
+
+local outbox = {} -- { text, channel, prio }, sent one per tick
+local function Queue(text, prio)
+	local channel = SyncChannel()
+	if not channel then return end
+	outbox[#outbox + 1] = { text, channel, prio }
+end
+
+local function Flush()
+	local m = tremove(outbox, 1)
+	if not m then return end
+	local ctl = _G.ChatThrottleLib
+	if ctl and ctl.SendAddonMessage then
+		ctl:SendAddonMessage(m[3], SYNC_PREFIX, m[1], m[2])
+	elseif SendAddonMessage then
+		SendAddonMessage(SYNC_PREFIX, m[1], m[2])
+	end
+end
+
+local function B36(n)
+	n = floor(n or 0)
+	if n <= 0 then return "" end
+	local digits, out = "0123456789abcdefghijklmnopqrstuvwxyz", ""
+	while n > 0 do
+		local d = n % 36
+		out = digits:sub(d + 1, d + 1) .. out
+		n = (n - d) / 36
+	end
+	return out
+end
+
+-- Values of the current fight last sent or learnt from the group, per
+-- player: only numbers that grew since are sent again.
+local known = {}
+
+local function SendTotals(seg)
+	if not seg or not SyncOn() or not SyncChannel() then return end
+	local head = "T\t" .. B36(E.Duration(seg)) .. "\t"
+	local text, n = head, 0
+	for guid, a in pairs(seg.actors) do
+		if a.group and unitOf[guid] then
+			local k = known[guid]
+			if not k then
+				k = {}
+				known[guid] = k
+			end
+			local changed = false
+			local parts = { ShortGUID(guid) }
+			for i, f in ipairs(SYNC_FIELDS) do
+				local v = floor(a[f] or 0)
+				if v > (k[f] or 0) then
+					changed = true
+					k[f] = v
+				end
+				parts[i + 1] = B36(v)
+			end
+			if changed then
+				local entry = table.concat(parts, ","):gsub(",+$", "")
+				if n > 0 and #text + 1 + #entry > SYNC_MAX_LEN then
+					Queue(text, "BULK")
+					text, n = head, 0
+				end
+				text = text .. (n > 0 and ";" or "") .. entry
+				n = n + 1
+			end
+		end
+	end
+	if n > 0 then Queue(text, "BULK") end
+end
+
+-- The fight synced totals belong to: the one in progress, or the one that
+-- just ended (the sender's final totals can arrive after it ended here).
+local function SyncTarget()
+	if current then return current end
+	local seg = segments[1]
+	if seg and seg == lastStopped and seg.finish and GetTime() - seg.finish <= SYNC_RECENT then return seg end
+	return nil
+end
+
+local function Raise(seg, a, f, delta)
+	a[f] = (a[f] or 0) + delta
+	local list = SYNC_LIST[f]
+	if list then
+		AddSpell(a[list], SYNC_ID, nil, delta)
+	elseif f == "taken" then
+		AddTaken(a, SYNC_ID, SYNC_ID, nil, delta)
+	end
+end
+
+local function MergeTotals(seconds, body)
+	local seg = SyncTarget()
+	if not seg or math.abs(E.Duration(seg) - seconds) > SYNC_ALIGN then return end
+	local changed = false
+	for entry in body:gmatch("[^;]+") do
+		local short, rest = entry:match("^([^,]+),?(.*)$")
+		local guid = short and byShortGUID[short]
+		if guid then
+			local values, i = {}, 0
+			for v in (rest .. ","):gmatch("([^,]*),") do
+				i = i + 1
+				values[i] = tonumber(v, 36) or 0
+			end
+			local flags = bit.bor(AFFIL_GROUP, TYPE_PLAYER)
+			local a = seg.actors[guid]
+			local k = known[guid]
+			if not k then
+				k = {}
+				known[guid] = k
+			end
+			for j, f in ipairs(SYNC_FIELDS) do
+				local v = values[j] or 0
+				local have = a and a[f] or 0
+				if v > have then
+					local delta = v - have
+					a = a or Actor(seg, guid, OwnerName(guid), flags)
+					Raise(seg, a, f, delta)
+					Raise(overall, Actor(overall, guid, OwnerName(guid), flags), f, delta)
+					changed = true
+				end
+				if v > (k[f] or 0) then k[f] = v end
+			end
+		end
+	end
+	if changed then Fire("sync") end
+end
+
+local pendingDeaths = {} -- guid -> { at, text }: deaths of others are sent after a short random wait
+
+SendDeath = function(guid, events)
+	if not SyncOn() or not SyncChannel() or not unitOf[guid] then return end
+	local blow
+	for i = #events, 1, -1 do
+		if not events[i].heal then
+			blow = events[i]
+			break
+		end
+	end
+	local text = table.concat({
+		"D", ShortGUID(guid), tostring(blow and blow.id or 0), tostring(floor(blow and blow.amount or 0)),
+		tostring(floor(blow and blow.overkill or 0)), blow and blow.instakill and "1" or "0",
+		(blow and blow.source or ""):sub(1, 60),
+	}, "\t")
+	-- Your own death is yours to report; someone else's is sent by whoever
+	-- is first, the others drop theirs when it arrives.
+	local wait = guid == playerGUID and 0 or 0.5 + math.random() * 1.5
+	pendingDeaths[guid] = { at = GetTime() + wait, text = text }
+end
+
+local function MergeDeath(short, id, amount, overkill, instakill, source)
+	local guid = byShortGUID[short]
+	if not guid then return end
+	pendingDeaths[guid] = nil
+	local name = OwnerName(guid)
+	if not name then return end
+	id, amount, overkill = tonumber(id) or 0, tonumber(amount) or 0, tonumber(overkill) or 0
+	local events = {}
+	if id ~= 0 or amount > 0 then
+		events[1] = {
+			heal = false, id = id, amount = amount, at = GetTime(), source = source ~= "" and source or nil,
+			overkill = overkill > 0 and overkill or nil, instakill = instakill == "1" or nil,
+		}
+	end
+	AddDeath(guid, name, events, true)
+end
+
+local syncNext
+function E.OnAddonMessage(prefix, text, _, sender)
+	if prefix ~= SYNC_PREFIX or type(text) ~= "string" or not SyncOn() then return end
+	if sender and sender:match("^[^%-]+") == UnitName("player") then return end
+	local kind, a1, rest = text:match("^(%u)\t([^\t]*)\t(.*)$")
+	if kind == "T" then
+		MergeTotals(tonumber(a1, 36) or 0, rest)
+	elseif kind == "D" then
+		local id, amount, overkill, instakill, source = rest:match("^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t(.*)$")
+		if id then MergeDeath(a1, id, amount, overkill, instakill, source) end
+	end
+end
+
+-- Called every half second.
+function E.SyncTick()
+	local now = GetTime()
+	for guid, p in pairs(pendingDeaths) do
+		if now >= p.at then
+			pendingDeaths[guid] = nil
+			Queue(p.text, "ALERT")
+		end
+	end
+	if current and syncNext and now >= syncNext then
+		syncNext = now + SYNC_INTERVAL
+		SendTotals(current)
+	end
+	Flush()
+end
+
+E.Listen(function(what)
+	if what == "start" then
+		wipe(known)
+		-- A little spread so the group's messages do not all go at once.
+		syncNext = GetTime() + SYNC_INTERVAL + math.random() * 2
+	elseif what == "stop" then
+		syncNext = nil
+		local seg = segments[1]
+		if seg and seg == lastStopped and seg.finish == GetTime() then SendTotals(seg) end
+	end
+end)
 
 ---------------------------------------------------------------------------
 -- Fights across a reload or relog: the stored fights and Overall are saved
@@ -731,6 +997,7 @@ frame:SetScript("OnUpdate", function(_, elapsed)
 	if tick < 0.5 then return end
 	tick = 0
 	E.CheckEnd()
+	E.SyncTick()
 end)
 frame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
 frame:RegisterEvent("ADDON_LOADED")
@@ -748,6 +1015,8 @@ frame:RegisterEvent("ENCOUNTER_START")
 frame:RegisterEvent("ENCOUNTER_END")
 frame:RegisterEvent("WORLD_STATE_TIMER_START")
 frame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+frame:RegisterEvent("CHAT_MSG_ADDON")
+if RegisterAddonMessagePrefix then RegisterAddonMessagePrefix(SYNC_PREFIX) end
 
 -- The 5.4.8 client's combat log can stall: no events reach addons for
 -- minutes (damage, heals and deaths all go missing) until it is cleared.
@@ -766,6 +1035,8 @@ frame:SetScript("OnEvent", function(_, event, ...)
 	if event == "COMBAT_LOG_EVENT_UNFILTERED" then
 		lastLogAt = GetTime()
 		E.OnCombatLog(...)
+	elseif event == "CHAT_MSG_ADDON" then
+		E.OnAddonMessage(...)
 	elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
 		if ... == "player" and not castAt then castAt = GetTime() end
 	elseif event == "ADDON_LOADED" then
