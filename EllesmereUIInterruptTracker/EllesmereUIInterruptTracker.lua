@@ -1304,7 +1304,8 @@ local function CreateLine(index)
 end
 
 addon:SetClampedToScreen(true)
-addon:SetFrameStrata("MEDIUM")
+-- HIGH so it draws above the Raid Ability Timeline (MEDIUM) when the two overlap.
+addon:SetFrameStrata("HIGH")
 addon:SetMovable(true)
 addon:EnableMouse(true)
 addon:RegisterForDrag("LeftButton")
