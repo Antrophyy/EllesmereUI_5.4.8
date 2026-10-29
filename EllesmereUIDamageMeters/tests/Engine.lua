@@ -602,13 +602,17 @@ Test("your death recap opens under the Release Spirit popup", function()
 	panel = EllesmereUIDMDeathRecap
 	Equal(panel:IsShown(), true, "shown")
 	assert(panel.sub:GetText():find("Killed by Spell 903", 1, true), panel.sub:GetText())
+	-- Collapsed to the "Killed by" line by default; a click anywhere expands it (remembered).
+	Equal(panel.lines[1] and panel.lines[1]:IsShown() or false, false, "collapsed by default")
+	assert(panel.title:GetText():find("click to expand", 1, true), panel.title:GetText())
+	panel.scripts.OnMouseUp(panel, "LeftButton")
+	Equal(panel.lines[1]:IsShown(), true, "expanded"); Equal(DM.DB().deathRecapExpanded, true)
 	assert(panel.lines[1].name:GetText():find("Spell 903", 1, true), panel.lines[1].name:GetText())
-	-- The collapse button hides the lines and keeps the summary; it is remembered.
-	panel.toggle.scripts.OnClick(panel.toggle)
-	Equal(panel.lines[1]:IsShown(), false, "collapsed"); Equal(panel.toggle.text:GetText(), "+")
-	Equal(DM.DB().deathRecapCollapsed, true)
-	panel.toggle.scripts.OnClick(panel.toggle)
-	Equal(panel.lines[1]:IsShown(), true, "expanded"); Equal(panel.toggle.text:GetText(), "-")
+	assert(panel.title:GetText():find("click to collapse", 1, true), panel.title:GetText())
+	panel.scripts.OnMouseUp(panel, "RightButton")
+	Equal(panel.lines[1]:IsShown(), true, "right click does nothing")
+	panel.scripts.OnMouseUp(panel, "LeftButton")
+	Equal(panel.lines[1]:IsShown(), false, "collapsed again"); Equal(DM.DB().deathRecapExpanded, false)
 	-- A resurrection offer replaces the DEATH popup: the recap stays, under it.
 	popup.which = "RESURRECT"
 	Tick(0.3)

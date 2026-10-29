@@ -90,7 +90,7 @@ local function CreateDefaults()
 		showPinnedSelf = false,
 		showHoverTooltip = true,
 		deathRecapPopup = true,
-		deathRecapCollapsed = false,
+		deathRecapExpanded = false,
 		showSpellTooltips = true,
 		showAllBreakdownSpells = true,
 		breakdownAnchorPoint = "row",

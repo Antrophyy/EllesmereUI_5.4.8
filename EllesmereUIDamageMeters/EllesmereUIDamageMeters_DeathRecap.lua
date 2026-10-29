@@ -87,19 +87,15 @@ local function Build()
 	panel.sub:SetJustifyH("LEFT")
 	panel.sub:SetWordWrap(false)
 	panel.lines = {}
-	-- Collapse / expand the event lines (remembered).
-	panel.toggle = CreateFrame("Button", nil, panel)
-	panel.toggle:SetSize(18, 18)
-	panel.toggle:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -4, -3)
-	panel.toggle.text = panel.toggle:CreateFontString(nil, "OVERLAY")
-	panel.toggle.text:SetPoint("CENTER", panel.toggle, "CENTER", 0, 0)
-	panel.toggle:SetScript("OnClick", function()
+	-- Click anywhere on it to expand / collapse the event lines (remembered,
+	-- collapsed to the "Killed by" line by default).
+	panel:EnableMouse(true)
+	panel:SetScript("OnMouseUp", function(_, button)
+		if button ~= "LeftButton" then return end
 		local c = DM.DB()
-		c.deathRecapCollapsed = not c.deathRecapCollapsed
+		c.deathRecapExpanded = not c.deathRecapExpanded
 		Show()
 	end)
-	panel.toggle:SetScript("OnEnter", function(self) self.text:SetTextColor(1, 1, 1, 1) end)
-	panel.toggle:SetScript("OnLeave", function(self) self.text:SetTextColor(1, 1, 1, 0.6) end)
 	-- Stay while you are dead (a resurrection offer replaces the DEATH popup,
 	-- releasing hides it): follow whichever popup is up, gone once alive.
 	panel.elapsed = 0
@@ -164,7 +160,8 @@ function Show()
 	local tex = DM.TexturePath(DM.DB().barTexture)
 	DM.SetFont(panel.title, 12)
 	DM.SetFont(panel.sub, 11)
-	panel.title:SetText("Death Recap")
+	local expanded = DM.DB().deathRecapExpanded and true or false
+	panel.title:SetText(expanded and "Death Recap |cff999999(click to collapse)|r" or "Death Recap |cff999999(click to expand)|r")
 	panel.title:SetTextColor(DM.Accent())
 	local killer
 	for i = 1, #list do
@@ -190,11 +187,7 @@ function Show()
 	end
 	local top = 1
 	for i = 1, #list do if list[i].amount > top then top = list[i].amount end end
-	local collapsed = DM.DB().deathRecapCollapsed and true or false
-	DM.SetFont(panel.toggle.text, 14)
-	panel.toggle.text:SetText(collapsed and "+" or "-")
-	panel.toggle.text:SetTextColor(1, 1, 1, 0.6)
-	local n = collapsed and 0 or math.min(#list, MAX_LINES)
+	local n = expanded and math.min(#list, MAX_LINES) or 0
 	for i = 1, n do
 		local e, l = list[i], Line(i)
 		DM.SetFont(l.name, 11)
