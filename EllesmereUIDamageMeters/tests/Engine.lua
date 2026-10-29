@@ -864,5 +864,26 @@ Test("a stray hit after a kill does not blank Current", function()
 	Tick(1)
 end)
 
+Test("group sync sends every number when a boss encounter ends", function()
+	inCombat = false; Tick(15); E.CheckEnd()
+	local sent = {}
+	function SendAddonMessage(prefix, text, channel) sent[#sent + 1] = text end
+	inCombat = true
+	Fire("ENCOUNTER_START", 77, "Sync Boss", 14, 10)
+	Log("SPELL_DAMAGE", playerGUID, "Alex", ME, BOSS_GUID, "Sync Boss", BOSS, 100, "Arcane Shot", 64, 1000, -1, 64, 0, 0, 0)
+	for _ = 1, 26 do Tick(0.5) end
+	local rounds = #sent
+	assert(rounds >= 2, "a regular round went out")
+	Equal(sent[1]:sub(1, 1), "T")
+	-- Nothing grew since, yet the encounter end sends it all again.
+	Fire("ENCOUNTER_END", 77, "Sync Boss", 14, 10, 1)
+	for _ = 1, 4 do Tick(0.5) end
+	local again = table.concat(sent, "\n", rounds + 1)
+	assert(again:find("T\t", 1, true) and again:find("\t1,rs", 1, true), again)
+	assert(again:find("E\t", 1, true) and again:find(",rs,Sync Boss", 1, true), again)
+	inCombat = false; Tick(0.5); Tick(0.5)
+	SendAddonMessage = nil
+end)
+
 print(string.format("%d passed, %d failed", passed, #failures))
 if #failures > 0 then error(table.concat(failures, "\n"), 0) end

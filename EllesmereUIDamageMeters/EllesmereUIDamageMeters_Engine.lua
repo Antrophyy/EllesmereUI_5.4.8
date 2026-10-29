@@ -679,7 +679,8 @@ end
 
 ---------------------------------------------------------------------------
 -- Group sync: EllesmereUI users in the group share their numbers of the
--- fight in progress about every 10 seconds (and once when it ends), so a
+-- fight in progress about every 10 seconds, once when it ends and in full
+-- when a boss encounter ends, so a
 -- player teleported away or out of combat log range still sees everyone's
 -- real damage, healing, damage taken, interrupts, dispels, active time
 -- and the damage taken by each enemy.
@@ -779,11 +780,11 @@ local function Packer(head)
 end
 
 -- Enemy GUIDs travel without "0x"; names lose the separators.
-local function SendEnemies(seg, seconds)
+local function SendEnemies(seg, seconds, full)
 	local grown = {}
 	for guid, a in pairs(seg.actors) do
 		if a.enemy and type(guid) == "string" and guid:find("^0x") then
-			local k = known[guid]
+			local k = not full and known[guid]
 			local v = floor(a.taken or 0)
 			if v > (k and k.taken or 0) then grown[#grown + 1] = { guid = guid, a = a, v = v, gain = v - (k and k.taken or 0) } end
 		end
@@ -800,7 +801,9 @@ local function SendEnemies(seg, seconds)
 	add()
 end
 
-local function SendTotals(seg)
+-- full: every number, not only the ones that grew (boss encounter end, so a
+-- lost message is made up for).
+local function SendTotals(seg, full)
 	if not seg or not SyncOn() or not SyncChannel() then return end
 	local seconds = B36(E.Duration(seg))
 	local add = Packer("T\t" .. seconds .. "\t")
@@ -821,11 +824,13 @@ local function SendTotals(seg)
 				end
 				parts[i + 1] = B36(v)
 			end
-			if changed then add((table.concat(parts, ","):gsub(",+$", ""))) end
+			if changed or (full and #table.concat(parts) > #parts[1]) then
+				add((table.concat(parts, ","):gsub(",+$", "")))
+			end
 		end
 	end
 	add()
-	SendEnemies(seg, seconds)
+	SendEnemies(seg, seconds, full)
 end
 
 -- The fight synced totals belong to: the one in progress, or the one that
@@ -1237,6 +1242,10 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		end
 		if success == 1 and name then tries[name] = nil end
 		encounterName = nil
+		-- The whole group's numbers of the boss fight, right away.
+		if seg and seg.boss and (seg == current or (seg.finish and GetTime() - seg.finish <= SYNC_RECENT)) then
+			SendTotals(seg, true)
+		end
 		E.CheckEnd()
 	elseif event == "WORLD_STATE_TIMER_START" then
 		local _, _, difficulty = GetInstanceInfo()
