@@ -833,5 +833,36 @@ Test("group sync sends the 10 enemies with the most new damage per round", funct
 	SendAddonMessage = nil
 end)
 
+Test("a stray hit after a kill does not blank Current", function()
+	Fire("ENCOUNTER_START", 9, "Galakras", 3, 10)
+	inCombat = true
+	Log("SPELL_DAMAGE", playerGUID, "Alex", ME, BOSS_GUID, "Galakras", BOSS, 100, "Shot", 1, 500, -1, 1, 0, 0, 0)
+	Tick(3)
+	inCombat = false
+	Fire("ENCOUNTER_END", 9, "Galakras", 3, 10, 1)
+	local kill = DM.GetSegments()[1].combat
+	Equal(kill.name, "Galakras")
+	local shown = 0
+	E.Listen(function(what) if what == "shown" then shown = shown + 1 end end)
+	-- A leftover ground effect hits you: a fight starts, nothing in it.
+	Log("SPELL_DAMAGE", BOSS_GUID, "Galakras", BOSS, playerGUID, "Alex", ME, 900, "Flames", 4, 300, -1, 4, 0, 0, 0)
+	Equal(E.InCombat(), true)
+	Equal(E.GetCurrent(), kill, "the kill stays on screen")
+	Equal(shown, 0)
+	Tick(0.5)
+	Equal(E.InCombat(), false)
+	Equal(DM.GetSegments()[1].combat, kill, "the stray fight is dropped")
+	-- A real pull shows as soon as the group does damage.
+	inCombat = true
+	Log("SPELL_DAMAGE", BOSS_GUID, "Galakras", BOSS, playerGUID, "Alex", ME, 900, "Flames", 4, 300, -1, 4, 0, 0, 0)
+	Equal(E.GetCurrent(), kill)
+	Log("SPELL_DAMAGE", playerGUID, "Alex", ME, ADD_GUID, "Add", ADD, 100, "Shot", 1, 10, -1, 1, 0, 0, 0)
+	Equal(shown, 1)
+	Equal(E.GetCurrent() ~= kill, true, "the new fight shows")
+	Tick(3)
+	inCombat = false
+	Tick(1)
+end)
+
 print(string.format("%d passed, %d failed", passed, #failures))
 if #failures > 0 then error(table.concat(failures, "\n"), 0) end

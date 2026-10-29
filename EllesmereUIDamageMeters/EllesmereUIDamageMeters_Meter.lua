@@ -2591,7 +2591,7 @@ end
 -- Engine notifications: fight start / end, data reset, old fights dropped.
 ns.EDMEngine.Listen(function(what)
 	if not loaded then return end
-	if what == "start" then
+	if what == "shown" then
 		OnCombatStart()
 	elseif what == "stop" then
 		DM.UpdateVisibility()

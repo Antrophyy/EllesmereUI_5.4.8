@@ -197,15 +197,27 @@ local function BiggestEnemy(seg)
 	return best
 end
 
+-- A fight shows as Current once the group did damage or healing in it, or
+-- it is a boss fight. Until then the last finished fight stays on screen:
+-- after a kill a stray hit (a DoT tick, a leftover add or ground effect)
+-- starts a fight that ends half a second later with nothing in it, and
+-- showing it would blank the meter for that moment.
+local function ShowFight(seg)
+	if seg.shown then return end
+	seg.shown = true
+	Fire("shown")
+end
+
 local function StartFight()
 	if current then return end
 	current = NewSegment()
+	Fire("start")
 	if encounterName then
 		current.boss = true
 		current.name = encounterName
 		current.try = tries[encounterName]
+		ShowFight(current)
 	end
-	Fire("start")
 end
 
 local function HasData(seg)
@@ -303,8 +315,12 @@ local function StopFight()
 	Fire("stop")
 end
 
--- The fight shown as "Current": the one in progress, else the last finished one.
-function E.GetCurrent() return current or segments[1] end
+-- The fight shown as "Current": the one in progress once it shows (see
+-- ShowFight), else the last finished one.
+function E.GetCurrent()
+	if current and (current.shown or not segments[1]) then return current end
+	return segments[1]
+end
 function E.GetOverall() return overall end
 function E.GetSegments() return segments end
 function E.InCombat() return current ~= nil end
@@ -404,6 +420,7 @@ local function RecordDamageToSeg(seg, srcGUID, srcName, srcFlags, dstGUID, dstNa
 		a.damage = a.damage + amount
 		AddSpell(a.dmgSpells, id, not isPlayer and srcName or nil, amount)
 		Activity(a, "dmgActive", "dmgLast", now)
+		if seg == current then ShowFight(seg) end
 		if band(dstFlags, REACT_HOSTILE_OR_NEUTRAL) ~= 0 then
 			local enemy = Actor(seg, dstGUID, dstName, dstFlags)
 			enemy.taken = enemy.taken + amount
@@ -447,6 +464,7 @@ local function RecordHealToSeg(seg, owner, ownerName, isPlayer, srcName, srcFlag
 	a.healing = a.healing + amount
 	AddSpell(a.healSpells, id, not isPlayer and srcName or nil, amount)
 	Activity(a, "healActive", "healLast", now)
+	if seg == current then ShowFight(seg) end
 end
 
 local function Heal(srcGUID, srcName, srcFlags, dstGUID, dstFlags, id, amount, overheal, shield)
@@ -813,10 +831,10 @@ end
 -- The fight synced totals belong to: the one in progress, or the one that
 -- just ended (the sender's final totals can arrive after it ended here).
 local function SyncTarget()
-	if current then return current end
+	if current and current.shown then return current end
 	local seg = segments[1]
 	if seg and seg == lastStopped and seg.finish and GetTime() - seg.finish <= SYNC_RECENT then return seg end
-	return nil
+	return current
 end
 
 local function Raise(seg, a, f, delta)
@@ -874,7 +892,10 @@ local function MergeTotals(seconds, body, sender)
 			if #raised > 0 then lines[#lines + 1] = (a.name or "?") .. " (" .. table.concat(raised, ", ") .. ")" end
 		end
 	end
-	if changed then Fire("sync") end
+	if changed then
+		if seg == current then ShowFight(seg) end
+		Fire("sync")
+	end
 	Report(sender, lines)
 end
 
@@ -1203,6 +1224,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 			current.boss = true
 			current.name = encounterName
 			current.try = tries[encounterName]
+			ShowFight(current)
 		else
 			StartFight()
 		end
