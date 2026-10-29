@@ -15,7 +15,9 @@
 --  5.4.8 differences: the window list is the Mists one; the "Top Bar Event
 --  Text" is WorldStateAlwaysUpFrame (Mists has no UI widget container); the
 --  retail docking of companion windows beside a moved Character window is
---  not ported (Mists' panel manager places side panels itself).
+--  not ported (Mists' panel manager places side panels itself). The world
+--  map only zooms: Blizzard seats it per map size (screen sized when
+--  maximized) and drags the small map from its own title bar.
 -------------------------------------------------------------------------------
 local addonName = ...
 local ns = EllesmereUI
@@ -69,6 +71,12 @@ local PRELOADED = {
 	"WorldStateScoreFrame",
 	"RaidParentFrame",
 	"PetStableFrame",
+	"WorldMapFrame",
+}
+
+-- Zoom only: no Shifter drag or saved spot (Blizzard places these).
+local SCALE_ONLY = {
+	["WorldMapFrame"] = true,
 }
 
 local ADDON_FRAMES = {
@@ -277,6 +285,16 @@ local function ApplyScaleStep(frame, name, delta, mode)
 	if not SetShifterScale(frame, new) then return end
 	ffd.scaled = true
 
+	if SCALE_ONLY[name] then
+		if mode == "save" then
+			SaveScale(name, new)
+			tempScale[frame] = nil
+		else
+			tempScale[frame] = new
+		end
+		return
+	end
+
 	-- Keep the window in place: offsets are in frame units, so rescale them.
 	local ratio = oldS / new
 	if mode == "save" then
@@ -325,13 +343,24 @@ wheelOverlay:SetFrameStrata("TOOLTIP")
 
 local WheelArm = { shown = 0 }
 
+-- Topmost window under the mouse (the world map can sit over others).
+local STRATA_RANK = { BACKGROUND = 1, LOW = 2, MEDIUM = 3, HIGH = 4, DIALOG = 5,
+	FULLSCREEN = 6, FULLSCREEN_DIALOG = 7, TOOLTIP = 8 }
+
 local function FindWheelTarget()
+	local best, bestName, bestRank, bestLevel
 	for i = 1, #hookedFrames do
 		local e = hookedFrames[i]
-		if e.frame:IsVisible() and e.frame:IsMouseOver() then
-			return e.frame, e.name
+		local f = e.frame
+		if f:IsVisible() and f:IsMouseOver() then
+			local rank = STRATA_RANK[f:GetFrameStrata()] or 0
+			local level = f:GetFrameLevel()
+			if not best or rank > bestRank or (rank == bestRank and level > bestLevel) then
+				best, bestName, bestRank, bestLevel = f, e.name, rank, level
+			end
 		end
 	end
+	return best, bestName
 end
 
 local function UpdateWheelOverlay()
@@ -462,6 +491,21 @@ local function HookFrame(frame, name)
 	frame:HookScript("OnShow", function() WheelArm.Note(1) end)
 	frame:HookScript("OnHide", function() WheelArm.Note(-1) end)
 	if frame:IsShown() then WheelArm.Note(1) end
+
+	if SCALE_ONLY[name] then
+		frame:HookScript("OnShow", function()
+			if IsEnabled() then ApplyScale(frame, name) end
+		end)
+		frame:HookScript("OnHide", function()
+			if IsEnabled() then tempScale[frame] = nil end
+		end)
+		hooksecurefunc(frame, "SetScale", function()
+			if not IsEnabled() or ffd.ignoreSS then return end
+			if tempScale[frame] or GetSavedScale(name) then ApplyScale(frame, name) end
+		end)
+		if frame:IsVisible() then ApplyScale(frame, name) end
+		return
+	end
 
 	if not frame:IsProtected() then
 		frame:SetMovable(true)
