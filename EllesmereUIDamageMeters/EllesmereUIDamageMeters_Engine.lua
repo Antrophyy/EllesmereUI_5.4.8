@@ -589,7 +589,6 @@ local function AddDeath(dstGUID, dstName, events, synced)
 	overall.deaths[#overall.deaths + 1] = death
 	if not synced then SendDeath(dstGUID, events) end
 	Fire("death")
-	return true
 end
 
 local function Died(dstGUID, dstName, dstFlags)
@@ -690,9 +689,6 @@ end
 -- replaced by the full recap if you see the death yourself.
 --   totals: "T\t<fight seconds>\t<guid>,<n1>,...,<n7>;<guid>,..." (base 36)
 --   enemies: "E\t<fight seconds>\t<guid>,<taken>,<name>;<guid>,..."
---   hello:  "H\t1\t" when you join a group or someone joins yours, so installs
---           find each other before the first fight ("found" in chat); after a
---           /reload too. Everyone who hears it answers "R\t1\t".
 --   death:  "D\t<guid>\t<spell>\t<amount>\t<overkill>\t<instakill 0/1>\t<source>"
 -- Messages stay under 255 bytes and go out one per half second; only the
 -- 10 enemies that took the most new damage go in a round, and a round waits
@@ -852,18 +848,10 @@ local function Raise(seg, a, f, delta)
 	end
 end
 
--- A chat line naming who a sync changed: "Synced from Bob: Casey (damage, healing), Boss (enemy damage taken)".
-local SYNC_LABEL = { damage = "damage", healing = "healing", taken = "damage taken", interrupts = "interrupts", dispels = "dispels" }
-local function Report(sender, lines)
-	if #lines == 0 then return end
-	local text = "Damage Meters: synced from " .. (sender or "?"):match("^[^%-]*") .. ": " .. table.concat(lines, ", ")
-	if ns.Print then ns.Print(text) else print(text) end
-end
-
-local function MergeTotals(seconds, body, sender)
+local function MergeTotals(seconds, body)
 	local seg = SyncTarget()
 	if not seg or math.abs(E.Duration(seg) - seconds) > SYNC_ALIGN then return end
-	local changed, lines = false, {}
+	local changed = false
 	for entry in body:gmatch("[^;]+") do
 		local short, rest = entry:match("^([^,]+),?(.*)$")
 		local guid = short and byShortGUID[short]
@@ -880,7 +868,6 @@ local function MergeTotals(seconds, body, sender)
 				k = {}
 				known[guid] = k
 			end
-			local raised = {}
 			for j, f in ipairs(SYNC_FIELDS) do
 				local v = values[j] or 0
 				local have = a and a[f] or 0
@@ -890,25 +877,22 @@ local function MergeTotals(seconds, body, sender)
 					Raise(seg, a, f, delta)
 					Raise(overall, Actor(overall, guid, OwnerName(guid), flags), f, delta)
 					changed = true
-					if SYNC_LABEL[f] then raised[#raised + 1] = SYNC_LABEL[f] end
 				end
 				if v > (k[f] or 0) then k[f] = v end
 			end
-			if #raised > 0 then lines[#lines + 1] = (a.name or "?") .. " (" .. table.concat(raised, ", ") .. ")" end
 		end
 	end
 	if changed then
 		if seg == current then ShowFight(seg) end
 		Fire("sync")
 	end
-	Report(sender, lines)
 end
 
 local ENEMY_FLAGS = 0x00000a48 -- hostile NPC
-local function MergeEnemies(seconds, body, sender)
+local function MergeEnemies(seconds, body)
 	local seg = SyncTarget()
 	if not seg or math.abs(E.Duration(seg) - seconds) > SYNC_ALIGN then return end
-	local changed, lines = false, {}
+	local changed = false
 	for entry in body:gmatch("[^;]+") do
 		local hex, v, name = entry:match("^(%x+),([%w]*),(.*)$")
 		v = v and tonumber(v, 36)
@@ -925,7 +909,6 @@ local function MergeEnemies(seconds, body, sender)
 					local o = overall.actors[guid]
 					if not o or o.enemy then Raise(overall, o or Actor(overall, guid, name, ENEMY_FLAGS), "taken", delta) end
 					changed = true
-					lines[#lines + 1] = (a.name or "?") .. " (enemy damage taken)"
 				end
 				local k = known[guid]
 				if not k then
@@ -937,7 +920,6 @@ local function MergeEnemies(seconds, body, sender)
 		end
 	end
 	if changed then Fire("sync") end
-	Report(sender, lines)
 end
 
 local pendingDeaths = {} -- guid -> { at, text }: deaths of others are sent after a short random wait
@@ -962,7 +944,7 @@ SendDeath = function(guid, events)
 	pendingDeaths[guid] = { at = GetTime() + wait, text = text }
 end
 
-local function MergeDeath(sender, short, id, amount, overkill, instakill, source)
+local function MergeDeath(short, id, amount, overkill, instakill, source)
 	local guid = byShortGUID[short]
 	if not guid then return end
 	pendingDeaths[guid] = nil
@@ -976,69 +958,27 @@ local function MergeDeath(sender, short, id, amount, overkill, instakill, source
 			overkill = overkill > 0 and overkill or nil, instakill = instakill == "1" or nil,
 		}
 	end
-	if AddDeath(guid, name, events, true) then Report(sender, { name .. " (death)" }) end
+	AddDeath(guid, name, events, true)
 end
 
--- Other EllesmereUI users in the group, named in chat when first heard from.
-local found = {}
-local function Found(sender)
-	local name = sender and sender:match("^[^%-]*")
-	if not name or name == "" or found[name] then return end
-	found[name] = true
-	local text = "Damage Meters: group sync found " .. name .. " (EllesmereUI)"
-	if ns.Print then ns.Print(text) else print(text) end
-end
-
-local syncNext, replyAt
+local syncNext
 function E.OnAddonMessage(prefix, text, _, sender)
 	if prefix ~= SYNC_PREFIX or type(text) ~= "string" or not SyncOn() then return end
 	if sender and sender:match("^[^%-]+") == UnitName("player") then return end
 	local kind, a1, rest = text:match("^(%u)\t([^\t]*)\t(.*)$")
-	if not kind then return end
-	Found(sender)
-	if kind == "H" then
-		-- Answer after a short random wait, so a reloaded or new install
-		-- finds everyone without all answers going at once.
-		if not replyAt then replyAt = GetTime() + 1 + math.random() * 2 end
-	elseif kind == "T" then
-		MergeTotals(tonumber(a1, 36) or 0, rest, sender)
+	if kind == "T" then
+		MergeTotals(tonumber(a1, 36) or 0, rest)
 	elseif kind == "E" then
-		MergeEnemies(tonumber(a1, 36) or 0, rest, sender)
+		MergeEnemies(tonumber(a1, 36) or 0, rest)
 	elseif kind == "D" then
 		local id, amount, overkill, instakill, source = rest:match("^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t(.*)$")
-		if id then MergeDeath(sender, a1, id, amount, overkill, instakill, source) end
-	end
-end
-
--- Hello when the group grows (you joined one, or someone joined yours):
--- everyone with EllesmereUI says it, so all of them find each other. Two
--- seconds to let the roster settle, at most one per 30 seconds.
-local groupSize, helloAt, lastHello = 1, nil, nil
-
-local function WatchRoster(now)
-	local n = 0
-	for _ in pairs(unitOf) do n = n + 1 end
-	if n > groupSize and n > 1 and SyncOn() then
-		helloAt = math.max(now + 2, lastHello and lastHello + 30 or 0)
-	elseif n <= 1 then
-		wipe(found)
-		helloAt = nil
-	end
-	groupSize = n
-	if helloAt and now >= helloAt then
-		helloAt, lastHello = nil, now
-		Queue("H\t1\t", "NORMAL")
-	end
-	if replyAt and now >= replyAt then
-		replyAt = nil
-		Queue("R\t1\t", "NORMAL")
+		if id then MergeDeath(a1, id, amount, overkill, instakill, source) end
 	end
 end
 
 -- Called every half second.
 function E.SyncTick()
 	local now = GetTime()
-	WatchRoster(now)
 	for guid, p in pairs(pendingDeaths) do
 		if now >= p.at then
 			pendingDeaths[guid] = nil
