@@ -672,7 +672,8 @@ end
 --   totals: "T\t<fight seconds>\t<guid>,<n1>,...,<n7>;<guid>,..." (base 36)
 --   enemies: "E\t<fight seconds>\t<guid>,<taken>,<name>;<guid>,..."
 --   hello:  "H\t1\t" when you join a group or someone joins yours, so installs
---           find each other before the first fight ("found" in chat)
+--           find each other before the first fight ("found" in chat); after a
+--           /reload too. Everyone who hears it answers "R\t1\t".
 --   death:  "D\t<guid>\t<spell>\t<amount>\t<overkill>\t<instakill 0/1>\t<source>"
 -- Messages stay under 255 bytes and go out one per half second.
 ---------------------------------------------------------------------------
@@ -949,14 +950,18 @@ local function Found(sender)
 	if ns.Print then ns.Print(text) else print(text) end
 end
 
-local syncNext
+local syncNext, replyAt
 function E.OnAddonMessage(prefix, text, _, sender)
 	if prefix ~= SYNC_PREFIX or type(text) ~= "string" or not SyncOn() then return end
 	if sender and sender:match("^[^%-]+") == UnitName("player") then return end
 	local kind, a1, rest = text:match("^(%u)\t([^\t]*)\t(.*)$")
 	if not kind then return end
 	Found(sender)
-	if kind == "T" then
+	if kind == "H" then
+		-- Answer after a short random wait, so a reloaded or new install
+		-- finds everyone without all answers going at once.
+		if not replyAt then replyAt = GetTime() + 1 + math.random() * 2 end
+	elseif kind == "T" then
 		MergeTotals(tonumber(a1, 36) or 0, rest, sender)
 	elseif kind == "E" then
 		MergeEnemies(tonumber(a1, 36) or 0, rest, sender)
@@ -984,6 +989,10 @@ local function WatchRoster(now)
 	if helloAt and now >= helloAt then
 		helloAt, lastHello = nil, now
 		Queue("H\t1\t", "NORMAL")
+	end
+	if replyAt and now >= replyAt then
+		replyAt = nil
+		Queue("R\t1\t", "NORMAL")
 	end
 end
 

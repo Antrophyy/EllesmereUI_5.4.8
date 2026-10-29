@@ -783,6 +783,14 @@ Test("group sync says hello when the group grows and names installs it finds", f
 	Equal(messages[#messages], "Damage Meters: group sync found Erin (EllesmereUI)")
 	Fire("CHAT_MSG_ADDON", "EUIDM", "H\t1\t", "PARTY", "Erin-Realm")
 	Equal(#messages, before + 1, "once per install")
+	-- Hellos are answered after a short wait, so the sender finds this install too.
+	for _ = 1, 7 do Tick(0.5) end
+	Equal(sent[#sent], "R\t1\t")
+	Fire("CHAT_MSG_ADDON", "EUIDM", "R\t1\t", "PARTY", "Finn")
+	Equal(messages[#messages], "Damage Meters: group sync found Finn (EllesmereUI)")
+	local replies = #sent
+	for _ = 1, 7 do Tick(0.5) end
+	Equal(#sent, replies, "answers are not answered")
 	-- Someone joins: hello after two seconds.
 	UNITS.party2 = { "0x0000000000000004", "Drew", "MAGE" }
 	local n = GetNumGroupMembers
