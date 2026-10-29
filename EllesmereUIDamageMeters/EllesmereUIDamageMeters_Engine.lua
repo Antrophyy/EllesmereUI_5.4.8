@@ -671,6 +671,8 @@ end
 -- replaced by the full recap if you see the death yourself.
 --   totals: "T\t<fight seconds>\t<guid>,<n1>,...,<n7>;<guid>,..." (base 36)
 --   enemies: "E\t<fight seconds>\t<guid>,<taken>,<name>;<guid>,..."
+--   hello:  "H\t1\t" when you join a group or someone joins yours, so installs
+--           find each other before the first fight ("found" in chat)
 --   death:  "D\t<guid>\t<spell>\t<amount>\t<overkill>\t<instakill 0/1>\t<source>"
 -- Messages stay under 255 bytes and go out one per half second.
 ---------------------------------------------------------------------------
@@ -937,11 +939,23 @@ local function MergeDeath(sender, short, id, amount, overkill, instakill, source
 	if AddDeath(guid, name, events, true) then Report(sender, { name .. " (death)" }) end
 end
 
+-- Other EllesmereUI users in the group, named in chat when first heard from.
+local found = {}
+local function Found(sender)
+	local name = sender and sender:match("^[^%-]*")
+	if not name or name == "" or found[name] then return end
+	found[name] = true
+	local text = "Damage Meters: group sync found " .. name .. " (EllesmereUI)"
+	if ns.Print then ns.Print(text) else print(text) end
+end
+
 local syncNext
 function E.OnAddonMessage(prefix, text, _, sender)
 	if prefix ~= SYNC_PREFIX or type(text) ~= "string" or not SyncOn() then return end
 	if sender and sender:match("^[^%-]+") == UnitName("player") then return end
 	local kind, a1, rest = text:match("^(%u)\t([^\t]*)\t(.*)$")
+	if not kind then return end
+	Found(sender)
 	if kind == "T" then
 		MergeTotals(tonumber(a1, 36) or 0, rest, sender)
 	elseif kind == "E" then
@@ -952,9 +966,31 @@ function E.OnAddonMessage(prefix, text, _, sender)
 	end
 end
 
+-- Hello when the group grows (you joined one, or someone joined yours):
+-- everyone with EllesmereUI says it, so all of them find each other. Two
+-- seconds to let the roster settle, at most one per 30 seconds.
+local groupSize, helloAt, lastHello = 1, nil, nil
+
+local function WatchRoster(now)
+	local n = 0
+	for _ in pairs(unitOf) do n = n + 1 end
+	if n > groupSize and n > 1 and SyncOn() then
+		helloAt = math.max(now + 2, lastHello and lastHello + 30 or 0)
+	elseif n <= 1 then
+		wipe(found)
+		helloAt = nil
+	end
+	groupSize = n
+	if helloAt and now >= helloAt then
+		helloAt, lastHello = nil, now
+		Queue("H\t1\t", "NORMAL")
+	end
+end
+
 -- Called every half second.
 function E.SyncTick()
 	local now = GetTime()
+	WatchRoster(now)
 	for guid, p in pairs(pendingDeaths) do
 		if now >= p.at then
 			pendingDeaths[guid] = nil

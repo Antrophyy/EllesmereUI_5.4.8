@@ -773,5 +773,32 @@ Test("group sync shares deaths", function()
 	SendAddonMessage = nil
 end)
 
+Test("group sync says hello when the group grows and names installs it finds", function()
+	local sent = {}
+	function SendAddonMessage(prefix, text, channel) sent[#sent + 1] = text end
+	-- Already in a group at login: the first roster scan said hello.
+	Tick(0.5)
+	local before = #messages
+	Fire("CHAT_MSG_ADDON", "EUIDM", "H\t1\t", "PARTY", "Erin-Realm")
+	Equal(messages[#messages], "Damage Meters: group sync found Erin (EllesmereUI)")
+	Fire("CHAT_MSG_ADDON", "EUIDM", "H\t1\t", "PARTY", "Erin-Realm")
+	Equal(#messages, before + 1, "once per install")
+	-- Someone joins: hello after two seconds.
+	UNITS.party2 = { "0x0000000000000004", "Drew", "MAGE" }
+	local n = GetNumGroupMembers
+	GetNumGroupMembers = function() return 3 end
+	Fire("GROUP_ROSTER_UPDATE")
+	sent = {}
+	Tick(0.5)
+	Equal(#sent, 0, "waits for the roster to settle")
+	for _ = 1, 4 do Tick(0.5) end
+	Equal(sent[1], "H\t1\t")
+	GetNumGroupMembers = n
+	UNITS.party2 = nil
+	Fire("GROUP_ROSTER_UPDATE")
+	Tick(0.5)
+	SendAddonMessage = nil
+end)
+
 print(string.format("%d passed, %d failed", passed, #failures))
 if #failures > 0 then error(table.concat(failures, "\n"), 0) end
