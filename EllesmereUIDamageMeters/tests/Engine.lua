@@ -808,5 +808,30 @@ Test("group sync says hello when the group grows and names installs it finds", f
 	SendAddonMessage = nil
 end)
 
+Test("group sync sends the 10 enemies with the most new damage per round", function()
+	inCombat = false; Tick(15); E.CheckEnd()
+	local sent = {}
+	function SendAddonMessage(prefix, text, channel) sent[#sent + 1] = text end
+	inCombat = true
+	for i = 1, 30 do
+		Log("SPELL_DAMAGE", playerGUID, "Alex", ME, string.format("0xF1300000000002%02d", i), "Add " .. i, ADD, 100, "Arcane Shot", 64, 1000 + i, -1, 64, 0, 0, 0)
+	end
+	Tick(12) -- one long frame: the round is queued, one message sent
+	local function Enemies()
+		local n = 0
+		for _, text in ipairs(sent) do
+			if text:sub(1, 1) == "E" then for _ in text:gmatch("[^;]+") do n = n + 1 end end
+		end
+		return n
+	end
+	for _ = 1, 10 do Tick(0.5) end
+	Equal(Enemies(), 10, "first round")
+	assert(table.concat(sent, "\n"):find("Add 30", 1, true), "biggest first")
+	for _ = 1, 22 do Tick(0.5) end
+	Equal(Enemies(), 20, "second round")
+	inCombat = false; Tick(0.5); Tick(0.5)
+	SendAddonMessage = nil
+end)
+
 print(string.format("%d passed, %d failed", passed, #failures))
 if #failures > 0 then error(table.concat(failures, "\n"), 0) end

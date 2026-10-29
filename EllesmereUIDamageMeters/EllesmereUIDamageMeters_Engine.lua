@@ -675,7 +675,9 @@ end
 --           find each other before the first fight ("found" in chat); after a
 --           /reload too. Everyone who hears it answers "R\t1\t".
 --   death:  "D\t<guid>\t<spell>\t<amount>\t<overkill>\t<instakill 0/1>\t<source>"
--- Messages stay under 255 bytes and go out one per half second.
+-- Messages stay under 255 bytes and go out one per half second; only the
+-- 10 enemies that took the most new damage go in a round, and a round waits
+-- while the last one is still being sent.
 ---------------------------------------------------------------------------
 local SYNC_PREFIX = "EUIDM"
 local SYNC_INTERVAL = 10
@@ -683,6 +685,7 @@ local SYNC_MAX_LEN = 240
 local SYNC_ALIGN = 15 -- fights whose lengths differ more than this are not the same fight
 local SYNC_RECENT = 10 -- seconds after a fight ended that late totals still join it
 local SYNC_ID = "Synced from group"
+local SYNC_ENEMIES = 10 -- enemies per round
 local SYNC_FIELDS = { "damage", "healing", "taken", "interrupts", "dispels", "dmgActive", "healActive" }
 local SYNC_LIST = { damage = "dmgSpells", healing = "healSpells", interrupts = "intSpells", dispels = "dispSpells" }
 
@@ -703,6 +706,14 @@ local function Queue(text, prio)
 	local channel = SyncChannel()
 	if not channel then return end
 	outbox[#outbox + 1] = { text, channel, prio }
+end
+
+-- Totals still waiting to go out.
+local function Sending()
+	for i = 1, #outbox do
+		if outbox[i][3] == "BULK" then return true end
+	end
+	return false
 end
 
 local function Flush()
@@ -751,20 +762,22 @@ end
 
 -- Enemy GUIDs travel without "0x"; names lose the separators.
 local function SendEnemies(seg, seconds)
-	local add = Packer("E\t" .. seconds .. "\t")
+	local grown = {}
 	for guid, a in pairs(seg.actors) do
 		if a.enemy and type(guid) == "string" and guid:find("^0x") then
 			local k = known[guid]
-			if not k then
-				k = {}
-				known[guid] = k
-			end
 			local v = floor(a.taken or 0)
-			if v > (k.taken or 0) then
-				k.taken = v
-				add(guid:sub(3) .. "," .. B36(v) .. "," .. (a.name or ""):gsub("[,;\t|]", ""):sub(1, 40))
-			end
+			if v > (k and k.taken or 0) then grown[#grown + 1] = { guid = guid, a = a, v = v, gain = v - (k and k.taken or 0) } end
 		end
+	end
+	-- Big pulls: the enemies that took the most new damage; the rest go in a later round.
+	table.sort(grown, function(x, y) return x.gain > y.gain end)
+	local add = Packer("E\t" .. seconds .. "\t")
+	for i = 1, min(#grown, SYNC_ENEMIES) do
+		local e = grown[i]
+		known[e.guid] = known[e.guid] or {}
+		known[e.guid].taken = e.v
+		add(e.guid:sub(3) .. "," .. B36(e.v) .. "," .. (e.a.name or ""):gsub("[,;\t|]", ""):sub(1, 40))
 	end
 	add()
 end
@@ -1006,7 +1019,7 @@ function E.SyncTick()
 			Queue(p.text, "ALERT")
 		end
 	end
-	if current and syncNext and now >= syncNext then
+	if current and syncNext and now >= syncNext and not Sending() then
 		syncNext = now + SYNC_INTERVAL
 		SendTotals(current)
 	end
