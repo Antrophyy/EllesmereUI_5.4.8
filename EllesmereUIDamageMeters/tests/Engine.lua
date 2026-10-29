@@ -619,9 +619,18 @@ Test("your death recap opens under the Release Spirit popup", function()
 	Equal(panel:IsShown(), true, "kept for the resurrection offer")
 	popup:Hide(); Tick(0.3)
 	Equal(panel:IsShown(), true, "kept while dead without a popup")
-	-- Alive again: gone.
-	dead = false; Tick(0.3)
+	-- Alive again: gone at once, even while UnitIsDeadOrGhost still says dead.
+	local hp = 1 -- a corpse can read 1
+	UnitHealth = function() return hp end
+	Fire("UNIT_HEALTH", "player")
+	Equal(panel:IsShown(), true, "still dead")
+	hp = 5000
+	Fire("UNIT_HEALTH", "party1")
+	Equal(panel:IsShown(), true, "someone else's health")
+	Fire("UNIT_HEALTH", "player")
 	Equal(panel:IsShown(), false, "hidden once alive")
+	UnitHealth = nil
+	dead = false
 	popup.which = "DEATH"; dead = true
 	DM.DB().deathRecapPopup = false
 	popup:Show(); hooks.StaticPopup_Show("DEATH"); Tick(0.2)

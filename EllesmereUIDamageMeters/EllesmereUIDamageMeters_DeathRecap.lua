@@ -14,6 +14,15 @@ local RECENT = 60 -- seconds: only a death this recent belongs to the popup
 local KILL_WINDOW = 3 -- seconds: a hit this close to the death is what killed you
 
 local panel, anchor
+
+-- Alive again: health is back before UnitIsDeadOrGhost catches up after a
+-- resurrection, so health counts too (a corpse reads 0 or 1, a ghost is
+-- never alive).
+local function Alive()
+	if UnitIsGhost and UnitIsGhost("player") then return false end
+	if UnitHealth and (UnitHealth("player") or 0) > 1 then return true end
+	return UnitIsDeadOrGhost and not UnitIsDeadOrGhost("player")
+end
 local Show, Place, AnchorPopup -- forward
 
 -- Your newest death in Overall (deaths join Overall whatever fight they belong to).
@@ -103,7 +112,7 @@ local function Build()
 		self.elapsed = self.elapsed + dt
 		if self.elapsed < 0.2 then return end
 		self.elapsed = 0
-		if UnitIsDeadOrGhost and not UnitIsDeadOrGhost("player") then
+		if Alive() then
 			self:Hide()
 			return
 		end
@@ -226,6 +235,15 @@ if hooksecurefunc then
 		if which == "DEATH" then DM.After(0.1, Show) end
 	end)
 end
+-- Gone the moment you are alive: resurrected, or back in your body.
+local watcher = CreateFrame("Frame")
+watcher:RegisterEvent("PLAYER_ALIVE")
+watcher:RegisterEvent("PLAYER_UNGHOST")
+watcher:RegisterEvent("UNIT_HEALTH")
+watcher:SetScript("OnEvent", function(_, event, unit)
+	if event == "UNIT_HEALTH" and unit ~= "player" then return end
+	if panel and panel:IsShown() and Alive() then panel:Hide() end
+end)
 E.Listen(function(what)
 	if what == "death" and Popup() then DM.After(0.1, Show) end
 end)
