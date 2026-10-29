@@ -104,6 +104,22 @@ local EXTRA_DRAG_TARGETS = {
 	["AchievementFrame"] = function(frame) return _G.AchievementFrameHeader end,
 }
 
+-- 5.4.8 tab panes are mouse-enabled frames laid over the whole window
+-- (PaperDollFrame, ReputationFrame, TokenFrame, ...), so the window itself
+-- never gets the click. Mouse-enabled plain Frame children that reach the
+-- window's top edge (title bar) drag it too.
+local function CoversTitleBar(frame, child)
+	if child:GetObjectType() ~= "Frame" or not child:IsMouseEnabled() then return false end
+	local ft, ct = frame:GetTop(), child:GetTop()
+	if not ft or not ct then
+		-- Never-shown panes have no geometry yet: a single setAllPoints anchor
+		-- on the window counts.
+		local p, rel = child:GetPoint(1)
+		return p == "TOPLEFT" and rel == frame
+	end
+	return ct >= ft - 30 and child:GetWidth() >= frame:GetWidth() * 0.5
+end
+
 -------------------------------------------------------------------------------
 --  Saved data (EllesmereUIDB root, like retail)
 -------------------------------------------------------------------------------
@@ -499,6 +515,20 @@ local function HookFrame(frame, name)
 	AttachDrag(frame)
 	local extra = EXTRA_DRAG_TARGETS[name]
 	if extra then AttachDrag(extra(frame)) end
+
+	local attached = {}
+	local function AttachPanes()
+		local children = { frame:GetChildren() }
+		for i = 1, #children do
+			local child = children[i]
+			if not attached[child] and CoversTitleBar(frame, child) then
+				attached[child] = true
+				AttachDrag(child)
+			end
+		end
+	end
+	AttachPanes()
+	frame:HookScript("OnShow", AttachPanes)
 
 	frame:HookScript("OnShow", function()
 		if not IsEnabled() then return end
