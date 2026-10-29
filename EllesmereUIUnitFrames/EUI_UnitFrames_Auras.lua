@@ -27,7 +27,8 @@ local HIDDEN_DEBUFFS = { [57723] = true, [57724] = true, [80354] = true, [95809]
 -- Raid encounter debuffs (ElvUI MoP RaidDebuffs, Mogu'shan Vaults .. Siege of
 -- Orgrimmar, plus Malkorok's Ancient Barriers). Some are applied with a player
 -- as caster (Ancient Barrier is cast by you on yourself), so a caster test
--- would call them player auras; they always count as "Non-Player".
+-- would call them player auras; they always count as "Non-Player". Same for
+-- the Demonic Gateway lockout, which the gateway puts on whoever uses it.
 UF.ENCOUNTER_DEBUFFS = {}
 for _, id in ipairs({
 	116161, 116281, 116374, 116417, 116525, 116778, 116784, 116835, 116942, 117436, 117519, 117708, 117723,
@@ -44,6 +45,7 @@ for _, id in ipairs({
 	144467, 144514, 144774, 144851, 145065, 145171, 145183, 145195, 145218, 146124, 146235, 146589, 146594,
 	146902, 147029, 147207, 147383,
 	142862, 142863, -- Ancient Barrier, Weak Ancient Barrier (Malkorok)
+	113942, -- Demonic Gateway (used a gateway recently)
 }) do
 	UF.ENCOUNTER_DEBUFFS[id] = true
 end
