@@ -6156,7 +6156,7 @@ function EUI_Bags:RefreshInventory()
                     -- feature costs nothing on the refresh path when disabled.
                     d._giQuality = q
                     d._giBindType = bindType
-                    -- Track rank + cooldown: only for types that need them
+                    -- Track rank: only for types that need it
                     local isGear = IsGearItem(itemLink)
                     d._isGear = isGear
                     -- The List view's iLvl column always needs the real level
@@ -6194,11 +6194,6 @@ function EUI_Bags:RefreshInventory()
                                 d._ksR = color.r; d._ksG = color.g; d._ksB = color.b
                             end
                         end
-                    end
-                    -- Cooldown (any item can have a cooldown: trinkets, consumables, toys, etc.)
-                    local cdStart, cdDur, cdEnable = C_Container.GetContainerItemCooldown(bag, slot)
-                    if cdEnable and cdEnable ~= 0 and cdStart > 0 and cdDur > 0 then
-                        d._cdStart = cdStart; d._cdDuration = cdDur
                     end
                     -- _isQuest (any quest item, incl. active objectives + starters) drives the gold
                     -- border; _isQuestStarter (questID set but inactive) is Blizzard's "!" and drives the corner marker.

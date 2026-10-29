@@ -165,7 +165,7 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
         -- Reset to 1px and drop the marker, or a pooled slot vacated by a quest item keeps the 2px gold border + atlas.
         SetInsetBorderThickness(btn, (EUI and EUI.PP and EUI.PP.mult) or 1)
         if btn._questMarker then btn._questMarker:Hide() end
-        if btn.Cooldown then btn.Cooldown:Clear() end
+        ns.ClearItemCooldown(btn)
         if btn.ItemLevelText then btn.ItemLevelText:SetText("") end
         if btn.KeystoneText then btn.KeystoneText:SetText("") end
         if btn.KeystoneDungeonText then btn.KeystoneDungeonText:SetText("") end
@@ -388,14 +388,7 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
             btn._warbankDim:Hide()
         end
 
-        if btn.Cooldown then
-            if data._cdStart then
-                btn.Cooldown:SetDrawEdge(true)
-                btn.Cooldown:SetCooldown(data._cdStart, data._cdDuration)
-            else
-                btn.Cooldown:Clear()
-            end
-        end
+        ns.UpdateItemCooldown(btn, data.bag, data.slot)
 
     end
     UpdatePawnArrow(btn, data.itemLink)

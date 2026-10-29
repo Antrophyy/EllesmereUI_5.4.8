@@ -774,12 +774,10 @@ local function RenderRow(btn, data, cols, rowW, x, y, stripe)
         end
     end
 
-    if btn.Cooldown then
-        if data._cdStart and IndexOf(cols, "icon") then
-            btn.Cooldown:SetCooldown(data._cdStart, data._cdDuration)
-        else
-            btn.Cooldown:Clear()
-        end
+    if IndexOf(cols, "icon") then
+        ns.UpdateItemCooldown(btn, data.bag, data.slot)
+    else
+        ns.ClearItemCooldown(btn)
     end
     btn._textOverlay:SetShown(btn._lvIcon:IsShown())
     EUI_Bags.RunItemOverlays(btn, data)
@@ -803,7 +801,7 @@ local function RenderEmptyRow(btn, cols, d, rowW, x, y, stripe)
     btn._stripe:SetShown(stripe and BP().bagListHideStripes ~= true)
     btn._lvIcon:Hide()
     for _, fs in pairs(btn._cells) do fs:Hide() end
-    if btn.Cooldown then btn.Cooldown:Clear() end
+    ns.ClearItemCooldown(btn)
     local hasName = IndexOf(cols, "name")
     local fs = GetCell(btn, "name")
     fs:ClearAllPoints()

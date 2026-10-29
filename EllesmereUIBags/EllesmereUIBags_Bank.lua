@@ -1528,8 +1528,6 @@ local function ToListLayout(layout, startX, listX)
                     end
                 end
             end
-            local cdS, cdD, cdE = C_Container.GetContainerItemCooldown(e.bagID, e.slot)
-            if cdE and cdE ~= 0 and cdS > 0 and cdD > 0 then d._cdStart, d._cdDuration = cdS, cdD end
             ns.StampListItem(d)
             run[#run + 1] = d
         end
@@ -2416,7 +2414,7 @@ function EUI_Bank:RefreshBank()
             btn._emptyBg:Show(); btn._emptyBg:SetAlpha(0.35)
             btn:EnableMouse(true)
             SetInsetBorderColor(btn, 0, 0, 0, 0.3)
-            if btn.Cooldown then btn.Cooldown:Clear() end
+            ns.ClearItemCooldown(btn)
             if btn.ItemLevelText then btn.ItemLevelText:SetText("") end
             if btn.BindTypeText then btn.BindTypeText:SetText("") end
             if btn.IconBorder then btn.IconBorder:Hide() end
@@ -2511,12 +2509,7 @@ function EUI_Bank:RefreshBank()
                     btn.ItemLevelText:SetText("")
                 end
             end
-            if btn.Cooldown then
-                local cdS, cdD, cdE = C_Container.GetContainerItemCooldown(bagID, slot)
-                if cdE and cdE ~= 0 and cdS > 0 and cdD > 0 then
-                    btn.Cooldown:SetDrawEdge(true); btn.Cooldown:SetCooldown(cdS, cdD)
-                else btn.Cooldown:Clear() end
-            end
+            ns.UpdateItemCooldown(btn, bagID, slot)
         end
         if next(EUI_Bags.itemOverlayIcons) ~= nil then
             overlayData.bag, overlayData.slot, overlayData.info = bagID, slot, info

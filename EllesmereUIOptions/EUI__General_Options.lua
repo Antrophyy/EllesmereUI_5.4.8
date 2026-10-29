@@ -727,6 +727,9 @@ local MODULE_EXTRAS = {
 		if not db() then return end
 		Size("Category Title Size", "Font size for category titles in the sidebar and content grid.", "bagCatTitleSize", 8, 16, 11, Refresh)
 		Size("Item Count Text Size", "Font size for stack counts.", "bagCountFontSize", 8, 16, 11, TextSizes)
+		Size("Cooldown Text Size", "Font size for item cooldown labels (enable Show Item Cooldown Text in Bags > Items).", "bagCooldownFontSize", 8, 20, 11, function()
+			if _G.EUI_Bags and _G.EUI_Bags.RefreshCooldowns then _G.EUI_Bags:RefreshCooldowns() end
+		end)
 		Size("Item Level Text Size", "Font size for item level numbers on equipment items.", "itemlevelFontSize", 8, 16, 12, TextSizes)
 		Size("Set Name Text Size", "Font size for the equipment set name on gear.", "bagSetNameFontSize", 7, 14, 9, TextSizes)
 		Size("BoE / Warbound Text Size", "Font size for the BoE text on gear.", "bagBindTypeFontSize", 8, 16, 11, TextSizes)

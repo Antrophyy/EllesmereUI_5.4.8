@@ -267,6 +267,20 @@ local function BuildBags(p)
 		end)
 
 	p:Section("Items")
+	p:Toggle("Show Item Cooldown Text", "Show remaining cooldown time over item icons in bags and bank (for example 2m or 28). Applies to grid and list views, including pinned and recent copies. The cooldown swipe remains visible when this is off.",
+		function() return P().bagShowCooldownText == true end,
+		function(v)
+			P().bagShowCooldownText = v
+			local b = Bags()
+			if b and b.RefreshCooldowns then b:RefreshCooldowns() end
+		end)
+	p:Slider("Cooldown Text Size", "Size of the remaining-time label on bag and bank item icons.", 8, 20, 1,
+		function() return P().bagCooldownFontSize or 11 end,
+		function(v)
+			P().bagCooldownFontSize = v
+			local b = Bags()
+			if b and b.RefreshCooldowns then b:RefreshCooldowns() end
+		end, function() return P().bagShowCooldownText ~= true end)
 	p:Slider("Icon Zoom", "Crops the border of every item icon in bags and bank. 0 shows the full icon.", 0, 0.20, 0.01,
 		function() return P().bagItemIconZoom or 0.08 end,
 		function(v)

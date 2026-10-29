@@ -16,6 +16,8 @@ local BAGS_DEFAULTS = {
         bagAutoSize           = false,
         bagCatTitleSize       = 11,
         bagCountFontSize      = 11,
+        bagShowCooldownText   = false,
+        bagCooldownFontSize   = 11,
         itemlevelFontSize     = 12,
         showItemlevelInBags   = true,
         showUpgradeIndicator  = true,
@@ -146,6 +148,7 @@ function EllesmereUI._bagsReset()
     if _G.EUI_CategoryManager then _G.EUI_CategoryManager:InitCategories() end
     if _G.EUI_Bags and _G.EUI_Bags.ApplyWindowLayering then _G.EUI_Bags:ApplyWindowLayering() end
     if _G.EUI_Bags and _G.EUI_Bags:IsVisible() and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+    if _G.EUI_Bags and _G.EUI_Bags.RefreshCooldowns then _G.EUI_Bags:RefreshCooldowns() end
 end
 
 local initFrame = CreateFrame("Frame")
