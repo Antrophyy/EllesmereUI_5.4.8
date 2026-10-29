@@ -571,6 +571,7 @@ local function AddDeath(dstGUID, dstName, events, synced)
 	overall.deaths[#overall.deaths + 1] = death
 	if not synced then SendDeath(dstGUID, events) end
 	Fire("death")
+	return true
 end
 
 local function Died(dstGUID, dstName, dstFlags)
@@ -812,10 +813,18 @@ local function Raise(seg, a, f, delta)
 	end
 end
 
-local function MergeTotals(seconds, body)
+-- A chat line naming who a sync changed: "Synced from Bob: Casey (damage, healing), Boss (enemy damage taken)".
+local SYNC_LABEL = { damage = "damage", healing = "healing", taken = "damage taken", interrupts = "interrupts", dispels = "dispels" }
+local function Report(sender, lines)
+	if #lines == 0 then return end
+	local text = "Damage Meters: synced from " .. (sender or "?"):match("^[^%-]*") .. ": " .. table.concat(lines, ", ")
+	if ns.Print then ns.Print(text) else print(text) end
+end
+
+local function MergeTotals(seconds, body, sender)
 	local seg = SyncTarget()
 	if not seg or math.abs(E.Duration(seg) - seconds) > SYNC_ALIGN then return end
-	local changed = false
+	local changed, lines = false, {}
 	for entry in body:gmatch("[^;]+") do
 		local short, rest = entry:match("^([^,]+),?(.*)$")
 		local guid = short and byShortGUID[short]
@@ -832,6 +841,7 @@ local function MergeTotals(seconds, body)
 				k = {}
 				known[guid] = k
 			end
+			local raised = {}
 			for j, f in ipairs(SYNC_FIELDS) do
 				local v = values[j] or 0
 				local have = a and a[f] or 0
@@ -841,19 +851,22 @@ local function MergeTotals(seconds, body)
 					Raise(seg, a, f, delta)
 					Raise(overall, Actor(overall, guid, OwnerName(guid), flags), f, delta)
 					changed = true
+					if SYNC_LABEL[f] then raised[#raised + 1] = SYNC_LABEL[f] end
 				end
 				if v > (k[f] or 0) then k[f] = v end
 			end
+			if #raised > 0 then lines[#lines + 1] = (a.name or "?") .. " (" .. table.concat(raised, ", ") .. ")" end
 		end
 	end
 	if changed then Fire("sync") end
+	Report(sender, lines)
 end
 
 local ENEMY_FLAGS = 0x00000a48 -- hostile NPC
-local function MergeEnemies(seconds, body)
+local function MergeEnemies(seconds, body, sender)
 	local seg = SyncTarget()
 	if not seg or math.abs(E.Duration(seg) - seconds) > SYNC_ALIGN then return end
-	local changed = false
+	local changed, lines = false, {}
 	for entry in body:gmatch("[^;]+") do
 		local hex, v, name = entry:match("^(%x+),([%w]*),(.*)$")
 		v = v and tonumber(v, 36)
@@ -870,6 +883,7 @@ local function MergeEnemies(seconds, body)
 					local o = overall.actors[guid]
 					if not o or o.enemy then Raise(overall, o or Actor(overall, guid, name, ENEMY_FLAGS), "taken", delta) end
 					changed = true
+					lines[#lines + 1] = (a.name or "?") .. " (enemy damage taken)"
 				end
 				local k = known[guid]
 				if not k then
@@ -881,6 +895,7 @@ local function MergeEnemies(seconds, body)
 		end
 	end
 	if changed then Fire("sync") end
+	Report(sender, lines)
 end
 
 local pendingDeaths = {} -- guid -> { at, text }: deaths of others are sent after a short random wait
@@ -905,7 +920,7 @@ SendDeath = function(guid, events)
 	pendingDeaths[guid] = { at = GetTime() + wait, text = text }
 end
 
-local function MergeDeath(short, id, amount, overkill, instakill, source)
+local function MergeDeath(sender, short, id, amount, overkill, instakill, source)
 	local guid = byShortGUID[short]
 	if not guid then return end
 	pendingDeaths[guid] = nil
@@ -919,7 +934,7 @@ local function MergeDeath(short, id, amount, overkill, instakill, source)
 			overkill = overkill > 0 and overkill or nil, instakill = instakill == "1" or nil,
 		}
 	end
-	AddDeath(guid, name, events, true)
+	if AddDeath(guid, name, events, true) then Report(sender, { name .. " (death)" }) end
 end
 
 local syncNext
@@ -928,12 +943,12 @@ function E.OnAddonMessage(prefix, text, _, sender)
 	if sender and sender:match("^[^%-]+") == UnitName("player") then return end
 	local kind, a1, rest = text:match("^(%u)\t([^\t]*)\t(.*)$")
 	if kind == "T" then
-		MergeTotals(tonumber(a1, 36) or 0, rest)
+		MergeTotals(tonumber(a1, 36) or 0, rest, sender)
 	elseif kind == "E" then
-		MergeEnemies(tonumber(a1, 36) or 0, rest)
+		MergeEnemies(tonumber(a1, 36) or 0, rest, sender)
 	elseif kind == "D" then
 		local id, amount, overkill, instakill, source = rest:match("^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t(.*)$")
-		if id then MergeDeath(a1, id, amount, overkill, instakill, source) end
+		if id then MergeDeath(sender, a1, id, amount, overkill, instakill, source) end
 	end
 end
 

@@ -695,6 +695,7 @@ Test("group sync shares totals every 10 seconds and the higher number wins", fun
 	Equal(DM.GetSources(E.GetCurrent(), T.Interrupts)[1].total, 1)
 	local o = DM.GetSources(E.GetOverall(), T.DamageDone)
 	Equal(o[1].name, "Casey"); Equal(o[1].total, 4000)
+	Equal(messages[#messages], "Damage Meters: synced from Bob: Casey (damage, healing, interrupts)")
 	-- Enemies: the higher damage taken wins; an enemy not seen here is added.
 	Fire("CHAT_MSG_ADDON", "EUIDM", "E\t" .. B36(math.floor(seconds)) .. "\tF130000000000010," .. B36(6000) .. ",Boss;F130000000000099," .. B36(800) .. ",Far Add;F130000000000010,1,Boss", "PARTY", "Bob")
 	local foes = DM.GetSources(E.GetCurrent(), T.EnemyDamageTaken)
@@ -702,6 +703,7 @@ Test("group sync shares totals every 10 seconds and the higher number wins", fun
 	local hitters = DM.GetBreakdown(E.GetCurrent(), T.EnemyDamageTaken, foes[1])
 	Equal(hitters[1].label, "Synced from group"); Equal(hitters[1].amount, 4500)
 	Equal(DM.GetSources(E.GetOverall(), T.EnemyDamageTaken)[1].total, 6000)
+	Equal(messages[#messages], "Damage Meters: synced from Bob: Boss (enemy damage taken), Far Add (enemy damage taken)")
 	-- Totals of a fight of a different length are another fight: ignored.
 	Fire("CHAT_MSG_ADDON", "EUIDM", "T\t" .. B36(math.floor(seconds) + 60) .. "\t2," .. B36(9000), "PARTY", "Bob")
 	Equal(DM.GetSources(E.GetCurrent(), T.DamageDone)[1].total, 4000)
@@ -740,6 +742,7 @@ Test("group sync shares deaths", function()
 	local recap = DM.GetBreakdown(E.GetCurrent(), T.Deaths, deaths[1])
 	Equal(#recap, 1); Equal(recap[1].spellID, 903); Equal(recap[1].amount, 5000); Equal(recap[1].overkill, 1200)
 	Equal(#E.GetOverall().deaths, 1)
+	Equal(messages[#messages], "Damage Meters: synced from Bob: Casey (death)")
 	-- Seen here a moment later: the full recap replaces it, no second death.
 	Log("SPELL_DAMAGE", BOSS_GUID, "Boss", BOSS, partyGUID, "Casey", PARTY, 901, "Bite", 1, 300, -1, 1, 0, 0, 0)
 	Log("SPELL_DAMAGE", BOSS_GUID, "Boss", BOSS, partyGUID, "Casey", PARTY, 903, "Smash", 1, 5000, 1200, 1, 0, 0, 0)
