@@ -662,12 +662,14 @@ end
 -- Group sync: EllesmereUI users in the group share their numbers of the
 -- fight in progress about every 10 seconds (and once when it ends), so a
 -- player teleported away or out of combat log range still sees everyone's
--- real damage, healing, damage taken, interrupts, dispels and active time.
+-- real damage, healing, damage taken, interrupts, dispels, active time
+-- and the damage taken by each enemy.
 -- For each player and number the higher value wins; what a sync adds shows
 -- in the breakdown as "Synced from group". Deaths are shared as they
 -- happen: one you missed is added with the killing blow as its recap, and
 -- replaced by the full recap if you see the death yourself.
 --   totals: "T\t<fight seconds>\t<guid>,<n1>,...,<n7>;<guid>,..." (base 36)
+--   enemies: "E\t<fight seconds>\t<guid>,<taken>,<name>;<guid>,..."
 --   death:  "D\t<guid>\t<spell>\t<amount>\t<overkill>\t<instakill 0/1>\t<source>"
 -- Messages stay under 255 bytes and go out one per half second.
 ---------------------------------------------------------------------------
@@ -726,10 +728,47 @@ end
 -- player: only numbers that grew since are sent again.
 local known = {}
 
+-- Entries joined into messages of at most SYNC_MAX_LEN bytes.
+local function Packer(head)
+	local text, n = head, 0
+	return function(entry)
+		if not entry then
+			if n > 0 then Queue(text, "BULK") end
+			return
+		end
+		if n > 0 and #text + 1 + #entry > SYNC_MAX_LEN then
+			Queue(text, "BULK")
+			text, n = head, 0
+		end
+		text = text .. (n > 0 and ";" or "") .. entry
+		n = n + 1
+	end
+end
+
+-- Enemy GUIDs travel without "0x"; names lose the separators.
+local function SendEnemies(seg, seconds)
+	local add = Packer("E\t" .. seconds .. "\t")
+	for guid, a in pairs(seg.actors) do
+		if a.enemy and type(guid) == "string" and guid:find("^0x") then
+			local k = known[guid]
+			if not k then
+				k = {}
+				known[guid] = k
+			end
+			local v = floor(a.taken or 0)
+			if v > (k.taken or 0) then
+				k.taken = v
+				add(guid:sub(3) .. "," .. B36(v) .. "," .. (a.name or ""):gsub("[,;\t|]", ""):sub(1, 40))
+			end
+		end
+	end
+	add()
+end
+
 local function SendTotals(seg)
 	if not seg or not SyncOn() or not SyncChannel() then return end
-	local head = "T\t" .. B36(E.Duration(seg)) .. "\t"
-	local text, n = head, 0
+	local seconds = B36(E.Duration(seg))
+	local add = Packer("T\t" .. seconds .. "\t")
 	for guid, a in pairs(seg.actors) do
 		if a.group and unitOf[guid] then
 			local k = known[guid]
@@ -747,18 +786,11 @@ local function SendTotals(seg)
 				end
 				parts[i + 1] = B36(v)
 			end
-			if changed then
-				local entry = table.concat(parts, ","):gsub(",+$", "")
-				if n > 0 and #text + 1 + #entry > SYNC_MAX_LEN then
-					Queue(text, "BULK")
-					text, n = head, 0
-				end
-				text = text .. (n > 0 and ";" or "") .. entry
-				n = n + 1
-			end
+			if changed then add((table.concat(parts, ","):gsub(",+$", ""))) end
 		end
 	end
-	if n > 0 then Queue(text, "BULK") end
+	add()
+	SendEnemies(seg, seconds)
 end
 
 -- The fight synced totals belong to: the one in progress, or the one that
@@ -817,6 +849,40 @@ local function MergeTotals(seconds, body)
 	if changed then Fire("sync") end
 end
 
+local ENEMY_FLAGS = 0x00000a48 -- hostile NPC
+local function MergeEnemies(seconds, body)
+	local seg = SyncTarget()
+	if not seg or math.abs(E.Duration(seg) - seconds) > SYNC_ALIGN then return end
+	local changed = false
+	for entry in body:gmatch("[^;]+") do
+		local hex, v, name = entry:match("^(%x+),([%w]*),(.*)$")
+		v = v and tonumber(v, 36)
+		if hex and v then
+			local guid = "0x" .. hex
+			local a = seg.actors[guid]
+			if not a or a.enemy then
+				local have = a and a.taken or 0
+				if v > have then
+					local delta = v - have
+					if name == "" then name = nil end
+					a = a or Actor(seg, guid, name, ENEMY_FLAGS)
+					Raise(seg, a, "taken", delta)
+					local o = overall.actors[guid]
+					if not o or o.enemy then Raise(overall, o or Actor(overall, guid, name, ENEMY_FLAGS), "taken", delta) end
+					changed = true
+				end
+				local k = known[guid]
+				if not k then
+					k = {}
+					known[guid] = k
+				end
+				if v > (k.taken or 0) then k.taken = v end
+			end
+		end
+	end
+	if changed then Fire("sync") end
+end
+
 local pendingDeaths = {} -- guid -> { at, text }: deaths of others are sent after a short random wait
 
 SendDeath = function(guid, events)
@@ -863,6 +929,8 @@ function E.OnAddonMessage(prefix, text, _, sender)
 	local kind, a1, rest = text:match("^(%u)\t([^\t]*)\t(.*)$")
 	if kind == "T" then
 		MergeTotals(tonumber(a1, 36) or 0, rest)
+	elseif kind == "E" then
+		MergeEnemies(tonumber(a1, 36) or 0, rest)
 	elseif kind == "D" then
 		local id, amount, overkill, instakill, source = rest:match("^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t(.*)$")
 		if id then MergeDeath(a1, id, amount, overkill, instakill, source) end

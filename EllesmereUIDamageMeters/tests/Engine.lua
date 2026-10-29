@@ -662,8 +662,11 @@ end)
 Test("group sync shares totals every 10 seconds and the higher number wins", function()
 	inCombat = false; Tick(15); E.CheckEnd()
 	Equal(E.Reset(), true)
-	local sent = {}
-	function SendAddonMessage(prefix, text, channel) sent[#sent + 1] = { prefix = prefix, text = text, channel = channel } end
+	local sent, enemies = {}, {}
+	function SendAddonMessage(prefix, text, channel)
+		local list = text:sub(1, 1) == "E" and enemies or sent
+		list[#list + 1] = { prefix = prefix, text = text, channel = channel }
+	end
 	inCombat = true
 	Log("SPELL_DAMAGE", playerGUID, "Alex", ME, BOSS_GUID, "Boss", BOSS, 100, "Arcane Shot", 64, 1000, -1, 64, 0, 0, 0)
 	Log("SPELL_DAMAGE", partyGUID, "Casey", PARTY, BOSS_GUID, "Boss", BOSS, 200, "Frostbolt", 16, 500, -1, 16, 0, 0, 0)
@@ -675,6 +678,8 @@ Test("group sync shares totals every 10 seconds and the higher number wins", fun
 	assert(#sent[1].text < 255)
 	assert(sent[1].text:find("1,rs", 1, true), sent[1].text) -- Alex: 1000 damage = "rs" in base 36
 	assert(sent[1].text:find("2,dw", 1, true), sent[1].text) -- Casey: 500 = "dw"
+	Equal(#enemies, 1, "enemy damage taken")
+	Equal(enemies[1].text, "E\t" .. sent[1].text:match("^T\t(%w+)") .. "\tF130000000000010,15o,Boss") -- 1500 = "15o"
 	-- Nothing grew: nothing is sent again.
 	for _ = 1, 22 do Tick(0.5) end
 	Equal(#sent, 1, "unchanged numbers are not resent")
@@ -690,6 +695,13 @@ Test("group sync shares totals every 10 seconds and the higher number wins", fun
 	Equal(DM.GetSources(E.GetCurrent(), T.Interrupts)[1].total, 1)
 	local o = DM.GetSources(E.GetOverall(), T.DamageDone)
 	Equal(o[1].name, "Casey"); Equal(o[1].total, 4000)
+	-- Enemies: the higher damage taken wins; an enemy not seen here is added.
+	Fire("CHAT_MSG_ADDON", "EUIDM", "E\t" .. B36(math.floor(seconds)) .. "\tF130000000000010," .. B36(6000) .. ",Boss;F130000000000099," .. B36(800) .. ",Far Add;F130000000000010,1,Boss", "PARTY", "Bob")
+	local foes = DM.GetSources(E.GetCurrent(), T.EnemyDamageTaken)
+	Equal(#foes, 2); Equal(foes[1].name, "Boss"); Equal(foes[1].total, 6000); Equal(foes[2].name, "Far Add"); Equal(foes[2].total, 800)
+	local hitters = DM.GetBreakdown(E.GetCurrent(), T.EnemyDamageTaken, foes[1])
+	Equal(hitters[1].label, "Synced from group"); Equal(hitters[1].amount, 4500)
+	Equal(DM.GetSources(E.GetOverall(), T.EnemyDamageTaken)[1].total, 6000)
 	-- Totals of a fight of a different length are another fight: ignored.
 	Fire("CHAT_MSG_ADDON", "EUIDM", "T\t" .. B36(math.floor(seconds) + 60) .. "\t2," .. B36(9000), "PARTY", "Bob")
 	Equal(DM.GetSources(E.GetCurrent(), T.DamageDone)[1].total, 4000)
