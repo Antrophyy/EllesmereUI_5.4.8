@@ -402,22 +402,148 @@ local function AnyHovered()
 	return false
 end
 
+-------------------------------------------------------------------------------
+--  Advanced Fade (retail EAB_VTABLE.Hover custom fade): an optional per-bar
+--  alpha layer over Bar Opacity. advancedFadeEnabled ~= true leaves the bar
+--  to the stock code above. While any chosen condition holds the bar fades
+--  to fadeMaxAlpha, else back to its Bar Opacity; a Mouseover bar keeps its
+--  hidden side (0 off hover). Spellbook, drag and Quick Keybind reveals win.
+-------------------------------------------------------------------------------
+local AF = {}
+P.AdvancedFade = AF
+AF.CONDITIONS = { "combat", "party", "raid", "instance", "mounted", "flying", "target", "enemy_target", "mouseover" }
+
+function AF.Active(s)
+	if not (s and s.advancedFadeEnabled == true) then return false end
+	local c = s.fadeConditions
+	if type(c) ~= "table" then return false end
+	for _, k in ipairs(AF.CONDITIONS) do
+		if c[k] then return true end
+	end
+	return false
+end
+
+function AF.ConditionMet(key, s)
+	local c = s.fadeConditions
+	local st = hoverStates[key]
+	if c.mouseover and st and (st.isHovered or st.fadeDir == "in") then return true end
+	if c.combat and (InCombatLockdown() or UnitAffectingCombat("player")) then return true end
+	local inRaid = IsInRaid()
+	if c.raid and inRaid then return true end
+	if c.party and IsInGroup() and not inRaid then return true end
+	if c.instance and IsInInstance() then return true end
+	if c.mounted and IsMounted() then return true end
+	if c.flying and IsFlying() then return true end
+	local hasTarget = UnitExists("target")
+	if c.target and hasTarget then return true end
+	if c.enemy_target and hasTarget and UnitCanAttack("player", "target") then return true end
+	return false
+end
+
+-- The alpha the layer wants for a bar, or nil (stock code owns it).
+function AF.Target(key, s)
+	if not AF.Active(s) or P.extraBlocked[key] or Revealed(key, s) then return nil end
+	local st = hoverStates[key]
+	local base = s.mouseoverEnabled and HoverAlpha(s) or (s._savedBarAlpha or s.mouseoverAlpha or 1)
+	local target = base
+	if AF.ConditionMet(key, s) then
+		target = s.fadeMaxAlpha or 1
+	end
+	if s.mouseoverEnabled or EAB.VisBase(s) == "mouseover" then
+		local over = st and (st.isHovered or st.fadeDir == "in")
+		if not over and P.Profile().mouseoverShowAll and AnyHovered() then over = true end
+		if not over then target = 0 end
+	end
+	return math.max(0, math.min(1, target))
+end
+
+function AF.Refresh(key, animate)
+	local st = hoverStates[key]
+	local s = P.BarSettings(key)
+	if not st or not s then return end
+	local target = AF.Target(key, s)
+	if target == nil then
+		st.afTarget = nil
+		return
+	end
+	if animate and st.afTarget == target then return end
+	local from = st.afTarget or st.frame:GetAlpha() or 1
+	st.afTarget = target
+	if animate then
+		local dur = (target > from) and (s.fadeInSpeed or 0.15) or (s.fadeOutSpeed or 0.15)
+		P.FadeTo(st.frame, target, math.max(0.01, dur))
+	else
+		P.StopFade(st.frame, target)
+	end
+end
+
+function AF.RefreshAll(animate)
+	for key in pairs(hoverStates) do
+		AF.Refresh(key, animate)
+	end
+end
+
+-- Conditions without a hover: their events, plus a slow poll for the ones
+-- 5.4.8 sends nothing for (mounted, flying), only while a bar uses them.
+function AF.Sync()
+	local any, poll = false, false
+	local prof = P.Profile()
+	for key in pairs(hoverStates) do
+		local s = P.BarSettings(key)
+		if AF.Active(s) then
+			any = true
+			if s.fadeConditions.mounted or s.fadeConditions.flying then poll = true end
+		end
+	end
+	local f = AF.frame
+	if not f then
+		if not any then return end
+		f = CreateFrame("Frame")
+		AF.frame = f
+		f:SetScript("OnEvent", function() AF.RefreshAll(true) end)
+		f.acc = 0
+	end
+	f:UnregisterAllEvents()
+	if any then
+		for _, e in ipairs({ "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "GROUP_ROSTER_UPDATE",
+			"PLAYER_ENTERING_WORLD", "ZONE_CHANGED_NEW_AREA", "PLAYER_TARGET_CHANGED", "UNIT_FLAGS" }) do
+			f:RegisterEvent(e)
+		end
+	end
+	if poll then
+		f:SetScript("OnUpdate", function(self, elapsed)
+			self.acc = self.acc + elapsed
+			if self.acc < 0.25 then return end
+			self.acc = 0
+			AF.RefreshAll(true)
+		end)
+	else
+		f:SetScript("OnUpdate", nil)
+	end
+	if prof and not any then
+		for _, st in pairs(hoverStates) do st.afTarget = nil end
+	end
+end
+
 local function FadeInOne(key)
 	local st = hoverStates[key]
 	local s = P.BarSettings(key)
 	if not st or not s or not s.mouseoverEnabled then
+		if st then AF.Refresh(key, true) end
 		return
 	end
 	if st.fadeDir ~= "in" then
 		st.fadeDir = "in"
 		P.FadeTo(st.frame, HoverAlpha(s), s.mouseoverSpeed or 0.15)
 	end
+	AF.Refresh(key, true)
 end
 
 local function FadeOutOne(key)
 	local st = hoverStates[key]
 	local s = P.BarSettings(key)
 	if not st or not s or not s.mouseoverEnabled then
+		if st then AF.Refresh(key, true) end
 		return
 	end
 	if Revealed(key, s) then
@@ -427,6 +553,7 @@ local function FadeOutOne(key)
 		st.fadeDir = "out"
 		P.FadeTo(st.frame, (RestingAlpha(s, key)), s.mouseoverSpeed or 0.15)
 	end
+	AF.Refresh(key, true)
 end
 
 local function OnHoverEnter(key)
@@ -562,6 +689,12 @@ function EAB:RefreshMouseover()
 	end
 	if needPoll then
 		pollFrame:Show()
+	end
+	-- Advanced Fade layers over the stock alphas just painted.
+	AF.Sync()
+	for key, st in pairs(hoverStates) do
+		st.afTarget = nil
+		AF.Refresh(key, false)
 	end
 end
 

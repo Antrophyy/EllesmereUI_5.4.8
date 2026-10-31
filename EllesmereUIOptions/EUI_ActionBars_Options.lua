@@ -633,7 +633,7 @@ local function BuildBarDisplay(p)
 	---------------------------------------------------------------------
 	-- VISIBILITY
 	---------------------------------------------------------------------
-	p:Section("Visibility")
+	p:Section("Visibility", { unlockKey = function() return sel.bar end })
 	VisibilityRow(p, nil)
 	Sync(p, "Apply Visibility to all Bars", VIS_KEYS)
 	p:Cog("Visibility", {
@@ -673,6 +673,53 @@ local function BuildBarDisplay(p)
 			end
 		end)
 	Sync(p, "Apply Bar Opacity to all Bars", { "mouseoverAlpha", "_savedBarAlpha" })
+	-- Advanced Fade (retail): an optional alpha layer over Bar Opacity.
+	do
+		local FADE_ORDER = { "combat", "party", "raid", "instance", "mounted", "flying", "target", "enemy_target", "mouseover" }
+		local FADE_LABELS = {
+			combat = "In Combat", party = "In Party", raid = "In Raid", instance = "In Instance",
+			mounted = "Mounted", flying = "Flying", target = "Target", enemy_target = "Enemy Target",
+			mouseover = "Mouseover",
+		}
+		local function AFOff() return SB().advancedFadeEnabled ~= true end
+		local function Conds()
+			local s = SB()
+			if type(s.fadeConditions) ~= "table" then s.fadeConditions = {} end
+			return s.fadeConditions
+		end
+		p:Toggle("Enable Advanced Fade", "An optional fade layer for this bar: while any chosen Fade Condition is true, the bar fades to Maximum Opacity, else back to its Bar Opacity. Visibility still decides whether the bar is shown. Off, Bar Opacity and Visibility behave as before.",
+			function() return SB().advancedFadeEnabled == true end,
+			function(v) SB().advancedFadeEnabled = v and true or false end)
+		p:Cog("Advanced Fade", {
+			{ type = "slider", label = "Maximum Opacity", min = 0, max = 100, step = 1,
+			  tip = "Opacity used while any chosen Fade Condition is true.",
+			  get = function() return floor((SB().fadeMaxAlpha or 1) * 100 + 0.5) end,
+			  set = function(v) SB().fadeMaxAlpha = v / 100 end },
+			{ type = "slider", label = "Fade In Speed", min = 0.01, max = 2, step = 0.01,
+			  tip = "Fade-in duration in seconds. Lower is faster.",
+			  get = function() return SB().fadeInSpeed or 0.15 end,
+			  set = function(v) SB().fadeInSpeed = v end },
+			{ type = "slider", label = "Fade Out Speed", min = 0.01, max = 2, step = 0.01,
+			  tip = "Fade-out duration in seconds. Lower is faster.",
+			  get = function() return SB().fadeOutSpeed or 0.15 end,
+			  set = function(v) SB().fadeOutSpeed = v end },
+		}, { disabled = AFOff, disabledTip = "Requires Enable Advanced Fade" })
+		p:MultiSelect("Fade Conditions", "Choose one or more conditions. If any of them is true, the bar fades to Maximum Opacity.",
+			function()
+				local out = {}
+				for i, k in ipairs(FADE_ORDER) do out[i] = { value = k, name = FADE_LABELS[k] } end
+				return out
+			end,
+			function(k) return Conds()[k] == true end,
+			function(k) Conds()[k] = (not Conds()[k]) or nil end,
+			function()
+				local names = {}
+				for _, k in ipairs(FADE_ORDER) do
+					if Conds()[k] then names[#names + 1] = FADE_LABELS[k] end
+				end
+				return #names == 0 and "None" or table.concat(names, ", ")
+			end, AFOff)
+	end
 	p:Toggle("Always Show Buttons", "Show button backgrounds even if a spell is not assigned to that slot.",
 		function() return SB().alwaysShowButtons ~= false end,
 		function(v) SB().alwaysShowButtons = v end)
@@ -1139,6 +1186,95 @@ end
 ---------------------------------------------------------------------------
 -- XP Bar page
 ---------------------------------------------------------------------------
+-- XP Bar preview (retail): a static mock of the bar at a random fill with a
+-- rested overlay ahead of it, styled from the XP Bar settings. Dimmed while
+-- the bar is set to never show.
+local function BuildXPPreview(page, host, width)
+	if not (EAB and EAB.db) then
+		return 0
+	end
+	local container = CreateFrame("Frame", nil, host)
+	container:SetSize(10, 10)
+	container:SetPoint("CENTER", host, "TOP", 0, -40)
+	local bg = container:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	local rested = container:CreateTexture(nil, "BORDER")
+	local fill = container:CreateTexture(nil, "ARTWORK")
+	local edges = {}
+	for i = 1, 4 do edges[i] = container:CreateTexture(nil, "OVERLAY", nil, 7) end
+	local text = container:CreateFontString(nil, "OVERLAY")
+	local frac = math.random(25, 70) / 100
+	local restFrac = math.min(1 - frac, math.random(10, 25) / 100)
+	local function Update()
+		local s = SB("XPBar")
+		if not s then
+			return
+		end
+		local scale = UIParent:GetEffectiveScale() / math.max(0.01, host:GetEffectiveScale())
+		local w, h = s.width or 400, s.height or 18
+		local avail = (width - 40) / scale
+		container:SetScale(w > avail and scale * avail / w or scale)
+		container:SetSize(w, h)
+		bg:SetTexture(0, 0, 0, 0.5)
+		local tex = EAB.ResolveDataBarTexture and EAB.ResolveDataBarTexture(s.barTexture) or "Interface\\Buttons\\WHITE8x8"
+		local C = EAB.XP_BAR_COLORS or {}
+		local showRested = s.showRested ~= false
+		local base = (showRested and C.xpRested) or C.xpNoRest or { r = 0.6, g = 0.4, b = 0.85 }
+		local r, g, b = base.r, base.g, base.b
+		if s.colorMode == "accent" and ns.ResolveAccent then
+			r, g, b = ns.ResolveAccent()
+		elseif s.colorMode == "custom" and s.customColor then
+			r, g, b = s.customColor.r or 1, s.customColor.g or 1, s.customColor.b or 1
+		end
+		fill:ClearAllPoints()
+		fill:SetPoint("TOPLEFT")
+		fill:SetSize(math.max(1, w * frac), h)
+		fill:SetTexture(tex)
+		fill:SetVertexColor(r, g, b, 1)
+		local rc = s.restedColor or C.xpRestedBG or { r = 0.15, g = 0.3, b = 0.6 }
+		rested:ClearAllPoints()
+		rested:SetPoint("TOPLEFT", fill, "TOPRIGHT")
+		rested:SetSize(math.max(1, w * restFrac), h)
+		rested:SetTexture(tex)
+		rested:SetVertexColor(rc.r or 0.15, rc.g or 0.3, rc.b or 0.6, rc.a or 1)
+		rested:SetShown(showRested)
+		local bs = 1
+		local bc = { r = 0, g = 0, b = 0, a = 1 }
+		if s.customBorder then
+			local e = EAB.BORDER_THICKNESS and EAB.BORDER_THICKNESS[s.borderThickness or "thin"]
+			bs = e and e.regular or 1
+			bc = s.borderColor or bc
+		end
+		local px = 768 / (ns.PhysicalHeight and ns.PhysicalHeight() or 1080) / UIParent:GetEffectiveScale()
+		local t = bs * px
+		edges[1]:ClearAllPoints(); edges[1]:SetPoint("TOPLEFT"); edges[1]:SetPoint("TOPRIGHT"); edges[1]:SetHeight(math.max(0.01, t))
+		edges[2]:ClearAllPoints(); edges[2]:SetPoint("BOTTOMLEFT"); edges[2]:SetPoint("BOTTOMRIGHT"); edges[2]:SetHeight(math.max(0.01, t))
+		edges[3]:ClearAllPoints(); edges[3]:SetPoint("TOPLEFT"); edges[3]:SetPoint("BOTTOMLEFT"); edges[3]:SetWidth(math.max(0.01, t))
+		edges[4]:ClearAllPoints(); edges[4]:SetPoint("TOPRIGHT"); edges[4]:SetPoint("BOTTOMRIGHT"); edges[4]:SetWidth(math.max(0.01, t))
+		for i = 1, 4 do
+			edges[i]:SetTexture(bc.r or 0, bc.g or 0, bc.b or 0, bc.a or 1)
+			edges[i]:SetShown(t > 0)
+		end
+		local font = ns.GetFontPath and ns.GetFontPath("actionBars") or ns.FONT or STANDARD_TEXT_FONT
+		text:SetFont(font, s.textSize or 9, "OUTLINE")
+		text:ClearAllPoints()
+		local anchor = s.textAnchor or "center"
+		local pt = (anchor == "left" and "LEFT") or (anchor == "right" and "RIGHT") or "CENTER"
+		text:SetPoint(pt, container, pt, (s.textOffsetX or 0) + (pt == "LEFT" and 4 or pt == "RIGHT" and -4 or 0), s.textOffsetY or 0)
+		local pct = math.floor(frac * 1000 + 0.5) / 10
+		local str = s.showRawValues and (math.floor(frac * 100000) .. " / 100000" .. (s.showPercent and (" (" .. pct .. "%)") or "")) or (pct .. "%")
+		if s.showLevel then
+			str = "Level " .. (UnitLevel("player") or 1) .. "  " .. str
+		end
+		text:SetText(str)
+		text:SetShown(not s.hideText)
+		container:SetAlpha((s.barVisibility == "never" or s.alwaysHidden) and 0.3 or 1)
+	end
+	page:OnRefresh(Update)
+	Update()
+	return 80
+end
+
 local function BuildXPBar(p)
 	if NotRunning(p) then
 		return
@@ -1147,7 +1283,7 @@ local function BuildXPBar(p)
 	local function G(k, d) return function() local v = S()[k] if v == nil then return d end return v end end
 	local function W(k) return function(v) S()[k] = v end end
 	p:Paragraph("The XP bar hides at the level cap (90). Move it in Unlock Mode.")
-	p:Section("Core")
+	p:Section("Core", { unlockKey = "XPBar" })
 	VisibilityRow(p, "XPBar", "XP Bar Visibility")
 	p:Blank()
 	DataBarRows(p, "XPBar")
@@ -1323,7 +1459,7 @@ local function BuildMenuBagsRep(p)
 	VisibilityRow(p, "ExtraActionButton", "Extra Action Button Visibility")
 	OpacityRow(p, "ExtraActionButton")
 
-	p:Section("Reputation Bar")
+	p:Section("Reputation Bar", { unlockKey = "RepBar" })
 	VisibilityRow(p, "RepBar", "Reputation Bar Visibility")
 	p:Toggle("Use Blizzard's Rep Bars", "Keep Blizzard's own experience and reputation bars instead of these. Requires a UI reload.",
 		function() return DB().useBlizzardDataBars or false end,
@@ -1464,7 +1600,7 @@ ns.RegisterSettingsModule({
 			local s = SB()
 			return sel.bar .. (s.bgEnabled and ":bg" or "") .. (s.modTargetPaging and ":mt" or "")
 		  end },
-		{ key = "xp", name = "XP Bar", description = "Configure visuals and behavior for your action bars.", build = BuildXPBar },
+		{ key = "xp", name = "XP Bar", description = "Configure visuals and behavior for your action bars.", build = BuildXPBar, header = BuildXPPreview },
 		{ key = "menubags", name = "Menu, Bags & Rep Bars", description = "Configure visuals and behavior for your action bars.", build = BuildMenuBagsRep },
 		{ key = "animations", name = "Bar Animations", description = "Configure visuals and behavior for your action bars.", build = BuildAnimations },
 	},

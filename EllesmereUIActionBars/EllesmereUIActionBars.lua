@@ -225,6 +225,12 @@ for _, info in ipairs(BAR_CONFIG) do
 		buttonHeight = 0,
 		mouseoverEnabled = false,
 		mouseoverAlpha = 1,
+		-- Optional Advanced Fade layer (EUI_ActionBars_Bars.lua). Off keeps the
+		-- stock alpha behavior. fadeConditions is set per bar when edited.
+		advancedFadeEnabled = false,
+		fadeMaxAlpha = 1,
+		fadeInSpeed = 0.15,
+		fadeOutSpeed = 0.15,
 		combatShowEnabled = false,
 		combatHideEnabled = false,
 		housingHideEnabled = false,
@@ -302,6 +308,10 @@ for _, info in ipairs(EXTRA_BARS) do
 	local d = {
 		mouseoverEnabled = false,
 		mouseoverAlpha = 1,
+		advancedFadeEnabled = false,
+		fadeMaxAlpha = 1,
+		fadeInSpeed = 0.15,
+		fadeOutSpeed = 0.15,
 		combatShowEnabled = false,
 		combatHideEnabled = false,
 		housingHideEnabled = false,
