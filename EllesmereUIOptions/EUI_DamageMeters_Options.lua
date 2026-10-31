@@ -141,7 +141,7 @@ end
 
 local function BuildMeterPage(p)
 	-- DISPLAY
-	p:Section("DISPLAY")
+	p:Section("DISPLAY", { unlockKey = "EDM_Win1" })
 	p:Button("Modern Appearance", "Flat class-colored bars, compact headers, class/spec icons, and a dark background. Changes appearance only; window positions, sizes, selected meters, and Spell History are kept.", "Apply Modern Look",
 		function() DM.ApplyModernStyle() end)
 	p:Dropdown("Visibility", "When the meter windows are shown. Per-window rules (dungeons, raids, PvP) are in each window's settings menu.",
@@ -171,6 +171,10 @@ local function BuildMeterPage(p)
 		function(v) Set("bgAlpha", v / 100) end)
 	p:Swatch("Background Color", function() return Cfg("bgR") or 0, Cfg("bgG") or 0, Cfg("bgB") or 0 end,
 		function(r, g, b) Set("bgR", r); Set("bgG", g); Set("bgB", b) end)
+	p:Dropdown("Background Texture", "Texture of the window background, tinted with the Background Color. None is a flat color.", TexItems,
+		function() return Cfg("bgTexture") or "none" end,
+		function() return DM.TextureLabel(Cfg("bgTexture")) end,
+		function(v) Set("bgTexture", v) end, TEX_OPTS)
 
 	p:Toggle("Always Show Player", "This will pin your bar to the window when it is not within the visible area",
 		function() return Cfg("showPinnedSelf") ~= false end,
@@ -266,10 +270,20 @@ local function BuildMeterPage(p)
 		function(v) Set("iconStyle", v) end)
 	p:Cog("Icon", {
 		{ type = "slider", label = "Zoom %", min = 0, max = 20, step = 1,
-			disabled = function() local s = Cfg("iconStyle") or "spec"; return s ~= "spec" and s ~= "blizzard" end,
-			get = function() return floor((Cfg("classIconZoom") or 0.06) * 100 + 0.5) end,
-			set = function(v) Set("classIconZoom", v / 100) end },
-	})
+			tip = "Zoom of the spec and class icons, or of the class art for the other styles.",
+			get = function()
+				local s = Cfg("iconStyle") or "spec"
+				if s ~= "spec" and s ~= "blizzard" then return floor((Cfg("spriteIconZoom") or 0) * 100 + 0.5) end
+				return floor((Cfg("classIconZoom") or 0.06) * 100 + 0.5)
+			end,
+			set = function(v)
+				local s = Cfg("iconStyle") or "spec"
+				if s ~= "spec" and s ~= "blizzard" then Set("spriteIconZoom", v / 100) else Set("classIconZoom", v / 100) end
+			end },
+	}, { disabled = function() return (Cfg("iconStyle") or "spec") == "none" end })
+	p:Toggle("Mark Own Bar", "Draws a thin white line at the start of your own bar.",
+		function() return Cfg("showPlayerMarker") or false end,
+		function(v) Set("showPlayerMarker", v) end)
 	p:Slider("Border Size", "Border around each bar in pixels. 5.4.8 draws a solid border only.", 0, 4, 1,
 		function() return Cfg("borderSize") or 0 end,
 		function(v) Set("borderSize", v) end)
@@ -366,6 +380,9 @@ local function BuildMeterPage(p)
 			get = function() return Cfg("rightTextOffsetY") or 0 end,
 			set = function(v) Set("rightTextOffsetY", v) end },
 	})
+	p:Toggle("Value Gradient", "Colors the right text from green (highest value) to red (lowest). Overrides the right text color.",
+		function() return Cfg("rightTextUseThreatGradient") or false end,
+		function(v) Set("rightTextUseThreatGradient", v) end)
 
 	-- STANDALONE COMBAT TIMER
 	p:Section("STANDALONE COMBAT TIMER")
@@ -517,7 +534,7 @@ local function BuildSpellHistoryPage(p)
 	local function iconOff() return not SH().iconEnabled end
 	local function barOff() return not SH().barEnabled end
 
-	p:Section("Icon History")
+	p:Section("Icon History", { unlockKey = "EDM_IconHistory", unlockDisabled = iconOff, unlockDisabledTip = "Requires Icon History" })
 	p:Toggle("Enable Icon History", "Shows a movable strip of recent spell icons. Move it in Unlock Mode.",
 		function() return SH().iconEnabled end, function(v) SH().iconEnabled = v end)
 	p:Slider("Icon Zoom %", "How much of the icon border is cut off. Used by the icon strip and the bars.", 0, 20, 1,
@@ -545,7 +562,7 @@ local function BuildSpellHistoryPage(p)
 	p:Slider("Fade-Out Time", "Seconds after which history icons fade out. The timer pauses during combat. 0 = never.", 0, 60, 1,
 		function() return SH().iconFadeTime end, function(v) SH().iconFadeTime = v end, iconOff)
 
-	p:Section("Bar History")
+	p:Section("Bar History", { unlockKey = "EDM_BarHistory", unlockDisabled = barOff, unlockDisabledTip = "Requires Bar History" })
 	p:Toggle("Enable Bar History", "Shows a window with your spell cast history as bars: icon, name, cast time and target. Scroll it with the mouse wheel.",
 		function() return SH().barEnabled end, function(v) SH().barEnabled = v end)
 	VisibilityControl(p, "bar", barOff)

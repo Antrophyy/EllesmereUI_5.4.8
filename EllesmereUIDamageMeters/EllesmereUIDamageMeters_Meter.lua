@@ -81,6 +81,10 @@ local function CreateDefaults()
 		numberFormat = 2,
 		iconStyle = "spec",
 		classIconZoom = 0.06,
+		spriteIconZoom = 0,
+		showPlayerMarker = false,
+		rightTextUseThreatGradient = false,
+		bgTexture = "none",
 		iconColorUseAccent = false,
 		iconColor = C3(1, 1, 1),
 		customIconBorder = false,
@@ -453,7 +457,12 @@ local function ResolveIcon(src, tex, barH)
 	else
 		local coords = SPRITE[cls]
 		tex:SetTexture(FRIENDS_CLASS .. style)
-		tex:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+		local sz = c.spriteIconZoom or 0
+		if sz ~= 0 then
+			tex:SetTexCoord(ZoomCoords(coords, sz))
+		else
+			tex:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+		end
 	end
 	tex:SetSize(barH, barH)
 	tex:SetVertexColor(1, 1, 1, 1)
@@ -1219,6 +1228,13 @@ local function MakeRow(W, parent)
 	bar.label:SetJustifyH("LEFT")
 	bar.label:SetWordWrap(false)
 	bar.amount:SetJustifyH("RIGHT")
+	-- Own-row marker (retail): a 2 px white line at the fill's left edge.
+	bar.marker = tf:CreateTexture(nil, "OVERLAY")
+	bar.marker:SetPoint("TOPLEFT", bar.fill, "TOPLEFT")
+	bar.marker:SetPoint("BOTTOMLEFT", bar.fill, "BOTTOMLEFT")
+	bar.marker:SetWidth(2)
+	Solid(bar.marker, 1, 1, 1, 0.95)
+	bar.marker:Hide()
 	bar.hl = bar.row:CreateTexture(nil, "HIGHLIGHT")
 	bar.hl:SetAllPoints(bar.row)
 	Solid(bar.hl, 1, 1, 1, 0.06)
@@ -1308,7 +1324,14 @@ local function FillRow(W, bar, src, rank, maxAmt, barH)
 		bar.label:SetTextColor(r, g, b, 1)
 		bar.pos:SetTextColor(r, g, b, 1)
 	end
-	if c.rightTextUseClassColor and cr then
+	bar.marker:SetShown((c.showPlayerMarker and src.isLocalPlayer) and true or false)
+	if c.rightTextUseThreatGradient and W.curDMType ~= T.Deaths then
+		-- Green-to-red value gradient (retail): the top value green, the lowest red.
+		local hi, lo = W.gradHigh or 0, W.gradLow or 0
+		local t = hi > lo and (hi - (src.total or 0)) / (hi - lo) or 0
+		t = max(0, min(1, t)) * 2
+		bar.amount:SetTextColor(min(1, t), min(1, 2 - t), 0, 1)
+	elseif c.rightTextUseClassColor and cr then
 		bar.amount:SetTextColor(cr, cg, cb, 1)
 	else
 		bar.amount:SetTextColor(RGB(c.rightTextColor, 1, 1, 1))
@@ -1811,7 +1834,14 @@ CreateDMWindow = function(idx)
 		frame.bg:ClearAllPoints()
 		frame.bg:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -hh)
 		frame.bg:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
-		Solid(frame.bg, c.bgR, c.bgG, c.bgB, c.bgAlpha or 0.75)
+		if c.bgTexture and c.bgTexture ~= "none" then
+			-- Background texture (retail): a status bar texture tinted with the background color.
+			frame.bg:SetTexture(DM.TexturePath(c.bgTexture))
+			frame.bg:SetVertexColor(c.bgR or 0, c.bgG or 0, c.bgB or 0, c.bgAlpha or 0.75)
+		else
+			frame.bg:SetVertexColor(1, 1, 1, 1)
+			Solid(frame.bg, c.bgR, c.bgG, c.bgB, c.bgAlpha or 0.75)
+		end
 		local hr, hg, hb = RGB(c.hdrBgColor, 0x1B / 255, 0x1B / 255, 0x1B / 255)
 		Solid(header.bg, hr, hg, hb, c.hdrBgAlpha or 1)
 		local bsz = c.hdrBottomBorderSize or 0
@@ -1973,6 +2003,8 @@ CreateDMWindow = function(idx)
 			count = min(#sources, BAR_POOL_SIZE)
 			local maxAmt = W.curDMType == T.Deaths and 1 or (sources[1] and sources[1].total or 1)
 			W.maxAmt = maxAmt
+			W.gradHigh = sources[1] and sources[1].total or 0
+			W.gradLow = sources[#sources] and sources[#sources].total or 0
 			for i = 1, count do
 				FillRow(W, W.rows[i], sources[i], i, maxAmt, barH)
 				if sources[i].isLocalPlayer and not W.meIndex then W.meIndex = i end
