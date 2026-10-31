@@ -961,6 +961,15 @@ local function BuildModel()
 	mouse:SetScript("OnReceiveDrag", function()
 		AutoEquipCursorItem()
 	end)
+	-- SetUnit loads asynchronously and the model drops its camera while hidden;
+	-- recentre once the model is in, so it never opens off screen (retail 9.7).
+	if model:HasScript("OnModelLoaded") then
+		model:SetScript("OnModelLoaded", function(self)
+			if self.RefreshCamera then self:RefreshCamera() end
+			self:SetPortraitZoom(zoom)
+			self:SetPosition(0, 0, 0)
+		end)
+	end
 
 	-- Re-bind on gear and form changes, only while visible.
 	local events = CreateFrame("Frame")

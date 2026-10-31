@@ -354,15 +354,25 @@ local function Validate()
 	if dialog and dialog:IsShown() then Refresh() end
 end
 
+-- A shift-click on an item sold one at a time (which gets no split popup),
+-- unless it went into a focused edit box (not the window's own) as a link.
+local function SingleBuyClick(index)
+	local focus = GetCurrentKeyBoardFocus and GetCurrentKeyBoardFocus()
+	return (MerchantFrame.selectedTab or 1) == 1 and IsModifiedClick("SPLITSTACK")
+		and GetMerchantItemMaxStack(index) == 1
+		and (not focus or (dialog ~= nil and focus == dialog._eb))
+end
+
 local function TakeOver(button)
 	if not Enabled() then return end
 	local ssf = StackSplitFrame
-	if not ssf or not ssf:IsShown() or ssf.owner ~= button then return end
 	local index = button:GetID()
+	local split = ssf and ssf:IsShown() and ssf.owner == button
+	if not split and not (index and SingleBuyClick(index)) then return end
 	local itemID = index and MerchantItemID(index)
 	local info = itemID and MerchantInfo(index)
 	if not info then return end
-	ssf:Hide()
+	if split then ssf:Hide() end
 	dialog = dialog or CreateDialog()
 	local step = max(info.stackCount, 1)
 	dialog._owner, dialog._index, dialog._itemID = button, index, itemID

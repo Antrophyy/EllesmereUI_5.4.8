@@ -1136,7 +1136,15 @@ do
 		end
 		local pad = RC.PAD * 2
 		local want = math.max(d.rcBaseW, math.min(need + pad, d.rcBaseW * RC.MAX_GROW))
-		fr:SetWidth(want)
+		-- Retail 9.7: a protected frame anchored to the popup makes it protected
+		-- too, and in combat its SetWidth is then blocked: it keeps the width it
+		-- has, and the message wraps inside that.
+		if InCombatLockdown() and fr:IsProtected() then
+			local w = fr:GetWidth()
+			want = (w and w > 0) and w or d.rcBaseW
+		else
+			fr:SetWidth(want)
+		end
 		fs:SetWidth(want - pad)
 		fs:ClearAllPoints()
 		fs:SetPoint("CENTER", fr, "TOP", 0, RC.TEXT_Y)

@@ -28,3 +28,4 @@ EllesmereUIBlizzardSkin_WindowPacks1.lua
 EllesmereUIBlizzardSkin_WindowPacks2.lua
 EllesmereUIBlizzardSkin_WindowPacks3.lua
 EllesmereUIBlizzardSkin_MerchantBulkBuy.lua
+EllesmereUIBlizzardSkin_MailAlts.lua

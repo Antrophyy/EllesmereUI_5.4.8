@@ -3151,5 +3151,73 @@ WSkin.RegisterWindow({
 	order = 140,
 	elvui = "mail",
 	apply = Skin_Mail,
+	-- Alt List (EllesmereUIBlizzardSkin_MailAlts.lua): account-wide settings
+	-- on EllesmereUIDB, so every character shares them.
+	options = function(p, U)
+		local MA = BS.MailAlts
+		if not MA then
+			return
+		end
+		local function Get(key, default)
+			local v = EllesmereUIDB and EllesmereUIDB[key]
+			if v == nil then
+				return default
+			end
+			return v
+		end
+		local function Set(key, v)
+			EllesmereUIDB = EllesmereUIDB or {}
+			EllesmereUIDB[key] = v
+			MA.Refresh()
+		end
+		local function Off()
+			return Get("mailAltList", false) ~= true
+		end
+		local SORT = {
+			{ key = "recent", text = "Last Played" },
+			{ key = "level", text = "Level" },
+			{ key = "name", text = "Name" },
+		}
+		p:Toggle("Show Alt List", "Lists your alts beside Send Mail. Click a name to fill in the recipient, right-click to leave it off the list.",
+			function() return Get("mailAltList", false) == true end,
+			function(v) Set("mailAltList", v and true or false) end)
+		p:Cog("Alt List", {
+			{ type = "dropdown", label = "Sort By",
+			  items = function() return U.KeyItems(SORT) end,
+			  get = function() return Get("mailAltListSort", MA.DEFAULT_SORT) end,
+			  set = function(v) Set("mailAltListSort", v) end },
+			{ type = "slider", label = "Max Characters Shown", min = 1, max = MA.MAX_ROWS, step = 1,
+			  get = function() return Get("mailAltListMax", MA.DEFAULT_MAX) end,
+			  set = function(v) Set("mailAltListMax", v) end },
+			{ type = "slider", label = "Minimum Level", min = 1, max = MAX_PLAYER_LEVEL_TABLE and MAX_PLAYER_LEVEL_TABLE[GetExpansionLevel()] or 90, step = 1,
+			  get = function() return Get("mailAltListMinLevel", MA.DEFAULT_MIN_LEVEL) end,
+			  set = function(v) Set("mailAltListMinLevel", v) end },
+		}, { disabled = Off })
+		p:MultiSelect("Shown Characters", "Untick a character to leave it off the list.",
+			function()
+				local items, lastRealm = {}, nil
+				for _, e in ipairs(MA.Entries()) do
+					if e.realm ~= lastRealm then
+						lastRealm = e.realm
+						items[#items + 1] = { header = true, name = e.realm }
+					end
+					local c = e.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[e.class]
+					local name = c and string.format("|cff%02x%02x%02x%s|r", c.r * 255, c.g * 255, c.b * 255, e.name) or e.name
+					items[#items + 1] = { name = name, value = e.guid }
+				end
+				return items
+			end,
+			function(guid) return MA.IsShown(guid) end,
+			function(guid) MA.SetShown(guid, not MA.IsShown(guid)) end,
+			function()
+				local all, on = MA.Entries(), 0
+				for _, e in ipairs(all) do
+					if MA.IsShown(e.guid) then
+						on = on + 1
+					end
+				end
+				return #all == 0 and "None recorded" or (on .. " of " .. #all)
+			end, Off)
+	end,
 })
 end
