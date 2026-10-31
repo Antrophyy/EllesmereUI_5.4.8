@@ -179,7 +179,7 @@ local function StyleBar(f, cfg)
 	f.name:SetWordWrap(cfg.nameWrap and true or false)
 	f.name:SetWidth(cfg.nameWrap and (vert and h or w) * 0.6 or 0)
 	f.name:SetShown(showName)
-	f.name:SetText(showName and (cfg.name or "") or "")
+	f.name:SetText(showName and (TBB.CustomName(cfg) or cfg.name or "") or "")
 	f.timer:SetShown(cfg.showTimer ~= false and cfg.timerPosition ~= "none")
 	local icon = cfg.spellID and cfg.spellID > 0 and (select(3, GetSpellInfo(cfg.spellID)))
 	if CDM.LUST_SET[cfg.spellID] then
@@ -224,6 +224,12 @@ local function StyleBar(f, cfg)
 	f._fillR, f._fillG, f._fillB = r, g, b
 	f.cfg = cfg
 	f.entry = { spellID = cfg.spellID, name = cfg.spellID and GetSpellInfo(cfg.spellID) }
+end
+
+-- The name the player gave a bar (Name Text Settings, retail 9.7), or nil.
+function TBB.CustomName(cfg)
+	local n = cfg.customName
+	if n and n ~= "" then return n end
 end
 
 -- Positions: group anchors from tbbPositions, members chained under them.
@@ -381,7 +387,7 @@ function TBB.RegisterUnlock()
 			local idx = i
 			elements[#elements + 1] = MK({
 				key = "TBB_" .. idx,
-				label = gid ~= 0 and format("Tracking Bar Group %d", gid) or format("Tracking Bar: %s", cfg.name or ("Bar " .. idx)),
+				label = gid ~= 0 and format("Tracking Bar Group %d", gid) or format("Tracking Bar: %s", TBB.CustomName(cfg) or cfg.name or ("Bar " .. idx)),
 				group = "Cooldown Manager",
 				order = 650,
 				noResize = true,

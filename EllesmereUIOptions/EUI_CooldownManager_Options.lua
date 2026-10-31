@@ -1435,16 +1435,23 @@ local function BuildBars(p)
 			function() return bd.focusCastSoundKey or "none" end,
 			function() local k = bd.focusCastSoundKey; return (k and k:match("^sm:(.+)$")) or "None" end,
 			function(v) bd.focusCastSoundKey = (v ~= "none") and v or nil; CDM.PlaySoundKey(v) end, nil, off)
-		p:Dropdown("Interrupt Spell", "The interrupt the Focus Cast Sound checks.",
+		p:Dropdown("Interrupt Spell", "Pick your kick to play the sound only while it is off cooldown, or Any Cast (Sound Only) to play it on every enemy cast.\nLeave the bar empty for a sound with no nameplate icon.",
 			function()
 				local items = {}
 				for _, sid in ipairs(FK.ClassInterrupts()) do items[#items + 1] = { value = sid, name = GetSpellInfo(sid) or tostring(sid) } end
 				if #items == 0 then items[1] = { value = 0, name = "None" } end
+				items[#items + 1] = { value = -1, name = "Any Cast (Sound Only)" }
 				return items
 			end,
-			function() return FK.InterruptSpell(bd) or 0 end,
-			function() local sid = FK.InterruptSpell(bd); return sid and GetSpellInfo(sid) or "None" end,
-			function(v) bd.focusKickInterruptSpellID = (v ~= 0) and v or nil end, nil, off)
+			function() if bd.focusCastSoundAnyCast == true then return -1 end return FK.InterruptSpell(bd) or 0 end,
+			function()
+				if bd.focusCastSoundAnyCast == true then return "Any Cast (Sound Only)" end
+				local sid = FK.InterruptSpell(bd); return sid and GetSpellInfo(sid) or "None"
+			end,
+			function(v)
+				bd.focusCastSoundAnyCast = (v == -1) or nil
+				bd.focusKickInterruptSpellID = (v ~= 0 and v ~= -1) and v or nil
+			end, nil, off)
 		p:Toggle("Focus Text Reminders", "Shows FOCUS under caster mobs in dungeons while you have no focus set (needs EllesmereUI Nameplates).",
 			function() return bd.focusReminderEnabled == true end, function(v) bd.focusReminderEnabled = v or nil end, off)
 		p:Cog("Focus Reminder Settings", {
@@ -1617,7 +1624,7 @@ local function BuildBars(p)
 	p:Cog("Charges / Stacks", {
 		{ type = "toggle", label = "Show Charge/Stack Text", tip = "Show the charge and stack counters on this bar's icons.",
 			get = function() return bd.showChargeStackText ~= false end,
-			set = function(v) bd.showChargeStackText = (not v) and false or nil end },
+			set = function(v) if v then bd.showChargeStackText = nil else bd.showChargeStackText = false end end },
 		{ type = "dropdown", label = "Position", items = function() return Items(POS_LIST) end,
 			get = function() return CDM.BV(bd, "stackCountPosition") end, set = function(v) bd.stackCountPosition = v end,
 			labelFn = function() return LabelOf(POS_LIST, CDM.BV(bd, "stackCountPosition")) end },
@@ -1912,6 +1919,10 @@ local function BuildTracking(p)
 	p:Toggle("Show Name", nil, function() return cfg.showName ~= false and cfg.namePosition ~= "none" end,
 		function(v) cfg.showName = v; if v and cfg.namePosition == "none" then cfg.namePosition = "left" end end, off)
 	p:Cog("Name Text Settings", {
+		{ type = "input", label = "Custom Name", inputWidth = 140, maxLetters = 40,
+			tip = "Shows this name on the bar instead of the spell's, such as Free Starfall. Leave empty for the spell's name.",
+			get = function() return cfg.customName or "" end,
+			set = function(v) v = v and v:gsub("^%s+", ""):gsub("%s+$", "") or ""; cfg.customName = v ~= "" and v or nil end },
 		{ type = "toggle", label = "Text Wrap", tip = "Long names wrap to a second line instead of being cut.",
 			get = function() return cfg.nameWrap == true end, set = function(v) cfg.nameWrap = v or nil end },
 	})

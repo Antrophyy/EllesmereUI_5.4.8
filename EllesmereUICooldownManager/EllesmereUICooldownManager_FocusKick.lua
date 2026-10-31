@@ -54,12 +54,15 @@ function FK.EnsureBar()
 	return bd
 end
 
--- An empty FocusKick bar gets your interrupt.
+-- An empty FocusKick bar gets your interrupt, once per spec: a bar you
+-- emptied stays empty, so the Focus Cast Sound can play with no nameplate icon.
 function FK.SeedSpells()
 	local sd = CDM.BarSpellData(FK.KEY)
+	if sd.fkSeeded then return end
 	if #sd.assignedSpells == 0 then
 		for _, id in ipairs(FK.ClassInterrupts()) do sd.assignedSpells[#sd.assignedSpells + 1] = id end
 	end
+	if #sd.assignedSpells > 0 then sd.fkSeeded = true end
 end
 
 local function Unit(bd)
@@ -152,6 +155,13 @@ ev:SetScript("OnEvent", function(_, event, unit, _, _, _, spellID)
 	if not bd or bd.enabled == false then return end
 	if event == "UNIT_SPELLCAST_START" or event == "UNIT_SPELLCAST_CHANNEL_START" then
 		if unit ~= Unit(bd) then return end
+		-- Enemies only (retail 9.7): a friendly or self focus casts constantly.
+		if not UnitExists(unit) or UnitIsUnit(unit, "player") or not UnitCanAttack("player", unit) then return end
+		-- Any Cast (Sound Only, retail 9.7): every cast, no interrupt or cooldown gate.
+		if bd.focusCastSoundAnyCast == true then
+			if bd.focusCastSoundKey then CDM.PlaySoundKey(bd.focusCastSoundKey) end
+			return
+		end
 		local notInterruptible
 		if event == "UNIT_SPELLCAST_START" then
 			notInterruptible = select(9, UnitCastingInfo(unit))
