@@ -353,11 +353,28 @@ local PAGES = {
 	},
 }
 
-ns.RegisterSettingsModule({
-	key = "naowhQoL",
-	name = "NaowhUI QoL",
-	group = "QoL Addons",
-	tabs = PAGES,
-	reset = function() Q.ResetAll() end,
-	resetTip = "Set all NaowhUI QoL settings back to default.",
-})
+-- One sidebar entry: the page is a "Naowh QoL" tab of Quality of Life
+-- (right after its QoL tab), and that module's reset covers it too. The
+-- settings stay in EllesmereUITopBarDB. Without EllesmereUIQoL it keeps a
+-- module of its own.
+local qol = ns.QoLSettingsModule
+if qol and type(qol.tabs) == "table" then
+	local page = PAGES[1]
+	page.name = "Naowh QoL"
+	table.insert(qol.tabs, 2, page)
+	local qolReset = qol.reset
+	qol.reset = function()
+		if qolReset then qolReset() end
+		Q.ResetAll()
+	end
+	qol.resetTip = "Set all Quality of Life settings (Naowh QoL included) back to default."
+else
+	ns.RegisterSettingsModule({
+		key = "naowhQoL",
+		name = "NaowhUI QoL",
+		group = "QoL Addons",
+		tabs = PAGES,
+		reset = function() Q.ResetAll() end,
+		resetTip = "Set all NaowhUI QoL settings back to default.",
+	})
+end

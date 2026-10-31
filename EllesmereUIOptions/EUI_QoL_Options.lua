@@ -1110,7 +1110,9 @@ local QOL_PAGES = {
 	},
 }
 
-ns.RegisterSettingsModule({
+-- The NaowhUI QoL page (EUI_NaowhQoL_Options.lua, loaded after this file)
+-- joins this module as its own tab: it finds the module here.
+local QOL_MODULE = {
 	key = "qol",
 	name = "Quality of Life",
 	group = "QoL Addons",
@@ -1123,4 +1125,6 @@ ns.RegisterSettingsModule({
 	onLeave = function()
 		if Q.DurPreview and Q.DurPreviewShown() then Q.DurPreview(false) end
 	end,
-})
+}
+ns.QoLSettingsModule = QOL_MODULE
+ns.RegisterSettingsModule(QOL_MODULE)
