@@ -54,6 +54,67 @@ EUI_BagsWindow = CreateFrame("Frame", "EUI_BagsWindowFrame", UIParent)
 EUI_BagsWindow:Hide()
 
 local SLOT_SIZE, SPACING = 34, 4
+-- Slot Size / Slot Spacing come from the profile (bagSlotSize,
+-- bagSlotSpacing). Each file that lays out slots keeps its own copy
+-- (OnSlotMetrics gets { size, spacing }); frames made through SizeSlot are
+-- resized on a change.
+local slotFrames = setmetatable({}, { __mode = "k" })
+local slotMetricListeners = {}
+function ns.SizeSlot(f)
+    slotFrames[f] = true
+    f:SetSize(SLOT_SIZE, SLOT_SIZE)
+end
+function ns.OnSlotMetrics(fn)
+    slotMetricListeners[#slotMetricListeners + 1] = fn
+end
+-- Both refreshes call this first; a change made in combat waits for the next one.
+-- Background color / opacity for bags and bank: the texture fades with the
+-- opacity, the tint on top takes the color.
+function ns.ApplyWindowBackground(bg, overlay)
+    if not (bg and overlay) then return end
+    local p = (EUI._bagsDB and EUI._bagsDB.profile) or {}
+    local o = (p.bagBgOpacity or 100) / 100
+    local c = p.bagBgColor
+    bg:SetAlpha(o)
+    overlay:SetTexture(c and c.r or 0, c and c.g or 0, c and c.b or 0, c and c.a or 0.25)
+    overlay:SetAlpha(o)
+end
+
+-- Slot background: a tint over an empty slot's backdrop; alpha is the slot's
+-- own base opacity. Each painted one is kept (weakly) so a color change can
+-- retint them without a relayout.
+local slotBgs = setmetatable({}, { __mode = "k" })
+function ns.PaintSlotBackground(tex, alpha)
+    tex._slotBgAlpha = alpha
+    slotBgs[tex] = true
+    local p = (EUI._bagsDB and EUI._bagsDB.profile) or {}
+    local c = p.bagSlotBgColor
+    if c then
+        tex:SetVertexColor(c.r, c.g, c.b)
+        tex:SetAlpha(alpha * (c.a or 1))
+    else
+        tex:SetVertexColor(1, 1, 1)
+        tex:SetAlpha(alpha)
+    end
+end
+
+-- The slot background picker: just the shown ones (hidden ones are painted when they show).
+function ns.RetintSlotBackgrounds()
+    for tex in pairs(slotBgs) do
+        if tex:IsVisible() then ns.PaintSlotBackground(tex, tex._slotBgAlpha) end
+    end
+end
+
+function ns.ApplySlotMetrics()
+    local p = (EUI._bagsDB and EUI._bagsDB.profile) or {}
+    local size, gap = p.bagSlotSize or 34, p.bagSlotSpacing or 4
+    if (size == SLOT_SIZE and gap == SPACING) or InCombatLockdown() then return end
+    SLOT_SIZE, SPACING = size, gap
+    ns.SLOT_SIZE, ns.SPACING = size, gap
+    for f in pairs(slotFrames) do f:SetSize(size, size) end
+    local m = { size, gap }
+    for i = 1, #slotMetricListeners do slotMetricListeners[i](m) end
+end
 local GetItemInfo = C_Item.GetItemInfo
 local GetItemInfoInstant = C_Item.GetItemInfoInstant
 local GetItemQualityColor = C_Item.GetItemQualityColor
@@ -201,6 +262,7 @@ function EUI_Bags:ApplyWindowLayering()
     end
     local bank = _G.EUI_BankFrame
     if bank and bank.ApplyWindowLayering then bank:ApplyWindowLayering() end
+    if self.RepinIconLevels then self:RepinIconLevels() end
 end
 layerUpdateFrame:SetScript("OnEvent", function() EUI_Bags:ApplyWindowLayering() end)
 
@@ -985,6 +1047,22 @@ end
 local itemSlots    = {}
 local reagentSlots = {}
 local bagSlots     = {}
+
+-- Pins an item button's frame level and its text overlay with it (retail 9.6.9
+-- fix: with Frame Strata High the window's level jumps past the template's own
+-- fixed level, and the items behind it stop taking the mouse). Out of combat
+-- only: item buttons are protected.
+function ns.PinItemButtonLevel(btn, level)
+    if btn:GetFrameLevel() ~= level then btn:SetFrameLevel(level) end
+    if btn._textOverlay then btn._textOverlay:SetFrameLevel(level + 3) end
+end
+function EUI_Bags:RepinIconLevels()
+    if InCombatLockdown() then return end
+    local lvl = self:GetFrameLevel() + 9
+    for _, btn in pairs(itemSlots) do ns.PinItemButtonLevel(btn, lvl) end
+    local reagentLvl = EUI_BagsReagent:GetFrameLevel() + 9
+    for _, btn in pairs(reagentSlots) do ns.PinItemButtonLevel(btn, reagentLvl) end
+end
 
 -------------------------------------------------------------------------------
 --  Pawn bag upgrade advisor integration
@@ -2389,7 +2467,7 @@ function ns.SkinItemButton(btn, opts)
     if btn.flash then btn.flash:Hide(); btn.flash:SetAlpha(0) end
     if btn.newitemglowAnim then btn.newitemglowAnim:Stop() end
 
-    btn:SetSize(SLOT_SIZE, SLOT_SIZE)
+    ns.SizeSlot(btn)
     if btn.icon then
         local z = BP().bagItemIconZoom or 0.08
         btn.icon:SetTexCoord(z, 1 - z, z, 1 - z)
@@ -3276,7 +3354,7 @@ local function GetOrCreateReagentSlot(idx)
     if InCombatLockdown() then EUI_Bags._poolShort = true; return nil end
 
     local slotParent = CreateFrame("Frame", nil, EUI_BagsReagent)
-    slotParent:SetSize(SLOT_SIZE, SLOT_SIZE)
+    ns.SizeSlot(slotParent)
     local btn = CreateFrame("ItemButton", nil, slotParent, "ContainerFrameItemButtonTemplate")
     btn:SetAllPoints(slotParent)
     btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -3288,7 +3366,7 @@ local function GetOrCreateReagentSlot(idx)
     if btn.flash then btn.flash:Hide(); btn.flash:SetAlpha(0) end
     if btn.newitemglowAnim then btn.newitemglowAnim:Stop() end
 
-    btn:SetSize(SLOT_SIZE, SLOT_SIZE)
+    ns.SizeSlot(btn)
     if btn.icon then
         local z = BP().bagItemIconZoom or 0.08
         btn.icon:SetTexCoord(z, 1 - z, z, 1 - z)
@@ -3355,6 +3433,7 @@ local function GetOrCreateReagentSlot(idx)
         EUI_Bags.ShowStackSplitter(self, ns.SplitTargetBags(5), EUI_BagsReagent)
     end)
 
+    ns.PinItemButtonLevel(btn, EUI_BagsReagent:GetFrameLevel() + 9)
     reagentSlots[idx] = btn
     return btn
 end
@@ -3414,7 +3493,7 @@ end
 local function GetOrCreateBagSlot(idx)
     if bagSlots[idx] then return bagSlots[idx] end
     local slotParent = CreateFrame("Frame", nil, EUI_BagsWindow)
-    slotParent:SetSize(SLOT_SIZE, SLOT_SIZE)
+    ns.SizeSlot(slotParent)
     local btn = CreateFrame("Button", nil, slotParent)
     btn:SetAllPoints(slotParent)
     btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -3574,7 +3653,7 @@ local EnterAssignSelectMode  -- forward declaration
 local function GetOrCreatePinOverlay()
     if EUI_Bags._pinOverlayBtn then return EUI_Bags._pinOverlayBtn end
     local ov = CreateFrame("Button", nil, EUI_Bags)
-    ov:SetSize(SLOT_SIZE, SLOT_SIZE)
+    ns.SizeSlot(ov)
     ov:SetFrameLevel(100)
     ov.bg = ov:CreateTexture(nil, "BACKGROUND")
     ov.bg:SetAllPoints()
@@ -3648,7 +3727,7 @@ local function GetOrCreateAssignOverlay()
     _assignOverlayIdx = _assignOverlayIdx + 1
     if _assignOverlays[_assignOverlayIdx] then return _assignOverlays[_assignOverlayIdx] end
     local ov = CreateFrame("Button", nil, EUI_Bags)
-    ov:SetSize(SLOT_SIZE, SLOT_SIZE)
+    ns.SizeSlot(ov)
     ov:SetFrameLevel(100)
     ov.bg = ov:CreateTexture(nil, "BACKGROUND")
     ov.bg:SetAllPoints()
@@ -6024,6 +6103,16 @@ local _bagListGripCfg = setmetatable({
         if EUI_Bags._updateThumb then EUI_Bags._updateThumb() end
     end,
 }, { __index = _bagGripCfg })
+-- A new slot size: grow-only widths start over, and the detached reagent
+-- window and bag bar lay out again (the main refresh does the rest).
+ns.OnSlotMetrics(function(m)
+    _bagGripCfg.step = m[1] + m[2]
+    _bagGripCfg.minCols = math.max(1, math.ceil(8 * 38 / (m[1] + m[2])))
+    rawset(_bagListGripCfg, "relayoutStep", m[1] + m[2])
+    EUI_Bags._asCols = nil
+    if EUI_BagsReagent:IsShown() and EUI_BagsReagent.RefreshInventory then EUI_BagsReagent:RefreshInventory() end
+    if EUI_BagsWindow:IsShown() and EUI_BagsWindow.RefreshBags then EUI_BagsWindow:RefreshBags() end
+end)
 
 local function FinishRefresh(curY, gridContentW, sidebarW, totalCount, numEmpty, spItems, spEmpty)
     -- In combat the sort button's lock depends on the view just painted.
@@ -6114,6 +6203,7 @@ local function FinishRefresh(curY, gridContentW, sidebarW, totalCount, numEmpty,
     end
 
     UpdateBagMoneyDisplay()
+    ns.ApplyWindowBackground(EUI_Bags.bg, EUI_Bags.bgOverlay)
     -- View may have changed under a held item (catch layer on / off)
     if EUI_Bags._syncDropTarget and GetCursorInfo() == "item" then EUI_Bags._syncDropTarget() end
     ns.UpdateResizeGrip(EUI_Bags, EUI_Bags.IsListMode() and _bagListGripCfg or _bagGripCfg)
@@ -6121,6 +6211,7 @@ end
 
 function EUI_Bags:RefreshInventory()
     if not EUI_Bags:IsVisible() then return end
+    ns.ApplySlotMetrics()
 
     -- Refreshing during combat (bags opened mid-fight in M+/Delves) is safe: moving already-created
     -- buttons taints nothing; only CREATING a secure ContainerFrameItemButtonTemplate in lockdown
@@ -6382,8 +6473,10 @@ function EUI_Bags:RefreshInventory()
     -- (running max in _asCols, reset on close); HEIGHT follows rendered content up to the screen cap. Decided BEFORE GetColumns() so the grid renders at this count.
     if BP().bagAutoSize then
         local baseCols = BP().bagColumns or 12
-        local BASE_ROWS = 15  -- rows visible at the base (FIXED_H) height
-        local HDR = 0.74      -- section-header height in slot-row units (~28/38)
+        -- tuned at the default 38 px pitch, scaled to the current one
+        local pitch = SLOT_SIZE + SPACING
+        local BASE_ROWS = 15 * 38 / pitch  -- rows visible at the base (FIXED_H) height
+        local HDR = 0.74 * 38 / pitch      -- section-header height in slot-row units (~28/38)
         -- Slot count (n) + section-header count (S) for the active tab. Headers add HEIGHT
         -- but not WIDTH, so they MUST fold into the estimate or a header-heavy tab (All Items with many categories) grows taller than wide.
         local n, S
@@ -6698,6 +6791,7 @@ local function StartAddon()
     end)
     EUI_Bags:SetScript("OnMouseDown", function(self, button)
         self:Raise()
+        self:RepinIconLevels()
         local noShift = BP().bagMoveNoShift
         -- A controller's emulated Shift reads as a Shift key, not the physical
         -- left one, so it also counts while a controller is in use.
@@ -6749,6 +6843,7 @@ local function StartAddon()
     -- bag fires no OnShow, and the login pre-build never shows the frame.
     EUI_Bags:HookScript("OnShow", function(self)
         self:Raise()
+        self:RepinIconLevels()
         -- 5.4.8: Raise on the very first show does nothing (the frame is not
         -- in its strata yet), so other MEDIUM frames drew over the bags until
         -- a reopen. Raise again one frame later.
@@ -7163,7 +7258,18 @@ local function StartAddon()
         w:RegisterEvent("BANKFRAME_CLOSED")
         w:SetScript("OnEvent", function(_, event)
             if event == "MAIL_SHOW" then _mailOpen = true
-            elseif event == "MAIL_CLOSED" then _mailOpen = false
+            elseif event == "MAIL_CLOSED" then
+                -- Close Bags on Mail Close (retail 9.7.1; on unless set false).
+                -- MAIL_CLOSED can fire twice on 5.4.8: only the first, while
+                -- the mailbox was open, closes the bags.
+                if _mailOpen and EUI_Bags:IsShown() and not (EllesmereUIDB and EllesmereUIDB.mailCloseBags == false) then
+                    EUI_Bags:Hide()
+                    EUI_BagsReagent:Hide()
+                    if not EllesmereUIDB then EllesmereUIDB = {} end
+                    EllesmereUIDB.bagsVisible = false
+                    if EUI.PadInUse() then ns.PadReleaseBlizzBags() end
+                end
+                _mailOpen = false
             elseif event == "BANKFRAME_OPENED" then _bankOpen = true
             elseif event == "BANKFRAME_CLOSED" then _bankOpen = false end
         end)

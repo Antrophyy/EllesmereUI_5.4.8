@@ -25,7 +25,8 @@ end
 -------------------------------------------------------------------------------
 --  Constants
 -------------------------------------------------------------------------------
-local SLOT_SIZE, SPACING = 34, 4
+local SLOT_SIZE, SPACING = ns.SLOT_SIZE, ns.SPACING
+ns.OnSlotMetrics(function(m) SLOT_SIZE, SPACING = m[1], m[2] end)
 local HEADER_H    = 35
 local FOOTER_H    = 32
 local SIDEBAR_W   = 160
@@ -148,6 +149,7 @@ bgAtlas:SetTexture("Interface\\AddOns\\EllesmereUIBags\\Media\\modern_blizz")
 local bgOverlay = EUI_Bank:CreateTexture(nil, "BACKGROUND", nil, 1)
 bgOverlay:SetAllPoints()
 bgOverlay:SetTexture(0, 0, 0, 0.25)
+EUI_Bank._bg, EUI_Bank._bgOverlay = bgAtlas, bgOverlay  -- background color/opacity
 EUI.MakeBorder(EUI_Bank, 1, 1, 1, 0.15, EUI.PP)
 
 -------------------------------------------------------------------------------
@@ -381,7 +383,7 @@ do
     local function GetOrCreateBagSlot(idx)
         if slots[idx] then return slots[idx] end
         local btn = CreateFrame("Button", nil, bagsWin)
-        btn:SetSize(SLOT_SIZE, SLOT_SIZE)
+        ns.SizeSlot(btn)
         btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
         btn:RegisterForDrag("LeftButton")
         btn.icon = btn:CreateTexture(nil, "ARTWORK")
@@ -658,6 +660,7 @@ end
 -------------------------------------------------------------------------------
 EUI_Bank:SetScript("OnMouseDown", function(self, button)
     self:Raise()
+    self:RepinIconLevels()
     if button == "LeftButton" and IsShiftKeyDown() then
         self:StartMoving()
         self._moving = true
@@ -1027,6 +1030,14 @@ function EUI_Bank:ApplyWindowLayering()
     _purchaseBtnWarband:SetFrameStrata(strata)
     _purchaseBtnChar:SetFrameLevel(sidebar:GetFrameLevel() + 20)
     _purchaseBtnWarband:SetFrameLevel(sidebar:GetFrameLevel() + 20)
+    self:RepinIconLevels()
+end
+
+-- Item buttons pinned above the bank window (retail 9.6.9, see ns.PinItemButtonLevel).
+function EUI_Bank:RepinIconLevels()
+    if InCombatLockdown() or not ns.PinItemButtonLevel then return end
+    local lvl = self:GetFrameLevel() + 9
+    for _, btn in pairs(self._bankSlots) do ns.PinItemButtonLevel(btn, lvl) end
 end
 
 -- Sidebar header: "Tabs" label + collapse arrow
@@ -1417,7 +1428,7 @@ end
 local function GetOrCreateBankSlot(idx)
     if _bankSlots[idx] then return _bankSlots[idx] end
     local slotParent = CreateFrame("Frame", nil, EUI_Bank)
-    slotParent:SetSize(SLOT_SIZE, SLOT_SIZE)
+    ns.SizeSlot(slotParent)
     local btn = CreateFrame("ItemButton", nil, slotParent, "ContainerFrameItemButtonTemplate")
     btn:SetAllPoints(slotParent)
     btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -1441,6 +1452,7 @@ local function GetOrCreateBankSlot(idx)
     btn._emptyBg:SetAllPoints()
     btn._emptyBg:SetTexture("Interface\\AddOns\\EllesmereUIBags\\Media\\icon-bg")
 
+    if ns.PinItemButtonLevel then ns.PinItemButtonLevel(btn, EUI_Bank:GetFrameLevel() + 9) end
     _bankSlots[idx] = btn
     return btn
 end
@@ -1979,10 +1991,25 @@ local _bankListGripCfg = setmetatable({
         UpdateThumb()
     end,
 }, { __index = _bankGripCfg })
+-- A new slot size: grow-only widths start over, header lines take the new
+-- inset and the bag bar lays out again.
+ns.OnSlotMetrics(function(m)
+    _bankGripCfg.step = m[1] + m[2]
+    _bankGripCfg.minCols = math.max(1, math.ceil(8 * 38 / (m[1] + m[2])))
+    rawset(_bankListGripCfg, "relayoutStep", m[1] + m[2])
+    for _, f in pairs(_bankHeaders) do
+        f._line:ClearAllPoints()
+        f._line:SetPoint("LEFT", f._label, "RIGHT", 6, 0)
+        f._line:SetPoint("RIGHT", f, "RIGHT", -m[2], 0)
+    end
+    if RefreshBankBags then RefreshBankBags() end
+end)
 
 function EUI_Bank:RefreshBank()
     if not EUI_Bank:IsVisible() then return end
+    ns.ApplyWindowBackground(bgAtlas, bgOverlay)
     NotifyBankTypeForTSM()
+    ns.ApplySlotMetrics()
 
     -- Re-discover tabs if empty (data may not be ready on the same frame as
     -- BANKFRAME_OPENED; BAG_UPDATE fires shortly after with real slot counts).
@@ -2411,7 +2438,7 @@ function EUI_Bank:RefreshBank()
             btn:SetItemButtonCount(0)
             SetItemButtonDesaturated(btn, false)
             if btn.icon then btn.icon:Hide() end
-            btn._emptyBg:Show(); btn._emptyBg:SetAlpha(0.35)
+            btn._emptyBg:Show(); ns.PaintSlotBackground(btn._emptyBg, 0.35)
             btn:EnableMouse(true)
             SetInsetBorderColor(btn, 0, 0, 0, 0.3)
             ns.ClearItemCooldown(btn)

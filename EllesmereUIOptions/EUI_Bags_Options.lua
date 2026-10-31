@@ -266,6 +266,69 @@ local function BuildBags(p)
 			RefreshBags()
 		end)
 
+	-- Slot size / spacing: the sliders fire every step while dragging, so
+	-- the windows lay out once per frame at most.
+	local BagsNS = ns._ModuleNS and ns._ModuleNS["EllesmereUIBags"]
+	-- (MoP has no C_Timer: a one-shot OnUpdate.)
+	local relayoutFrame = CreateFrame("Frame")
+	relayoutFrame:Hide()
+	relayoutFrame:SetScript("OnUpdate", function(self)
+		self:Hide()
+		ResetAndRefreshBagLayout()
+		local k = Bank()
+		if k and k:IsVisible() then RefreshBank() end
+	end)
+	local function RelayoutSoon()
+		relayoutFrame:Show()
+	end
+	p:Slider("Slot Size", "Size of each item slot in bags and bank.", 24, 56, 1,
+		function() return P().bagSlotSize or 34 end,
+		function(v)
+			P().bagSlotSize = v
+			RelayoutSoon()
+		end)
+	p:Slider("Slot Spacing", "Space between item slots in bags and bank.", 0, 12, 1,
+		function() return P().bagSlotSpacing or 4 end,
+		function(v)
+			P().bagSlotSpacing = v
+			RelayoutSoon()
+		end)
+	-- Background color / opacity and slot background, the same for bags and bank.
+	local function ApplyBackgrounds()
+		if not (BagsNS and BagsNS.ApplyWindowBackground) then return end
+		local b, k = Bags(), Bank()
+		if b then BagsNS.ApplyWindowBackground(b.bg, b.bgOverlay) end
+		if k then BagsNS.ApplyWindowBackground(k._bg, k._bgOverlay) end
+	end
+	p:ColorRow("Background Color", "The tint over the bag and bank window backgrounds. Its opacity sets how strong the tint is.",
+		function()
+			local c = P().bagBgColor
+			if c then return c.r, c.g, c.b, c.a or 0.25 end
+			return 0, 0, 0, 0.25
+		end,
+		function(r, g, b, a)
+			P().bagBgColor = { r = r, g = g, b = b, a = a or 0.25 }
+			ApplyBackgrounds()
+		end, { alpha = true })
+	p:Slider("Background Opacity", "How see-through the bag and bank window backgrounds are. Items, the header and the sidebar stay as they are.", 0, 100, 5,
+		function() return P().bagBgOpacity or 100 end,
+		function(v)
+			P().bagBgOpacity = v
+			ApplyBackgrounds()
+		end)
+	p:ColorRow("Slot Background", "The color and opacity of empty item slots in the bags and bank.",
+		function()
+			local c = P().bagSlotBgColor
+			if c then return c.r, c.g, c.b, c.a or 1 end
+			return 1, 1, 1, 1
+		end,
+		function(r, g, b, a)
+			P().bagSlotBgColor = { r = r, g = g, b = b, a = a or 1 }
+			-- the picker fires every frame while dragging: retint, don't re-lay out
+			if BagsNS and BagsNS.RetintSlotBackgrounds then BagsNS.RetintSlotBackgrounds() end
+		end, { alpha = true })
+	p:Blank()
+
 	p:Section("Items")
 	p:Toggle("Show Item Cooldown Text", "Show remaining cooldown time over item icons in bags and bank (for example 2m or 28). Applies to grid and list views, including pinned and recent copies. The cooldown swipe remains visible when this is off.",
 		function() return P().bagShowCooldownText == true end,
@@ -569,6 +632,14 @@ local function BuildBags(p)
 
 	p:MultiSelect("Enabled Currencies", "Currencies shown in the bag footer, for this character. The currency tab's Show on Backpack checkbox adds and removes them too.",
 		CurrencyItems, CurrencyTracked, ToggleCurrency, CurrenciesLabel)
+	-- Retail keeps this on the Blizzard Skins+ Mail card (EllesmereUIDB.mailCloseBags);
+	-- the port has no Mail card, so it sits here.
+	p:Toggle("Close Bags on Mail Close", "Closes your bags when you close the mailbox.",
+		function() return not (EllesmereUIDB and EllesmereUIDB.mailCloseBags == false) end,
+		function(v)
+			if not EllesmereUIDB then EllesmereUIDB = {} end
+			EllesmereUIDB.mailCloseBags = v
+		end)
 	p:Toggle("Hide OneBag/MultiBag Warning", "Hide the warning text at the top of the OneBag and MultiBag views.",
 		function() return P().bagHideOneBagWarning == true end,
 		function(v)

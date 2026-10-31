@@ -16,6 +16,7 @@ local GetItemInfo = C_Item.GetItemInfo
 local GetItemQualityColor = C_Item.GetItemQualityColor
 
 local SLOT_SIZE, SPACING = ns.SLOT_SIZE, ns.SPACING
+ns.OnSlotMetrics(function(m) SLOT_SIZE, SPACING = m[1], m[2] end)
 local itemSlots = ns.itemSlots
 local _itemDragFrame = ns.itemDragFrame
 local _catHeaders = ns.catHeaders
@@ -68,7 +69,7 @@ local function GetOrCreateSlot(idx)
     if InCombatLockdown() then EUI_Bags._poolShort = true; return nil end
 
     local slotParent = CreateFrame("Frame", nil, EUI_Bags)
-    slotParent:SetSize(SLOT_SIZE, SLOT_SIZE)
+    ns.SizeSlot(slotParent)
     local btn = CreateFrame("ItemButton", nil, slotParent, "ContainerFrameItemButtonTemplate")
     btn:SetAllPoints(slotParent)
     btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -115,6 +116,7 @@ local function GetOrCreateSlot(idx)
     -- Equipment set name FontString is lazy-created in RenderButton: never
     -- built while Show Set Name on Gear is off (zero cost disabled).
 
+    ns.PinItemButtonLevel(btn, EUI_Bags:GetFrameLevel() + 9)
     itemSlots[idx] = btn
     return btn
 end
@@ -155,11 +157,11 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
         btn._emptyBg:Show()
         if interactiveEmpties then
             btn:EnableMouse(true)
-            btn._emptyBg:SetAlpha(0.6)
+            ns.PaintSlotBackground(btn._emptyBg, 0.6)
             SetInsetBorderColor(btn, 0.15, 0.15, 0.15, 0.5)
         else
             btn:EnableMouse(false)
-            btn._emptyBg:SetAlpha(0.35)
+            ns.PaintSlotBackground(btn._emptyBg, 0.35)
             SetInsetBorderColor(btn, 0, 0, 0, 0.3)
         end
         -- Reset to 1px and drop the marker, or a pooled slot vacated by a quest item keeps the 2px gold border + atlas.
@@ -279,12 +281,12 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
                 if not btn.SetNameText then
                     local overlay = btn._textOverlay or btn
                     btn.SetNameText = overlay:CreateFontString(nil, "OVERLAY", nil, 7)
-                    btn.SetNameText:SetPoint("BOTTOM", btn, "BOTTOM", 0, 2)
+                    btn.SetNameText:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", 2, 2)
+                    btn.SetNameText:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -2, 2)
                     btn.SetNameText:SetTextColor(1, 1, 1, 1)
                     btn.SetNameText:SetJustifyH("CENTER")
                     btn.SetNameText:SetWordWrap(false)
                     btn.SetNameText:SetMaxLines(1)
-                    btn.SetNameText:SetWidth(SLOT_SIZE - 4)
                     btn.SetNameText:SetFont(GetFont(), BP().bagSetNameFontSize or 9, (EllesmereUI.SlugFlag("OUTLINE, SLUG")) or "OUTLINE, SLUG")
                 end
                 btn.SetNameText:SetText(data._setName)
@@ -451,7 +453,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
     local function GetOrCreateEmptyPad(idx)
         if _emptyPads[idx] then return _emptyPads[idx] end
         local f = CreateFrame("Frame", nil, EUI_Bags)
-        f:SetSize(SLOT_SIZE, SLOT_SIZE)
+        ns.SizeSlot(f)
         f:EnableMouse(false)
         f._bg = f:CreateTexture(nil, "BACKGROUND", nil, 1)
         f._bg:SetAllPoints()
@@ -473,6 +475,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
             local col = (totalIdx - 1) % columns
             local row = math.floor((totalIdx - 1) / columns)
             pad:SetPoint("TOPLEFT", startX + (col * (SLOT_SIZE + SPACING)), curY - (row * (SLOT_SIZE + SPACING)))
+            ns.PaintSlotBackground(pad._bg, 0.35)
             pad:Show()
         end
     end
@@ -553,6 +556,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
                     pad:ClearAllPoints()
                     pad:SetPoint("TOPLEFT", child, "TOPLEFT",
                         startX + usedWidth + SPACING + (index - 1) * stride, itemTop)
+                    ns.PaintSlotBackground(pad._bg, 0.35)
                     pad:Show()
                 end
             end

@@ -12,6 +12,8 @@ local BAGS_DEFAULTS = {
     profile = {
         bagScale              = 1,
         bagItemIconZoom       = 0.08,
+        bagSlotSize           = 34,      -- item slot size, bags and bank
+        bagSlotSpacing        = 4,       -- gap between slots
         bagColumns            = 12,
         bagAutoSize           = false,
         bagCatTitleSize       = 11,
@@ -53,6 +55,7 @@ local BAGS_DEFAULTS = {
         bagCompactArmorySlotGroups = false,
         bagHideOneBagWarning  = false,
         bagHideAddCategory    = false,
+        bagBgOpacity          = 100,     -- background opacity for bags and bank (bagBgColor / bagSlotBgColor: nil = default)
         bagMoveNoShift        = false,
         bagAllowWindowsOverBags = true,
         bagStackSplitter      = false,
