@@ -85,6 +85,21 @@ ns.QoLO_BuildRaidToolsPage = function(p)
 		function() return Cfg().showConvert ~= false end, function(v) Cfg().showConvert = v end, FullPanelDisabled)
 	p:Toggle("Show Disband", "Shows the Disband button. It always asks before disbanding, but hiding it puts it out of misclick range for good.",
 		function() return Cfg().showDisband ~= false end, function(v) Cfg().showDisband = v end, FullPanelDisabled)
+	local function BuffCheckOff() return ns.ToggleBuffCheck == nil or Cfg().buffCheck ~= true end
+	p:Toggle("Show Buff Check", "Shows the Buff Check button, which opens the Raid Buff Check window (needs Raid Buff Check below). On Compact Band it is Shift + Left Click on the ready check button.",
+		function() return Cfg().showBuffCheck == true end, function(v) Cfg().showBuffCheck = v end,
+		function() return RoleCheckDisabled() or BuffCheckOff() end)
+
+	p:Section("Raid Buff Check")
+	p:Toggle("Raid Buff Check", "A window listing every group member's flask (or battle and guardian elixirs), food and missing raid buffs, opened with the Buff Check button or on ready checks. Out of combat only. Works without the Raid Tools panels.",
+		function() return Cfg().buffCheck == true end,
+		function(v)
+			Cfg().buffCheck = v
+			if ns.RebuildSettingsPage then ns.RebuildSettingsPage() end
+		end,
+		function() return ns.ToggleBuffCheck == nil end)
+	p:Toggle("Open on Ready Check", "Opens the Raid Buff Check window on every ready check while you are the group leader or a raid assistant.",
+		function() return Cfg().buffCheckOnReady ~= false end, function(v) Cfg().buffCheckOnReady = v end, BuffCheckOff)
 
 	p:Section("Pull Timer")
 	local PULL_LABELS = { "First Timer", "Second Timer", "Third Timer" }
@@ -123,7 +138,7 @@ ns.QoLO_BuildRaidToolsPage = function(p)
 			return U and U.FontItems and U.FontItems(lead) or lead
 		end
 
-		p:Section("Break Timer")
+		p:Section("Break Timer", { unlockKey = "EUI_BreakTimer" })
 		p:Toggle("Show Break Timer Text", "Shows the DBM break timer as a movable text (e.g. \"Break 4:32\"), in and out of combat. Move it in Unlock Mode (Break Timer).",
 			function() return BGet("enabled") and true or false end, BSet("enabled"))
 		p:Swatch("Text Color",

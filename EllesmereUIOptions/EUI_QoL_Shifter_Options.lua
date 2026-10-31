@@ -86,7 +86,7 @@ ns.QoLO_BuildShifterPage = function(p)
 		function() return DB().shifterNoShift and true or false end,
 		function(v) DB().shifterNoShift = v end)
 
-	p:Section("Loot Windows")
+	p:Section("Loot Windows", { unlockKey = "EUI_BonusRoll", unlockDisabled = function() return not DB().shifterLootUnlock end, unlockDisabledTip = "Requires Move Loot Windows in Unlock Mode" })
 	p:Toggle("Move Loot Windows in Unlock Mode", "Adds Bonus Roll, Group Loot, and Alert Toast movers to Unlock Mode.",
 		function() return DB().shifterLootUnlock and true or false end,
 		function(v) DB().shifterLootUnlock = v end)
@@ -95,11 +95,20 @@ ns.QoLO_BuildShifterPage = function(p)
 		function(v) DB().shifterLootHideOverlays = v end, function() return not DB().shifterLootUnlock end)
 
 	local function topBarUnlockOff() return not DB().shifterTopBarUnlock end
-	p:Section("Blizzard Top Bar Event Text")
+	p:Section("Blizzard Top Bar Event Text", { unlockKey = "EUI_TopBarEventText", unlockDisabled = topBarUnlockOff, unlockDisabledTip = "Requires Move Top Bar Event Text in Unlock Mode" })
 	p:Toggle("Move Top Bar Event Text in Unlock Mode", "Adds a mover for Blizzard's top-center event text (battleground scores, world PvP and event status).",
 		function() return DB().shifterTopBarUnlock and true or false end,
 		function(v) DB().shifterTopBarUnlock = v end)
 	p:Toggle("Hide Unlock Mode Overlay", "Hides the Top Bar Event Text mover in Unlock Mode while keeping its saved position applied.",
 		function() return DB().shifterTopBarHideOverlay and true or false end,
 		function(v) DB().shifterTopBarHideOverlay = v end, topBarUnlockOff)
+
+	local function battlegroundUnlockOff() return not DB().shifterBattlegroundUnlock end
+	p:Section("Battleground Frames", { unlockKey = "EUI_CaptureBars", unlockDisabled = battlegroundUnlockOff, unlockDisabledTip = "Requires Move Battleground Frames in Unlock Mode" })
+	p:Toggle("Move Battleground Frames in Unlock Mode", "Adds a mover for the battleground capture bars (tower and base fights) to Unlock Mode. Flag carriers show in the top center text in Mists, so the Top Bar Event Text mover moves them.",
+		function() return DB().shifterBattlegroundUnlock and true or false end,
+		function(v) DB().shifterBattlegroundUnlock = v end)
+	p:Toggle("Hide Unlock Mode Overlays", "Hides the battleground frame movers in Unlock Mode while keeping their saved positions applied.",
+		function() return DB().shifterBattlegroundHideOverlays and true or false end,
+		function(v) DB().shifterBattlegroundHideOverlays = v end, battlegroundUnlockOff)
 end

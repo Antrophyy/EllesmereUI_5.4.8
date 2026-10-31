@@ -99,7 +99,7 @@ ns.QoLO_BuildMovementAlertPage = function(p)
 	end
 
 	-- MOVEMENT COOLDOWN ALERT ---------------------------------------------
-	p:Section("Movement Cooldown Alert")
+	p:Section("Movement Cooldown Alert", { unlockKey = "EUI_MovementAlert" })
 	p:MultiSelect("Enable Movement Alerts", "Shows the checked classes' mobility spell(s) counting down on cooldown. Nothing checked = feature disabled. Use Unlock Mode to reposition/resize.",
 		function()
 			local items = {}

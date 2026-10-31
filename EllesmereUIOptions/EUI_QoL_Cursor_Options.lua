@@ -141,7 +141,7 @@ ns.QoLO_BuildCursorPage = function(p)
 
 	-- GLOBAL COOLDOWN ------------------------------------------------------
 	local function gcdOff() return not GCD_DB().enabled end
-	p:Section("Global Cooldown")
+	p:Section("Global Cooldown", { unlockKey = "ECL_GCD", unlockDisabled = gcdOff, unlockDisabledTip = "Requires Enable GCD Circle" })
 	p:Toggle("Enable GCD Circle", "Shows a ring that fills while your global cooldown runs.",
 		function() return GCD_DB().enabled and true or false end,
 		function(v) GCD_DB().enabled = v end)
@@ -165,7 +165,7 @@ ns.QoLO_BuildCursorPage = function(p)
 
 	-- CAST BAR -------------------------------------------------------------
 	local function castOff() return not Cast_DB().enabled end
-	p:Section("Cast Bar")
+	p:Section("Cast Bar", { unlockKey = "ECL_Cast", unlockDisabled = castOff, unlockDisabledTip = "Requires Enable Cast Bar Circle" })
 	p:Toggle("Enable Cast Bar Circle", "Shows a ring that fills while you cast or channel a spell.",
 		function() return Cast_DB().enabled and true or false end,
 		function(v) Cast_DB().enabled = v end)

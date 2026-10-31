@@ -199,7 +199,7 @@ local function Build(p)
 		end)
 
 	-- DISPLAY
-	p:Section("Display")
+	p:Section("Display", { unlockKey = "EUI_QuestTracker" })
 	VisibilityRow(p)
 	p:Dropdown("Hide When In Raid",
 		"Always: hide the tracker the whole time you are in a raid.\nBoss Combat: keep it visible and only hide during boss encounters.",
@@ -276,9 +276,19 @@ local function Build(p)
 		{ type = "toggle", label = "Prevent Multi Quest Accept",
 		  get = function() return Cfg("autoAcceptPreventMulti") ~= false end,
 		  set = function(v) Set("autoAcceptPreventMulti", v) end },
+		-- Hold Shift to Enable and Hold Shift to Skip are opposites: turning one on turns the other off.
+		{ type = "toggle", label = "Hold Shift to Enable",
+		  get = function() return Cfg("autoAcceptShiftEnable") == true end,
+		  set = function(v)
+			  Set("autoAcceptShiftEnable", v)
+			  if v then Set("autoAcceptShiftSkip", false) end
+		  end },
 		{ type = "toggle", label = "Hold Shift to Skip",
 		  get = function() return Cfg("autoAcceptShiftSkip") ~= false end,
-		  set = function(v) Set("autoAcceptShiftSkip", v) end },
+		  set = function(v)
+			  Set("autoAcceptShiftSkip", v)
+			  if v then Set("autoAcceptShiftEnable", false) end
+		  end },
 		{ type = "toggle", label = "Ignore Low Level Quests",
 		  get = function() return Cfg("autoAcceptIgnoreTrivial") or false end,
 		  set = function(v) Set("autoAcceptIgnoreTrivial", v) end },
@@ -291,9 +301,19 @@ local function Build(p)
 		function() return Cfg("autoTurnIn") or false end,
 		function(v) Set("autoTurnIn", v) end)
 	p:Cog("Auto Turn In Settings", {
+		-- Hold Shift to Enable and Hold Shift to Skip are opposites: turning one on turns the other off.
+		{ type = "toggle", label = "Hold Shift to Enable",
+		  get = function() return Cfg("autoTurnInShiftEnable") == true end,
+		  set = function(v)
+			  Set("autoTurnInShiftEnable", v)
+			  if v then Set("autoTurnInShiftSkip", false) end
+		  end },
 		{ type = "toggle", label = "Hold Shift to Skip",
 		  get = function() return Cfg("autoTurnInShiftSkip") ~= false end,
-		  set = function(v) Set("autoTurnInShiftSkip", v) end },
+		  set = function(v)
+			  Set("autoTurnInShiftSkip", v)
+			  if v then Set("autoTurnInShiftEnable", false) end
+		  end },
 	}, { disabled = turnInOff })
 
 	p:Keybind("Quest Item Hotkey", "Uses the item of your tracked quest (the first quest item in your log if no tracked quest has one). Right-click to clear.",

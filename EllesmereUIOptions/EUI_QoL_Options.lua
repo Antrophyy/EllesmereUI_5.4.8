@@ -79,6 +79,12 @@ local function BuildGeneral(p)
 	p:Toggle("Auto Sell Junk", "Automatically sell all junk items when visiting a vendor.",
 		Get("autoSellJunk"), Set("autoSellJunk"))
 
+	p:Toggle("Auto-Accept Resurrection", "Automatically accepts resurrections from players who are out of combat, such as raid resses after a wipe. Use the cog to also accept combat resurrections.",
+		Get("autoAcceptRes"), Set("autoAcceptRes"))
+	p:Cog("Auto-Accept Resurrection", {
+		{ type = "toggle", label = "Accept Combat Resurrections", get = Get("autoAcceptResCombat"), set = Set("autoAcceptResCombat") },
+	}, { disabled = function() return not On("autoAcceptRes") end, disabledTip = "Enable Auto-Accept Resurrection first." })
+
 	p:Toggle("Show Coordinates on Map", "Displays cursor and player coordinates at the bottom of the world map.",
 		Get("mapCoords"), Set("mapCoords"))
 	p:Cog("Map Coordinates Settings", {
@@ -789,7 +795,7 @@ local function BuildBattleRes(p)
 		p.scroll:HookScript("OnHide", function() ns.BattleResUpdateVisibility() end)
 	end
 
-	p:Section("Battle Res")
+	p:Section("Battle Res", { unlockKey = "EUI_BattleRes" })
 	p:Dropdown("Enable BattleRes Icon", "Where the icon is shown: during raid boss fights and/or in Challenge Mode dungeons.\n\nRaid: brez left this attempt (10-player 1, 25-player and LFR 3). Challenge Mode has no limit: the count is the brez casters ready now.\n\nThe timer shows when the next Druid, Death Knight, Warlock (or quilen Hunter) brez is ready, while none is.",
 		VIS, function() return BR().visibility end, function() return VIS_LABEL(BR().visibility) end,
 		function(v) BR().visibility = v end)
@@ -904,7 +910,7 @@ local function BuildBattleRes(p)
 		p.scroll:HookScript("OnHide", function() ns.BloodlustUpdateVisibility() end)
 	end
 
-	p:Section("Bloodlust Tracker")
+	p:Section("Bloodlust Tracker", { unlockKey = "EUI_Bloodlust" })
 	p:Dropdown("Enable Bloodlust Icon", "Shows your Sated / Exhaustion lockout (time until you can get Bloodlust, Heroism, Time Warp, Ancient Hysteria or Drums of Rage again). While the lust buff is active its own icon and seconds left are shown on top.\n\nSame places as the Battle Res icon: raid boss fights and/or Challenge Mode dungeons.",
 		VIS, function() return BL().visibility end, function() return VIS_LABEL(BL().visibility) end,
 		function(v)
@@ -1011,7 +1017,7 @@ local function BuildRaidTimeline(p)
 		p.scroll:HookScript("OnHide", function() ns.RaidTimelineSetPreviewOwner(nil) end)
 	end
 
-	p:Section("Raid Timeline")
+	p:Section("Raid Timeline", { unlockKey = "EUI_RaidTimeline" })
 	p:Toggle("Enable Raid Timeline", "Shows boss ability timers from DBM or BigWigs on a timeline like the retail Raid Ability Timeline: abilities wait in the slots on the left, slide along the line as they come up and pulse once they pass the pip.\n\nMove it in Unlock Mode.",
 		RGet("enabled"), RSet("enabled"))
 	p:Toggle("Use DBM Timers", "Put DBM timer bars on the timeline.", RGet("useDBM"), RSet("useDBM"), off)

@@ -42,12 +42,19 @@ end
 -- left to the player for the rest of the session.
 local preventNPC = {}
 
+-- Hold Shift to Enable (retail 9.7) runs the feature only while Shift is
+-- down; Hold Shift to Skip runs it only while Shift is up.
+local function ShiftBlocks(prefix)
+	if Cfg(prefix .. "ShiftEnable") then return not IsShiftKeyDown() end
+	return Cfg(prefix .. "ShiftSkip") and IsShiftKeyDown()
+end
+
 local function AcceptSkipped()
-	return Cfg("autoAcceptShiftSkip") and IsShiftKeyDown()
+	return ShiftBlocks("autoAccept")
 end
 
 local function TurnInSkipped()
-	return Cfg("autoTurnInShiftSkip") and IsShiftKeyDown()
+	return ShiftBlocks("autoTurnIn")
 end
 
 -- Picks one available quest; count and isTrivial(index) come from the gossip or greeting API.

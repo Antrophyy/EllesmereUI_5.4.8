@@ -4,8 +4,9 @@
 --  Shift + left drag moves a Blizzard window and saves the spot. Ctrl + drag
 --  is a temporary move that resets when the window closes. Shift + scroll
 --  zooms a window (saved), Ctrl + scroll zooms until it closes.
---  Loot windows (Loot Window, Bonus Roll, Group Loot, Alert Toasts) and the top center
---  world state text get Unlock Mode movers.
+--  Loot windows (Loot Window, Bonus Roll, Group Loot, Alert Toasts), the top
+--  center world state text and the battleground capture bars get Unlock Mode
+--  movers.
 --
 --  Same saved keys as retail, all in the EllesmereUIDB root:
 --  shifterEnabled, shifterNoShift, shifterPositions, shifterScales,
@@ -1066,6 +1067,133 @@ local function DisableTopBar()
 end
 
 -------------------------------------------------------------------------------
+--  Battleground Frames: the capture bars (WorldStateCaptureBar1..n, the
+--  bars of tower and base fights) under one Unlock Mode mover (retail
+--  shifterBattlegroundUnlock / shifterBattlegroundHideOverlays). Mists'
+--  UIParent_ManageFramePositions hangs them under the minimap on every pass,
+--  so they are placed again after each one, stacked down from the mover's
+--  top edge. Retail's flag carrier mover has no Mists counterpart: the
+--  carriers show in the top center text (Top Bar Event Text above).
+-------------------------------------------------------------------------------
+local CAPTURE = { key = "EUI_CaptureBars", label = "Capture Bars", w = 230, h = 60,
+	defPos = { "TOPRIGHT", "TOPRIGHT", -20, -260 }, moved = false, hooked = false }
+
+function CAPTURE.On()
+	return DB().shifterBattlegroundUnlock and true or false
+end
+
+function CAPTURE.Pos()
+	return DB().shifterCaptureBarPos
+end
+
+-- Each shown bar under the last, from the top center of the mover box.
+function CAPTURE.Place()
+	local pos = CAPTURE.On() and CAPTURE.Pos()
+	if not pos then
+		if CAPTURE.moved then
+			CAPTURE.moved = false
+			if UIParent_ManageFramePositions then UIParent_ManageFramePositions() end
+		end
+		return
+	end
+	-- The saved point of the mover box, moved to its top center.
+	local px = pos.point:find("LEFT") and 0 or (pos.point:find("RIGHT") and 1 or 0.5)
+	local py = pos.point:find("TOP") and 1 or (pos.point:find("BOTTOM") and 0 or 0.5)
+	local x = pos.x + (0.5 - px) * CAPTURE.w
+	local y = pos.y + (1 - py) * CAPTURE.h
+	local i = 1
+	while true do
+		local bar = _G["WorldStateCaptureBar" .. i]
+		if not bar then break end
+		if bar:IsShown() and not (bar:IsProtected() and InCombatLockdown()) then
+			bar:ClearAllPoints()
+			bar:SetPoint("TOP", UIParent, pos.relPoint, x, y)
+			y = y - (bar:GetHeight() or 0)
+		end
+		i = i + 1
+	end
+	CAPTURE.moved = true
+end
+
+function CAPTURE.Hook()
+	if CAPTURE.hooked then return end
+	CAPTURE.hooked = true
+	if UIParent_ManageFramePositions then hooksecurefunc("UIParent_ManageFramePositions", CAPTURE.Place) end
+	if WorldStateFrame_Update then hooksecurefunc("WorldStateFrame_Update", CAPTURE.Place) end
+end
+
+function CAPTURE.Proxy()
+	local proxy = CAPTURE.proxy
+	if not proxy then
+		proxy = CreateFrame("Frame", nil, UIParent)
+		proxy:Hide()
+		proxy:SetSize(CAPTURE.w, CAPTURE.h)
+		CAPTURE.proxy = proxy
+	end
+	local pos, d = CAPTURE.Pos(), CAPTURE.defPos
+	proxy:ClearAllPoints()
+	if pos then
+		proxy:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
+	else
+		proxy:SetPoint(d[1], UIParent, d[2], d[3], d[4])
+	end
+	return proxy
+end
+
+function CAPTURE.Register()
+	local MK = ns.MakeUnlockElement
+	if not MK or not ns.RegisterUnlockElements then return end
+	ns:RegisterUnlockElements({
+		MK({
+			key = CAPTURE.key,
+			label = CAPTURE.label,
+			group = "Quality of Life",
+			order = 644,
+			noResize = true,
+			noAnchorTarget = true,
+			noAnchorTo = true,
+			noSizeMatchTarget = true,
+			moverBg = { r = 0.165, g = 0.11, b = 0.055 },
+			subtitle = "Disable the Battleground Frames overlays in Shifter once done positioning",
+			isHidden = function()
+				if not CAPTURE.On() then return true end
+				return DB().shifterBattlegroundHideOverlays and true or false
+			end,
+			getFrame = CAPTURE.Proxy,
+			getSize = function() return CAPTURE.w, CAPTURE.h end,
+			savePos = function(_, point, relPoint, x, y)
+				DB().shifterCaptureBarPos = { point = point, relPoint = relPoint, x = x, y = y }
+				CAPTURE.Proxy()
+				CAPTURE.Hook()
+				CAPTURE.Place()
+			end,
+			loadPos = function()
+				local pos = CAPTURE.Pos()
+				if pos then
+					return { point = pos.point, relPoint = pos.relPoint, x = pos.x, y = pos.y }
+				end
+				return nil
+			end,
+			clearPos = function()
+				DB().shifterCaptureBarPos = nil
+				CAPTURE.Proxy()
+				CAPTURE.Place()
+			end,
+			applyPos = function()
+				CAPTURE.Proxy()
+				CAPTURE.Place()
+			end,
+		}),
+	}, addonName)
+end
+
+-- Options toggle: on, the bars take the saved spot; off, Blizzard's own.
+function ns._SyncShifterCarriers()
+	if CAPTURE.On() then CAPTURE.Hook() end
+	CAPTURE.Place()
+end
+
+-------------------------------------------------------------------------------
 --  Init
 -------------------------------------------------------------------------------
 local pendingAddons = {}
@@ -1106,6 +1234,7 @@ local function ResetPositions()
 	db.shifterPositions = nil
 	db.shifterLootPositions = nil
 	db.shifterTopBarPos = nil
+	db.shifterCaptureBarPos = nil
 	db.shifterScales = nil
 	wipe(tempPos)
 	wipe(tempScale)
@@ -1121,7 +1250,7 @@ ns._InitShifterTopBar = InitTopBar
 ns._DisableShifterTopBar = DisableTopBar
 
 -- Settings window: toggles only store the value; this follows them.
-local applied = { enabled = false, loot = false, top = false }
+local applied = { enabled = false, loot = false, top = false, bg = false }
 local loggedIn = false
 ns.applyHooks = ns.applyHooks or {}
 tinsert(ns.applyHooks, function()
@@ -1138,6 +1267,11 @@ tinsert(ns.applyHooks, function()
 	if top ~= applied.top then
 		if top then InitTopBar() else DisableTopBar() end
 		applied.top = top
+	end
+	local bg = CAPTURE.On()
+	if bg ~= applied.bg then
+		applied.bg = bg
+		ns._SyncShifterCarriers()
 	end
 end)
 
@@ -1175,6 +1309,9 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 		HookLootWindowFrame()
 		RegisterTopBarUnlockElement()
 		if applied.top then InitTopBar() end
+		CAPTURE.Register()
+		applied.bg = CAPTURE.On()
+		if applied.bg then ns._SyncShifterCarriers() end
 	elseif event == "ADDON_LOADED" then
 		local frames = pendingAddons[arg1]
 		if frames then

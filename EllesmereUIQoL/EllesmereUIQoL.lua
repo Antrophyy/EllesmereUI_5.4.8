@@ -779,6 +779,45 @@ function Q.ApplyInstanceReset()
 end
 
 ---------------------------------------------------------------------------
+-- Auto-Accept Resurrection (autoAcceptRes, autoAcceptResCombat; retail 9.7)
+---------------------------------------------------------------------------
+-- A res from a caster in combat (a battle res) is left to the player unless
+-- the combat option is on. 5.4.8: RESURRECT_REQUEST passes the caster's
+-- name; an offer with a recovery delay is accepted once the delay is over.
+local resFrame = CreateFrame("Frame")
+local RES_POPUPS = { "RESURRECT", "RESURRECT_NO_SICKNESS", "RESURRECT_NO_TIMER" }
+local function CasterInCombat(caster)
+	if not caster or caster == "" then return false end
+	local ok, v = pcall(UnitAffectingCombat, caster)
+	if not ok then return true end
+	return v and true or false
+end
+local function AcceptRes()
+	if not Q.On("autoAcceptRes") then return end
+	if ResurrectGetOfferer and not ResurrectGetOfferer() then return end
+	AcceptResurrect()
+	for _, which in ipairs(RES_POPUPS) do
+		StaticPopup_Hide(which)
+	end
+end
+resFrame:SetScript("OnEvent", function(_, _, caster)
+	if not Q.On("autoAcceptResCombat") and CasterInCombat(caster) then return end
+	local delay = GetCorpseRecoveryDelay and GetCorpseRecoveryDelay() or 0
+	if delay and delay > 0 then
+		Q.After(delay + 0.1, AcceptRes)
+	else
+		AcceptRes()
+	end
+end)
+function Q.ApplyAutoAcceptRes()
+	if Q.On("autoAcceptRes") then
+		resFrame:RegisterEvent("RESURRECT_REQUEST")
+	else
+		resFrame:UnregisterEvent("RESURRECT_REQUEST")
+	end
+end
+
+---------------------------------------------------------------------------
 -- Hide Screenshot Status (hideScreenshotStatus, default on)
 ---------------------------------------------------------------------------
 local ssFrame = CreateFrame("Frame")
@@ -1077,6 +1116,7 @@ function Q.ApplyGeneral()
 	Q.ApplyHideTutorials()
 	Q.ApplyHideLootHistory()
 	Q.ApplyInstanceReset()
+	Q.ApplyAutoAcceptRes()
 	Q.ApplyTrainAll()
 	Q.ApplyAutoOpen()
 	Q.ApplyBonusRoll()

@@ -106,6 +106,13 @@ local function Defaults()
 		showRoleCheck = true,
 		showConvert = true,
 		showDisband = true,
+		-- Raid Buff Check (EllesmereUIQoL_RaidBuffCheck.lua): the feature, its
+		-- ready check trigger and window state. Off by default.
+		buffCheck = false,
+		buffCheckOnReady = true,
+		buffCheckOnlyMissing = true,
+		-- Opt-in Buff Check group button (needs buffCheck).
+		showBuffCheck = false,
 		growDir = "downright",
 		pos = {},
 	}
@@ -270,6 +277,16 @@ local function ButtonShown(key)
 	return not p or p[key] ~= false
 end
 
+-- The Buff Check button needs Raid Buff Check on.
+local function BuffCheckShown()
+	local p = P()
+	return p and p.showBuffCheck == true and p.buffCheck == true and ns.ToggleBuffCheck ~= nil
+end
+
+local function ToggleBuffCheck()
+	if ns.ToggleBuffCheck then ns.ToggleBuffCheck() end
+end
+
 local function PullTime(slot)
 	local times = (P() and P().pullTimes) or {}
 	local v = times[slot]
@@ -288,7 +305,7 @@ R.RefreshPermissions = function(force)
 	if not force and assist == lastAssist and leader == lastLeader and raid == lastRaid then return end
 	lastAssist, lastLeader, lastRaid = assist, leader, raid
 	for _, b in ipairs(S.groupButtons) do
-		SetButtonEnabled(b, (b.needsLeader and leader or assist) and true or false)
+		SetButtonEnabled(b, (b.ungated or (b.needsLeader and leader or assist)) and true or false)
 	end
 	for _, b in ipairs(S.markerButtons) do
 		b.baseAlpha = assist and 0.8 or 0.4
@@ -677,6 +694,7 @@ R.LayoutGroupContent = function()
 	end
 	Add(S.readyButton)
 	if ButtonShown("showRoleCheck") then Add(S.roleButton) end
+	if BuffCheckShown() then Add(S.buffButton) end
 	if ButtonShown("showConvert") then Add(S.convertButton) end
 	if ButtonShown("showDisband") then Add(S.disbandButton) end
 	if #pair > 0 then rows[#rows + 1] = pair end
@@ -724,6 +742,8 @@ local function BuildGroupContent()
 	local full = PANEL_W - PAD * 2
 	S.readyButton = MakeGroupButton(f, "Ready Check", full, function() DoReadyCheck() end)
 	S.roleButton = MakeGroupButton(f, "Role Check", full, function() InitiateRolePoll() end)
+	S.buffButton = MakeGroupButton(f, "Buff Check", full, ToggleBuffCheck)
+	S.buffButton.ungated = true -- only reads auras: needs no leader or assist
 	S.convertButton = MakeGroupButton(f, "Convert to Raid", full, function()
 		if IsInRaid() then ConvertToParty() else ConvertToRaid() end
 	end, true)
@@ -845,14 +865,20 @@ local function BuildCompactContent()
 
 	S.compactReadyButton = MakeCompactAction(h, "RC",
 		function()
+			local actions = { { "Left Click", "Ready Check" } }
 			if ButtonShown("showRoleCheck") then
-				return "Ready Check", { { "Left Click", "Ready Check" }, { "Right Click", "Role Check" } }
+				actions[#actions + 1] = { "Right Click", "Role Check" }
 			end
-			return "Ready Check", { { "Left Click", "Ready Check" } }
+			if BuffCheckShown() then
+				actions[#actions + 1] = { "Shift + Left Click", "Buff Check" }
+			end
+			return "Ready Check", actions
 		end,
 		function(_, button)
 			if button == "RightButton" then
 				if ButtonShown("showRoleCheck") then InitiateRolePoll() end
+			elseif IsShiftKeyDown() and BuffCheckShown() then
+				ToggleBuffCheck()
 			else
 				DoReadyCheck()
 			end
@@ -1357,6 +1383,9 @@ end
 
 R.Apply = function()
 	if not P() then return end
+	-- Raid Buff Check registers plain events only, so it follows the settings
+	-- even in combat and with the panels on Never.
+	if ns.BuffCheckSync then ns.BuffCheckSync() end
 	if InCombatLockdown() then
 		S.applyPending = true
 		EnsureEvents()
