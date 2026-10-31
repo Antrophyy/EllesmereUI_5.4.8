@@ -72,7 +72,7 @@ end
 -- opacity, the tint on top takes the color.
 function ns.ApplyWindowBackground(bg, overlay)
     if not (bg and overlay) then return end
-    local p = (EUI._bagsDB and EUI._bagsDB.profile) or {}
+    local p = (EllesmereUI._bagsDB and EllesmereUI._bagsDB.profile) or {}
     local o = (p.bagBgOpacity or 100) / 100
     local c = p.bagBgColor
     bg:SetAlpha(o)
@@ -87,7 +87,7 @@ local slotBgs = setmetatable({}, { __mode = "k" })
 function ns.PaintSlotBackground(tex, alpha)
     tex._slotBgAlpha = alpha
     slotBgs[tex] = true
-    local p = (EUI._bagsDB and EUI._bagsDB.profile) or {}
+    local p = (EllesmereUI._bagsDB and EllesmereUI._bagsDB.profile) or {}
     local c = p.bagSlotBgColor
     if c then
         tex:SetVertexColor(c.r, c.g, c.b)
@@ -106,7 +106,7 @@ function ns.RetintSlotBackgrounds()
 end
 
 function ns.ApplySlotMetrics()
-    local p = (EUI._bagsDB and EUI._bagsDB.profile) or {}
+    local p = (EllesmereUI._bagsDB and EllesmereUI._bagsDB.profile) or {}
     local size, gap = p.bagSlotSize or 34, p.bagSlotSpacing or 4
     if (size == SLOT_SIZE and gap == SPACING) or InCombatLockdown() then return end
     SLOT_SIZE, SPACING = size, gap
