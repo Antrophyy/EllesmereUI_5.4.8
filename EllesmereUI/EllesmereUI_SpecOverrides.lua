@@ -837,10 +837,42 @@ local function PruneRedundantValues()
 end
 SO.PruneRedundantValues = PruneRedundantValues
 
+-- 5.4.8 addition: a spec in no group shows the shared values, so what was
+-- changed live outside the settings window (Unlock Mode moves, for example)
+-- is banked where the value came from: the spec's own value when it has
+-- one, else the shared default. Without this the next apply put it back.
+local function HarvestUngrouped(specID)
+	for _, entry in ipairs(GetStore() or {}) do
+		local vals = entry.values
+		local def = type(vals) == "table" and vals.default
+		if type(def) == "table" then
+			local own = type(vals[specID]) == "table" and vals[specID] or nil
+			for fkey, dv in pairs(def) do
+				if not Skip(fkey) then
+					local live = ReadLive(fkey)
+					if type(live) ~= "table" then
+						if own and own[fkey] ~= nil then
+							if not Same(fkey, live, own[fkey]) then
+								own[fkey] = Stored(live)
+							end
+						elseif not Same(fkey, live, dv) then
+							def[fkey] = Stored(live)
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
 -- Live values of the spec (outside an editing session): only for specs in a
 -- group; equal to the default keeps the stored value (not a revert).
 local function Harvest(specID)
-	if not specID or not SpecInAnyGroup(specID) then
+	if not specID then
+		return
+	end
+	if not SpecInAnyGroup(specID) then
+		HarvestUngrouped(specID)
 		return
 	end
 	for _, entry in ipairs(GetStore() or {}) do
