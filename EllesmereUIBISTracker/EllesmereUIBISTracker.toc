@@ -1,0 +1,10 @@
+## Interface: 50400
+## Title: |cff0cd29fEllesmereUI|r BIS Tracker
+## Notes: Pick the items you want from each Mists of Pandaria raid boss (LFR / Flex / Normal / Heroic, Warforged only). When you kill that boss, a list shows what you are after. /bis
+## Author: EllesmereUI port
+## Version: 1.0.0
+## Dependencies: EllesmereUI
+## SavedVariables: EllesmereUIBISTrackerDB
+## SavedVariablesPerCharacter: EllesmereUIBISTrackerCharDB
+
+EllesmereUIBISTracker.lua

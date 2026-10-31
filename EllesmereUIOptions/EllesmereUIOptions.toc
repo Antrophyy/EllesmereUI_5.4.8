@@ -40,6 +40,7 @@ EUI_Quickdraw_Options.lua
 EUI_TopBar_Options.lua
 EUI_NaowhQoL_Options.lua
 EUI_Reforge_Options.lua
+EUI_BISTracker_Options.lua
 EUI_InterruptTracker_Options.lua
 EUI_BlizzardSkin_ChatBubbles_Options.lua
 EUI_BlizzardSkin_Tooltips_Options.lua
