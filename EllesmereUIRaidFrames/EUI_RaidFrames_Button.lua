@@ -707,6 +707,9 @@ function B.Geometry(btn, d)
 	if d.bgFull then
 		d.bg:ClearAllPoints()
 		d.bg:SetAllPoints(bar)
+		if d.bg.rfMode == "stretch" then
+			if vert then d.bg:SetTexCoord(1, 0, 0, 0, 1, 1, 0, 1) else d.bg:SetTexCoord(0, 1, 0, 1) end
+		end
 		d.bg:Show()
 	elseif d.inv then
 		Seg(d.bg, bar, vert, 0, cur)
@@ -1217,6 +1220,16 @@ function RF.RelayoutButton(btn)
 	d.power:SetStatusBarTexture(tex)
 	d.healthFill = d.health:GetStatusBarTexture()
 	B.ApplyOrientation(d, s)
+
+	-- Textured Background (retail textureBg, off by default): the bar texture
+	-- on the health and power backgrounds, tinted by the colour each is
+	-- painted. The health background is the unfilled segment, so it shows the
+	-- slice of one image laid over the whole bar (Seg "stretch").
+	local texBg = s.textureBg and s.healthBarTexture ~= "none" and (s.healthColorMode == "dark" or (s.healthBarOpacity or 100) >= 100)
+	d.bg:SetTexture(texBg and tex or WHITE)
+	d.bg.rfMode = texBg and "stretch" or nil
+	d.bg:SetTexCoord(0, 1, 0, 1)
+	d.powerBg:SetTexture(texBg and tex or WHITE)
 
 	-- Power bar background.
 	local pr, pg, pb = Col(s.powerBgColor, 107 / 255, 107 / 255, 107 / 255)

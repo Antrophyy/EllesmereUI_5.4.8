@@ -1044,6 +1044,9 @@ local function PaintIcon(f, a, st, size, unit)
 	-- color at Dispel Icon Border thickness (-1 = the border's own, 0 = off).
 	local bpx = st.borderSize or 1
 	local r, g, b = ColorOf(st.borderColor, 0, 0, 0)
+	-- Border opacity: the color's alpha (unset = opaque); dispel and
+	-- effect borders stay opaque.
+	local ba = type(st.borderColor) == "table" and st.borderColor.a or 1
 	local dpx = st.dispelPx
 	if dpx == -1 then
 		dpx = bpx
@@ -1051,12 +1054,14 @@ local function PaintIcon(f, a, st, size, unit)
 	if a.dtype and TYPED[a.dtype] and dpx and dpx > 0 and a.harmful then
 		bpx = dpx
 		r, g, b = RF.GetDispelColor(a.dtype, st.s)
+		ba = 1
 	end
 	if a.fxBorder then
 		bpx = a.fxBorder.size
 		r, g, b = a.fxBorder.r, a.fxBorder.g, a.fxBorder.b
+		ba = 1
 	end
-	RF.LayoutEdges(f.edges, bpx, r, g, b, 1, false)
+	RF.LayoutEdges(f.edges, bpx, r, g, b, ba, false)
 	local inset = (f.edges.size or 0)
 	f.tex:ClearAllPoints()
 	f.tex:SetPoint("TOPLEFT", f, "TOPLEFT", inset, -inset)

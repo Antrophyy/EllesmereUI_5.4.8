@@ -670,7 +670,9 @@ local function BuildBase(p, e)
 	p:Section("Display")
 	p:Slider("Border", "Border thickness of each debuff icon.", 0, 4, 1,
 		function() return prof.debuffBorderSize or 1 end, function(v) prof.debuffBorderSize = v end)
-	p:Swatch("Border Color", ColorGet(prof, "debuffBorderColor", 0, 0, 0), ColorSet(prof, "debuffBorderColor"))
+	p:Swatch("Border Color", ColorGet(prof, "debuffBorderColor", 0, 0, 0), function(r, g, b, a)
+		prof.debuffBorderColor = { r = r, g = g, b = b, a = a }
+	end, { alpha = true })
 	p:Slider("Spacing", "Space between icons.", -1, 10, 1,
 		function() return floor((prof.debuffSpacing or 1) + 0.5) end, function(v) prof.debuffSpacing = v end)
 	p:Toggle("Show Duration Text", "Show the time left on each icon.",
@@ -759,8 +761,10 @@ local function BuildGridTile(p, t, prof, dm)
 		function() return TEff(t, prof, "borderSize", "debuffBorderSize", 1) end, function(v) t.borderSize = v end)
 	p:Swatch("Border Color", function()
 		local c = t.borderColor or prof.debuffBorderColor or {}
-		return c.r or 0, c.g or 0, c.b or 0
-	end, ColorSet(t, "borderColor"))
+		return c.r or 0, c.g or 0, c.b or 0, c.a or 1
+	end, function(r, g, b, a)
+		t.borderColor = { r = r, g = g, b = b, a = a }
+	end, { alpha = true })
 	p:Slider("Spacing", "Space between icons.", -1, 10, 1,
 		function() return t.spacing or 1 end, function(v) t.spacing = v end)
 	p:Toggle("Show Duration Text", "Show the time left on each icon.",

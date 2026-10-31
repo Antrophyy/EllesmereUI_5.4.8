@@ -600,7 +600,13 @@ local function BuildPlaced(p, ind)
 		p:Slider("Opacity", "Icon opacity.", 0, 100, 1, G(ind, "iconOpacity", 100), W(ind, "iconOpacity"))
 	end
 	p:Slider("Border Width", "Border thickness in pixels (0 = no border).", 0, 4, 1, G(ind, "indBorderSize", 1), W(ind, "indBorderSize"))
-	p:Swatch("Border Color", ColGet(ind, "indBorderColor", 0, 0, 0), ColSet(ind, "indBorderColor"))
+	p:Swatch("Border Color", function()
+		local c = ind.indBorderColor
+		if type(c) ~= "table" then return 0, 0, 0, 1 end
+		return c.r or 0, c.g or 0, c.b or 0, c.a or 1
+	end, function(r, g, b, a)
+		ind.indBorderColor = { r = r, g = g, b = b, a = a }
+	end, { alpha = true })
 	p:Toggle("Duration Swipe", "Darkening sweep as the buff runs out.", function() return ind.showDuration ~= false end,
 		function(v) ind.showDuration = v end)
 	p:Toggle("Duration Text", "Show the time left.", function() return ind.showDurationText == true end,

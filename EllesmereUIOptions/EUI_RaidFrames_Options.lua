@@ -859,7 +859,7 @@ function O.TierRows(p, C, tier)
 end
 
 function O.BuildFrameSizes(p, C)
-	p:Section("FRAME SIZES")
+	p:Section("FRAME SIZES", { unlockKey = "RF_RaidFrames" })
 	O.Slider(p, C, "20 Man Frame Width", nil, 40, 300, 1, "frameWidth", 72)
 	O.Slider(p, C, "20 Man Frame Height", nil, 20, 150, 1, "frameHeight", 46)
 	for _, tier in ipairs(O.TIERS) do
@@ -1204,6 +1204,11 @@ function O.BuildHealthBar(p, C)
 			"Fill the health bar bottom-to-top instead of left-to-right. Absorbs, heal prediction and the bar background follow the same axis."),
 		O.CT(C, "Fill Missing Health", "healthInvertFill", false,
 			"The bar fills with missing health, growing as the unit takes damage."),
+		O.CT(C, "Textured Background", "textureBg", false,
+			"Draws the bar texture on the health and power backgrounds too. Needs a Health Bar Texture other than None and a Fill Opacity of 100.",
+			function()
+				return C.Val("healthBarTexture", "atrocity") == "none" or (C.Val("healthColorMode", "class") ~= "dark" and (C.Val("healthBarOpacity", 100) or 100) < 100)
+			end),
 	})
 	O.Slider(p, C, "Fill Opacity", "Not available in Dark Mode", 0, 100, 1, "healthBarOpacity", 100, Dark)
 	-- Fill Color (+ custom / dynamic swatches) | Background (+ custom / class swatches)
@@ -2467,7 +2472,7 @@ end
 O.PARTY_GROWTH = { { "default", "Default" }, { "reversed", "Reversed" }, { "centered", "Centered" } }
 
 function O.BuildPartyFrames(p, C)
-	p:Section("FRAMES")
+	p:Section("FRAMES", { unlockKey = "RF_PartyFrames" })
 	local prof = P
 	-- Frame Width | Frame Height
 	p:Slider("Frame Width", nil, 40, 300, 1, function() return prof().partyFrameWidth or 125 end,

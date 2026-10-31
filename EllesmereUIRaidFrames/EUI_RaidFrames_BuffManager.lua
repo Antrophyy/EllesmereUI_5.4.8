@@ -1133,7 +1133,9 @@ local function StyleIcon(btn, e, v, iscale, base)
 		bsz = 0
 	end
 	local br, bg, bb = Col(ind.indBorderColor, 0, 0, 0)
-	RF.LayoutEdges(e.edges, bsz, br, bg, bb, 1)
+	-- Border opacity: the color's alpha (unset = opaque).
+	local ba = type(ind.indBorderColor) == "table" and ind.indBorderColor.a or 1
+	RF.LayoutEdges(e.edges, bsz, br, bg, bb, ba)
 	e.showSwipe = ind.showDuration ~= false and not (not square and ind.hideIcon == true)
 	e.showStacks = ind.showStacks ~= false
 	e.showDurText = ind.showDurationText == true

@@ -171,6 +171,8 @@ local DEFAULTS = {
 		healthVerticalFill = false,
 		-- Invert health fill: when true the bar is full at low health and empty at high health.
 		healthInvertFill = false,
+		-- Textured Background: the bar texture on the health and power backgrounds.
+		textureBg = false,
 
 		-- Power bar (on when any powerShowFor* role is true)
 		showPowerBar     = true,
@@ -662,7 +664,7 @@ do
 			"customFillColor", "dynamicColor100", "dynamicColor50", "dynamicColor0",
 			"customBgColor", "bgClassColored", "bgDarkness", "smoothBars",
 			"healPrediction", "healPredOpacity", "healPredColor",
-			"healthVerticalFill", "healthInvertFill",
+			"healthVerticalFill", "healthInvertFill", "textureBg",
 			"threatBorderSize", "threatCustomBorder",
 		},
 		absorbs = {

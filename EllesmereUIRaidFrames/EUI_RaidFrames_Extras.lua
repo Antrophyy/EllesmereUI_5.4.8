@@ -414,6 +414,36 @@ V.Pin = function(c, point, rel, relPoint, x, y)
 	c:SetPoint(point, rel, relPoint, x, y)
 end
 
+-- Free Move pin off UIParent's center (retail FB.FreePin). The saved offsets
+-- are raw mover geometry and the center itself can sit on a half pixel (odd
+-- physical size), so the pinned point's absolute position is snapped at the
+-- container's own scale, or every border inside it blurs. A CENTER pin snaps
+-- with the container's size so odd-pixel dimensions keep both edges whole.
+V.FreePin = function(c, point, x, y)
+	local PPm = EllesmereUI.PP
+	local ux, uy = UIParent:GetCenter()
+	if PPm and PPm.SnapForES and ux then
+		local es = c:GetEffectiveScale()
+		if point == "CENTER" and PPm.SnapCenterForDim then
+			x = PPm.SnapCenterForDim(ux + x, c:GetWidth(), es) - ux
+			y = PPm.SnapCenterForDim(uy + y, c:GetHeight(), es) - uy
+		else
+			x = PPm.SnapForES(ux + x, es) - ux
+			y = PPm.SnapForES(uy + y, es) - uy
+		end
+	end
+	V.Pin(c, point, UIParent, "CENTER", x, y)
+end
+
+-- Spacing on the same grid as V.FreePin: the container's own scale.
+local function SnapSpacing(sp, c)
+	local PPm = EllesmereUI.PP
+	if PPm and PPm.SnapForES then
+		return PPm.SnapForES(sp, (c or UIParent):GetEffectiveScale())
+	end
+	return sp
+end
+
 -- Free Move corner (retail FB.CornerPin): the corner a grid grows from and,
 -- with a saved rect r, that corner's offset from UIParent's center.
 V.CornerPin = function(hDir, vDir, r)
@@ -455,6 +485,11 @@ end
 FB.ShouldBeActive = function()
 	local fb = FB.Settings()
 	if not fb then
+		return false
+	end
+	-- Arena never has friendly bosses; an empty group there only takes room
+	-- beside the party frames.
+	if RF._InArena and RF._InArena() then
 		return false
 	end
 	if fb.display == "always" then
@@ -579,7 +614,7 @@ FB.ApplyStyle = function()
 	local fb = FB.Settings()
 	local w = Snap(max(10, (s.frameWidth or 125) + ((fb and fb.extraWidth) or 0)))
 	local h = Snap(max(10, (s.frameHeight or 60) + ((fb and fb.extraHeight) or 0)))
-	local sp = s.cellSpacing or -1
+	local sp = SnapSpacing(s.cellSpacing or -1, FB.container)
 	local grow
 	if fb and fb.position == "free" then
 		grow = fb.freeHorizontal and "RIGHT" or "DOWN"
@@ -738,7 +773,7 @@ FB.Anchor = function(owner)
 		return
 	end
 	local p = fb.freePos or {}
-	V.Pin(c, "CENTER", UIParent, "CENTER", p.x or 100, p.y or 0)
+	V.FreePin(c, "CENTER", p.x or 100, p.y or 0)
 end
 
 function RF.FB_ReAnchor()
@@ -890,7 +925,7 @@ FB.SetMoverShown = function(owner, show, frameName, labelText)
 			owner.mover:SetPoint("CENTER", owner.container, "CENTER")
 		else
 			local p = oset.freePos or {}
-			owner.mover:SetPoint("CENTER", UIParent, "CENTER", p.x or 100, p.y or 0)
+			V.FreePin(owner.mover, "CENTER", p.x or 100, p.y or 0)
 		end
 	end
 	owner.mover:Show()
@@ -958,7 +993,7 @@ XF.FreeAnchor = function(c, set)
 	end
 	local grow, wrap, horizontal = XF.GrowInfo(set, P())
 	local corner, x, y = V.CornerPin(horizontal and grow or wrap, horizontal and wrap or grow, r)
-	V.Pin(c, corner, UIParent, "CENTER", x, y)
+	V.FreePin(c, corner, x, y)
 	return true
 end
 
@@ -1025,7 +1060,7 @@ XF.Layout = function()
 	end
 	RF._xfExtraRatio = ratio
 	RF._xfBmScale = ratio
-	local sp = s.cellSpacing or 2
+	local sp = SnapSpacing(s.cellSpacing or 2, XF.container)
 	local grow, wrap, horizontal = XF.GrowInfo(set, s)
 	local count = XF.activeCount or 0
 	if count < 1 then
@@ -1420,6 +1455,7 @@ PF.Geometry = function(ctx)
 	local v = PF.View(ctx)
 	w = Snap(max(10, w + (v.extraWidth or 0)))
 	h = Snap(max(10, h + (v.extraHeight or 0)))
+	sp = SnapSpacing(sp, PF.container)
 	return w, h, sp, unitGrowth, groupGrowth
 end
 
@@ -1634,7 +1670,7 @@ end
 
 PF.FreeAnchor = function(c, set)
 	local corner, x, y = PF.FreeCorner(set, PF.Ctx())
-	V.Pin(c, corner, UIParent, "CENTER", x, y)
+	V.FreePin(c, corner, x, y)
 	return true
 end
 
@@ -1652,7 +1688,7 @@ end
 PF.PlaceMover = function(m, set)
 	local corner, x, y, w, h = PF.FreeCorner(set, PF.moverCtx or PF.Ctx())
 	m:SetSize(w, h)
-	m:SetPoint(corner, UIParent, "CENTER", x, y)
+	V.FreePin(m, corner, x, y)
 end
 
 PF.SaveFreeRect = function(mover)
@@ -3184,6 +3220,7 @@ do
 	ev:RegisterEvent("INSTANCE_ENCOUNTER_ENGAGE_UNIT")
 	ev:RegisterEvent("PLAYER_TARGET_CHANGED")
 	ev:RegisterEvent("UNIT_PET")
+	ev:RegisterEvent("PLAYER_ENTERING_WORLD")
 	local pending = false
 	local function Roster()
 		pending = false
@@ -3249,6 +3286,13 @@ do
 			end
 		elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
 			RF.FB_Apply()
+		elseif event == "PLAYER_ENTERING_WORLD" then
+			-- Entering or leaving an arena flips FB.ShouldBeActive.
+			local arena = RF._InArena and RF._InArena() or false
+			if arena ~= (FB.inArena == true) then
+				FB.inArena = arena
+				RF.FB_Apply()
+			end
 		elseif event == "INSTANCE_ENCOUNTER_ENGAGE_UNIT" then
 			if FB.built then
 				for _, b in ipairs(FB.buttons) do
