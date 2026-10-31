@@ -21,6 +21,12 @@ local LibDeflate = LibStub and LibStub("LibDeflate", true)
 local RETAIL_PREFIX = "!EUI_"
 local MISTS_PREFIX = "!EUIM_"
 local PAYLOAD_VERSION = 3
+-- Retail 9.7: a string that holds a point anchor is version 4, so older
+-- builds reject it instead of reading the point link as a side link.
+local MAX_PAYLOAD_VERSION = 4
+local function ExportVersion(data)
+	return ns.LayoutExportVersion and ns.LayoutExportVersion(data) or PAYLOAD_VERSION
+end
 
 ---------------------------------------------------------------------------
 -- Serializer (retail, verbatim): Lua table <-> string
@@ -524,7 +530,7 @@ function ns.ExportProfile(folders, includeLayout, includeGlobals)
 	data.profileName = ns.GetActiveProfileName()
 	-- Retail "Auto Assign to Specs": the specs this profile is assigned to.
 	data.assignedSpecs = ns.CollectAssignedSpecs and ns.CollectAssignedSpecs(data.profileName) or nil
-	return Encode(MISTS_PREFIX, { version = PAYLOAD_VERSION, type = "full", client = "mists", data = data })
+	return Encode(MISTS_PREFIX, { version = ExportVersion(data), type = "full", client = "mists", data = data })
 end
 
 -- Returns payload (data in the Mists layout, retail strings converted) or
@@ -568,7 +574,7 @@ function ns.DecodeProfileString(str)
 	if not payload.version or payload.version < 3 then
 		return nil, "This profile was created before the beta wipe and is no longer compatible. Please create a new export."
 	end
-	if payload.version > PAYLOAD_VERSION then
+	if payload.version > MAX_PAYLOAD_VERSION then
 		return nil, "This profile was created with a newer version of EllesmereUI. Please update your addon."
 	end
 	-- Spec assignments (import toggle "Auto Assign to Specs"): a profile

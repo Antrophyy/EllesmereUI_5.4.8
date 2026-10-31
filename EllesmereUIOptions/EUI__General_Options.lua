@@ -448,6 +448,42 @@ local function BuildGeneral(p)
 	-------------------------------------------------------------------
 	p:Section("Unlock Mode")
 
+	p:Toggle("Point Anchoring", "Show nine source points after clicking Anchor in Unlock Mode. Choose a source point, then a target point. Turning this off hides the handles and preserves saved point anchors.",
+		function() return EllesmereUIDB and EllesmereUIDB.unlockPointHandles == true end,
+		function(v)
+			if EllesmereUI.SetPointAnchorHandles then
+				EllesmereUI.SetPointAnchorHandles(v)
+			else
+				EllesmereUIDB = EllesmereUIDB or {}
+				EllesmereUIDB.unlockPointHandles = v and true or nil
+			end
+		end)
+	do
+		local function PointOff() return not (EllesmereUIDB and EllesmereUIDB.unlockPointHandles == true) end
+		local DEFAULTS = { line = { 1, 0.2, 0.2, 1 }, border = { 0, 0, 0, 1 }, point = { 1, 1, 1, 1 } }
+		local function Get(kind)
+			return function()
+				if EllesmereUI.GetPointAnchorColor then return EllesmereUI.GetPointAnchorColor(kind) end
+				local d = DEFAULTS[kind]
+				return d[1], d[2], d[3], d[4]
+			end
+		end
+		local function Set(kind)
+			return function(r, g, b, a)
+				if EllesmereUI.SetPointAnchorColor then
+					EllesmereUI.SetPointAnchorColor(kind, r, g, b, a or 1)
+				else
+					EllesmereUIDB.unlockPointColors = EllesmereUIDB.unlockPointColors or {}
+					EllesmereUIDB.unlockPointColors[kind] = { r, g, b, a or 1 }
+				end
+			end
+		end
+		p:Label("Point Anchor Colors", "Colors of the point anchor connector lines, the handle borders and the handle points.", PointOff)
+		p:Swatch("Connector Lines Color", Get("line"), Set("line"), { alpha = true, disabled = PointOff })
+		p:Swatch("Border Color", Get("border"), Set("border"), { alpha = true, disabled = PointOff })
+		p:Swatch("Point Color", Get("point"), Set("point"), { alpha = true, disabled = PointOff })
+	end
+
 	do
 		local OVERLAP = {
 			{ "disabled", "Disabled" }, { "scroll", "Scroll" }, { "shiftscroll", "Shift + Scroll" },
