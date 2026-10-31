@@ -2,7 +2,7 @@
 
 Upstream: https://github.com/EllesmereGaming/EllesmereUI (retail). This repo forked it at `c436c600` (v9.5.5).
 
-**Reviewed through:** `58e738ff` (v9.6.2, 2026-10-19). The next sync reviews `58e738ff..upstream/main`.
+**Reviewed through:** `fc8d3c83` (v9.7.2). The next sync reviews `fc8d3c83..upstream/main`.
 
 ## How a sync runs
 
@@ -293,3 +293,96 @@ Size: S small, M medium, L large.
 
 </details>
 
+
+## Sync 2: `58e738ff..fc8d3c83` (v9.6.2 to v9.7.2, 148 first-parent commits / 83 PRs and releases outside locales)
+
+Counted by first-parent commit: two old PR branches (#1831, #1847) drag in ~3,900 commits from March, so the raw `--no-merges` count (4,206) is meaningless. Triage below is by PR and by release-note line.
+
+
+### Adapt: new features
+
+| # | Change | Area | Size | Upstream | Status |
+|---|---|---|---|---|---|
+| B1 | Auto-Accept Resurrection (out-of-combat resses, optional battle res) | QoL | S | `eb60951a` | ported |
+| B2 | Hold Shift to Enable for Auto Accept / Auto Turn In quests, and Hold Shift to Skip fix | Quest Tracker | S | `f254fde1` | ported |
+| B3 | Hide Class Resource Text at Zero, text size up to 64 | Resource Bars | S | `87a825f5` | ported |
+| B4 | Out of Combat Opacity for enemy nameplates | Nameplates | S | `72a5a2b7` | ported |
+| B5 | Close Bags on Mail Close | Bags | S | `0ddf27ac` | ported |
+| B6 | Channel Color Override on the cast bar | Resource Bars | S | `d7999823` | ported |
+| B7 | Extend Border Left and Right (power, class resource, cast, GCD bars) | Resource Bars | S | `cbeb5233` | ported; cast bar only, ours has no extend on power, class resource or GCD bars |
+| B8 | Timers round like Blizzard's (60m not 59m), Precise Below to 90 min, optional Round Seconds Down | General | S | `6e2b73db` `00c06189` | ported |
+| B9 | Textured Background for raid and party frames | Raid & Party Frames | S | `2c4b7d88` | ported |
+| B10 | Bags: Slot Size, Slot Spacing, background color/opacity, empty slot color | Bags | M | `bbd1ea7c` `7d6bdbdc` | ported |
+| B11 | Show When Missing for the Health and Power bars | Resource Bars | M | `f534d2f2` | ported |
+| B12 | Spell icon in the player portrait while casting | Resource Bars / Unit Frames | M | `cbeb5233` | ported |
+| B13 | Aura Border Styles (any border, size, opacity) on raid and party auras | Raid & Party Frames | M | `53e378de` | ported; opacity only, 5.4.8 draws solid borders |
+| B14 | Unit Frames Dark Mode per frame (toggle on Main and Mini Frames pages) | Unit Frames | S | `855e1cf3` | ported |
+| B15 | Custom Tracking Bar names | Cooldown Manager | S | `924393dc` | ported |
+| B16 | Focus cast sound without the icon (Any Cast option) | Cooldown Manager | S | `de891b55` | ported |
+| B17 | Swing Timer: rows without a weapon, shield in the Off Hand row, per-queued-attack colors | Resource Bars | S | `fe4bd7fb` | ported; per-queued-attack colors n/a (no queued-attack tracking here) |
+| B18 | Nameplate Debuff Coloring: texture or name mode, and Missing Debuff colors | Nameplates | M | `00c06189` `8f3c9d45` | ported |
+| B19 | Raid Buff Check window (flask, food, missing raid buffs) on ready check / Raid Tools button | QoL Raid Tools | M | `e922d22c` | ported; MoP flasks/elixirs/food and the 8 raid buffs, no runes |
+| B20 | Move Battleground Frames (flag carriers, capture bar) on the Shifter page | QoL | M | `00c06189` | ported; capture bars mover; flag carriers ride the top center text |
+| B21 | Action Bars Advanced Fade (per-bar fade while in combat / group / target / mounted) | Action Bars | M | `06d91a8c` | ported |
+| B22 | Unlock Mode: element filter box; overlap cycling with the mouse wheel; Move in Unlock Mode buttons | Unlock Mode | M | `e335c37f` `917ecfc8` `d7999823` | ported; our 5.4.8 frame level caps kept (no overlay level stack); Move in Unlock Mode on our pages' first sections |
+| B23 | Quest Tracker movable in Unlock Mode | Quest Tracker | M | `64270f73` | already ours: our quest tracker has its own Unlock Mode element; Move in Unlock Mode button added |
+| B24 | Name Format (first / last / initials / N characters) on UF, NP, RF, DM | Several | M | `5abb35ba` | later (owner's pick) |
+| B25 | Custom Text tags ([name] - [hp:pct]%) for UF, RF, NP text slots | Several | L | `8f3c9d45` `e5397c94` `41849495` | later (owner's pick) |
+| B26 | Unlock Mode Point Anchors (corner to corner) | Unlock Mode | L | `c4e8161c` | ported; off by default (General > Unlock Mode > Point Anchoring); dots resize without the grow animation and handle levels capped at 127 (5.4.8); strings with point anchors export as version 4 |
+| B27 | Shared Core Positions on nameplates (several elements in one slot) | Nameplates | M | `28bd3f64` | later (owner's pick) |
+| B28 | Offline Bank (browse alts' bags and bank, cross-character item counts in tooltips) | Bags | L | `6b0bc8c7` | skipped (owner's call) |
+| B29 | Mail Alt List beside Send Mail | Blizzard Skins+ | S | `481f55f9` | ported; own options on the Mail card |
+| B30 | Options page previews (GCD / Totem bar, XP bar, cast bars) and accent-colored cog/eye icons | Options | M | `0bee6b65` `4d3f0a91` `efbcf8aa` | ported; GCD, Totem and XP previews in our options; accent cog and eye glyphs |
+| B31 | Damage Meters appearance: separators, green-to-red value gradient, background texture, icon zoom, own-bar marker (display only, engine untouched) | Damage Meters | M | `37a781f8` | ported; value gradient, background texture, icon zoom, own-bar marker; separators skipped (need textured borders) |
+
+### Adapt: fixes to check against our code
+
+| # | Fix | Area | Upstream | Status |
+|---|---|---|---|---|
+| C1 | Visibility override of Always shows a bar saved as Never; toggle key follows it | Action Bars | `6bcbaa94` | not needed (our code already right) |
+| C2 | Paging settings (Disable Form Paging) apply on spec / profile switch and login | Action Bars | `2f5453c6` | not needed (our code already right) |
+| C3 | Macro'd spells show cooldown reductions as fast as plain buttons | Action Bars | `298cd96f` | not needed (our code already right) |
+| C4 | Loss of control red overlay shows at once (needs MoP's C_LossOfControl, exists in 5.4) | Action Bars | `00c06189` | not needed (our code already right) |
+| C5 | Bags: items respond with Frame Strata High | Bags | `50edfafc` | ported |
+| C6 | Character Sheet model no longer opens off screen | Blizzard Skins+ | `16c88f2f` | ported |
+| C7 | Skinned ready check started in combat: no blocked-action error | Blizzard Skins+ | `00c06189` | ported |
+| C8 | Chat: idle fade wakes after a visibility flip; Copy Chat / undocked tabs no combat taint; arrow-nudge in Unlock Mode | Chat | `6fbdd813` `d7999823` `0ddf27ac` | ported (idle fade only; the rest does not apply) |
+| C9 | Tracking Bars grouped overlap after width/height match; reorder by drag | Cooldown Manager | `00c06189` `8f3c9d45` | not needed (our code already right) |
+| C10 | Focus cast sound skips friendly/self focus; Focus Kick bar follows its nameplate after a settings change | Cooldown Manager | `00c06189` `8f3c9d45` | ported |
+| C11 | Add Custom Spell popup overlap; preview drag on vertical bars | Cooldown Manager | `bfaf1b5c` `0f486da6` | not needed (our code already right) |
+| C12 | Data Bars: profile switch leaves a frozen block copy | Data Bars | `67a14346` | ported |
+| C13 | Nameplates: target arrows vs Y-offset icons and Full Sized spell icon; ToT text keeps up; threat color over debuff coloring | Nameplates | `d7999823` `00c06189` | ported (arrows and threat over debuff color; ToT already fine) |
+| C14 | Raid frames: Free Move positions snap to pixel grid; pets pushed off screen in arenas | Raid & Party Frames | `7197092c` `ec7eb560` | ported |
+| C15 | Resource Bars: vertical fill while recharging (Soul Shards etc.); orientation fix | Resource Bars | `975c2fd8` | not needed (our pips already fill by orientation) |
+| C16 | Unit Frames: absorb above dispel overlay; Hide Exhaustion can be turned off; ToT/Focus Target switch instantly; settings changed in combat apply after; detached portrait survives spec change; portrait frames lose width on override | Unit Frames | `f55e1db7` `31d70f6a` `18a2bbe8` | ported (Hide Exhaustion, ToT/FoT instant; the rest already fine here) |
+| C17 | Player Aura Bars tooltips with negative spacing | Unit Frames | `7487b4e1` | ported |
+| C18 | Movement Alert Burning Rush text uses alert font | QoL | `fc87468b` | not needed (already the alert font) |
+| C19 | Bulk Buy on items sold one at a time | Blizzard Skins+ | `a84cae29` | ported |
+| C20 | Profiles: full import keeps other profiles' data; import over current profile; damaged string no freeze; sync removes deleted things; overrides of a disabled module kept; conditional override fixes (the 66-file audit PR) | Profiles / Overrides | `e7c92d54` `8f3c9d45` | later (owner's pick) |
+| C21 | Unlock Mode: comes back after back-to-back combat; layout change while paused closes it; Relative to Screen menu | Unlock Mode | `d7999823` `8f3c9d45` `18a2bbe8` | ported (back-to-back combat, Relative to Screen checkboxes; layout-close n/a, no per-group layouts) |
+| C22 | AuraBuff Reminders: Rogue poisons / Paladin / Shaman reminders keep their own Where to Show and sound; Beacon reminder placed after others; groupmate raid buffs pass clicks through; poisons in arenas/BGs | AuraBuff Reminders | `2e126f34` `d7999823` `18a2bbe8` | ported (per-class Where to Show / sound, specials in arenas/BGs; Beacon order and click-through n/a) |
+| C23 | Options window no longer opens in combat; keybind window and condition picker close with options | General | `d7999823` | kept ours, owner asked (MoP window works in combat) |
+
+### Skip
+
+| Area | Why | Upstream |
+|---|---|---|
+| Locales (54 PRs) | the port ships no locale addon | all `locale/*`, koKR, zhTW, esES, ptBR, deDE PRs |
+| Simple Loot Council 0.44 to 0.45.51 | module not in the port | `0d74a1ef` `4977f4d8` `04b1d6ae` |
+| Group Finder, Premade Groups spec icons | retail LFG API | in `d7999823` |
+| Forever Essentials (travel, loot, threat skins, fishing skill), ruleset grouping, form power bar | WoW Forever only | `c80eb976` `e03f540e` `99a68fe5` `2ba36ce7` `b5fbdd6b` |
+| Mythic+ Tools, Kick Tracker, M+ Summary data bar block | retail M+; we have our own Challenge Timer and Interrupt Tracker | `d185f361` `1a157c64` `28bd3f64` |
+| Party Mode, AFK screen, Should I Raid Tonight | module not in the port | `5842a20b` `a2d691fc` `2acba1db` |
+| Assisted Highlight glows | retail one-button rotation | `838b0336` |
+| Combat Potion preset, potion/healthstone in Blizzard CDM, CDM icons/repopulate plugin API, Add by ID vs Blizzard CDM, proc glow vs active aura | retail Blizzard Cooldown Manager | `18a2bbe8` `91f63fa9` `b878f8d3` `ab75826c` |
+| Talent reminders: Not Needed choice, zone dropdown, talent search | retail talent loadouts | `d7999823` `8f3c9d45` |
+| Upgrade calculator, enhanced upgrade tooltips, item level band colors, crafted gear | retail crests and tracks | `2acba1db` `00c06189` |
+| Warbank money input, bank sidebar reorder | warband bank is retail | `dcc2f134` `00c06189` |
+| Random Hearthstone (Quickdraw) | no Toy Box in 5.4.8 | `850b6cf5` |
+| Transparent World Map sidebars | retail maximized map; we already show the game behind the map | `136df107` |
+| CustomNames nicknames | third-party retail addon | `3bf43854` |
+| Restoration druid power type, Evoker essence, Arcane Soul, Ulatek boss name, Blistering Scales | retail classes / encounters | `1662471f` `1fa80f22` `3438c921` |
+| Gathering tracking reminders | Forever minimap tracking | `2acba1db` |
+| Tracking-bar position ownership guard, internals helper, panel builders, split comment follow-ups | restructure of files we lay out differently | `9cf2ba6e` `284f8b38` `4095c963` `943ee6fc` `cd45691f` `d95edc01` |
+| Localized expansion labels in bags (Midnight header) | retail expansions | `9798eafc` |
+| Action Bar 1 temporary bar when turned into a creature | Forever zombie event | `44fac45f` |
