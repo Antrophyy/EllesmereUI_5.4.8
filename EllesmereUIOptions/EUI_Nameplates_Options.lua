@@ -1822,24 +1822,34 @@ local function BuildColors(p)
 	local DC = ENP.DebuffColorKit
 	if DC then
 		p:Section("Debuff Based Nameplate Coloring")
-		local MODES = { { "none", "None" }, { "nameplate", "Color Nameplate" }, { "border", "Color Border" } }
+		local MODES = { { "none", "None" }, { "nameplate", "Color Nameplate" }, { "texture", "Texture Nameplate" },
+			{ "border", "Color Border" }, { "name", "Color Name" } }
 		local function Mode()
 			if not DB().debuffColorsEnabled then return "none" end
-			return DB().debuffColorsBorder and "border" or "nameplate"
+			return DC.Mode(DB())
 		end
 		local function dcOff() return Mode() == "none" end
-		p:Dropdown("Debuff Coloring", "Colors enemy health bars, or their borders, while the chosen debuffs are on them. 5.4.8 reads a plate's debuffs while it is your target, mouseover or focus.",
+		p:Dropdown("Debuff Coloring", "Colors enemy health bars (in their own texture, or in a texture of your choice), their borders or their names while the chosen debuffs are on them. 5.4.8 reads a plate's debuffs while it is your target, mouseover or focus.",
 			function() local out = {} for i, m in ipairs(MODES) do out[i] = { value = m[1], name = m[2] } end return out end,
 			Mode, function() for _, m in ipairs(MODES) do if m[1] == Mode() then return m[2] end end end,
 			function(v)
 				DB().debuffColorsEnabled = v ~= "none"
-				if v ~= "none" then DB().debuffColorsBorder = v == "border" end
+				if v ~= "none" then
+					DB().debuffColorsBorder = v == "border"
+					DB().debuffColorsMode = (v == "texture" or v == "name") and v or nil
+				end
 				if ns.RebuildSettingsPage then ns.RebuildSettingsPage() end
 			end)
-		p:Cog("Color Border", {
-			{ type = "slider", label = "Extra Border Size", min = 0, max = 4, step = 1, tip = "Thickens the border by this many pixels while it shows a debuff color.",
-				get = function() return DB().debuffColorsBorderExtra or 0 end, set = function(v) DB().debuffColorsBorderExtra = v end },
-		}, { disabled = function() return Mode() ~= "border" end })
+		p:Cog("Debuff Coloring Options", {
+			{ type = "slider", label = "Extra Border Size", min = 0, max = 4, step = 1, tip = "Color Border: thickens the border by this many pixels while it shows a debuff color.",
+				get = function() return DB().debuffColorsBorderExtra or 0 end, set = function(v) DB().debuffColorsBorderExtra = v end,
+				disabled = function() return Mode() ~= "border" end },
+			{ type = "dropdown", label = "Texture", tip = "Texture Nameplate: the health bar texture while it shows a debuff color.",
+				items = BarTextureItems, options = TEX_OPTS,
+				get = function() return DB().debuffColorsTexture or Val("healthBarTexture") end,
+				set = function(v) DB().debuffColorsTexture = v end,
+				disabled = function() return Mode() ~= "texture" end },
+		}, { disabled = function() return Mode() ~= "border" and Mode() ~= "texture" end })
 		p:Toggle("Only My Debuffs", "Counts only the debuffs you applied.",
 			function() return DB().debuffColorsPlayerOnly ~= false end, function(v) DB().debuffColorsPlayerOnly = v end, dcOff)
 		p:Blank()
@@ -1854,13 +1864,29 @@ local function BuildColors(p)
 			local name, _, icon = GetSpellInfo(id)
 			return format("|T%s:16:16:0:0:64:64:5:59:5:59|t %s |cff808080(%d)|r", icon or "Interface\\Icons\\INV_Misc_QuestionMark", name or "?", id)
 		end
+		local function MissingCount()
+			local n = 0
+			for _, x in ipairs(singles) do if x.missing then n = n + 1 end end
+			return n
+		end
 		for i, e in ipairs(singles) do
-			p:Button(SpellLabel(e.spell), "A debuff that colors the plate. Higher entries win.", "Remove", function()
+			p:Button(SpellLabel(e.spell) .. (e.missing and " |cffff8080(Missing)|r" or ""),
+				"A debuff that colors the plate. Missing ones win over combos, combos over applied debuffs; higher entries win.", "Remove", function()
 				table.remove(singles, i)
 				Save()
 			end)
 			p:Swatch("Debuff Color", function() return e.color.r, e.color.g, e.color.b end,
 				function(r, g, b) e.color = { r = r, g = g, b = b }; DB()[key] = DC.Encode(singles, combos) end)
+			p:Cog("Debuff State", {
+				{ type = "toggle", label = "Color While Missing",
+				  tip = "Colors enemies you or your group fight without this debuff, instead of with it. Up to " .. DC.MAX_MISSING .. " debuffs.",
+				  get = function() return e.missing == true end,
+				  set = function(v)
+					if v and not e.missing and MissingCount() >= DC.MAX_MISSING then return end
+					e.missing = v and true or nil
+					Save()
+				  end },
+			})
 		end
 		if #singles < DC.MAX_SINGLES then
 			p:Button("+ Add Debuff", "Adds a debuff by its spell ID.", "Add", function()
@@ -2063,6 +2089,9 @@ local function BuildGeneral(p)
 		  get = On("nonTargetKeepFocus", true), set = Set("nonTargetKeepFocus") },
 	}, { disabled = function() return (Val("nonTargetAlpha") or 100) >= 100 end,
 		disabledTip = "This option requires Non-Target Opacity to be below 100" })
+	p:Slider("Out of Combat Opacity",
+		"Fades enemy nameplates of mobs that are not in combat, so the pack you are fighting stands out from the ones you have not pulled. Your target (and focus with Keep Focus Full Opacity) stays at full opacity. 100 = no fading.",
+		0, 100, 1, Get("outOfCombatAlpha", 100), Set("outOfCombatAlpha"))
 	p:Toggle("Focus Letter", "Draws a white letter F on your current focus target's nameplate.",
 		On("focusLetterEnabled"), Set("focusLetterEnabled"))
 	p:Cog("Focus Letter", {

@@ -319,7 +319,7 @@ function Plate:ApplyLayout()
 	health:ClearAllPoints()
 	health:SetPoint("CENTER", self, "CENTER", 0, yOff)
 	health:SetSize(w, h)
-	health:SetStatusBarTexture(P.TexturePath(p.healthBarTexture))
+	health:SetStatusBarTexture(P.TexturePath(self._dcTex or p.healthBarTexture))
 	-- Textured Background (enemy plates): the background takes the bar
 	-- texture, tinted by the Background color.
 	self.healthBG:SetTexture((p.healthTextureBg and not self.isFriendly) and P.TexturePath(p.healthBarTexture) or WHITE)
@@ -649,11 +649,29 @@ function Plate:UpdateColor()
 		r, g, b = self:GetReactionColor()
 	end
 	local p = P.Profile()
-	-- Debuff Based Nameplate Coloring: the bar (Color Nameplate) or the
-	-- border (Color Border) takes the matched debuff's color.
-	local dcr = self.debuffColorR and p.debuffColorsEnabled and not self.isFriendly
-	if dcr and not p.debuffColorsBorder then
-		r, g, b = self.debuffColorR, self.debuffColorG, self.debuffColorB
+	-- Debuff Based Nameplate Coloring: the bar (Color Nameplate, or Texture
+	-- Nameplate in its own texture), the border (Color Border) or the name
+	-- (Color Name) takes the matched debuff's color. Bad threat shown on
+	-- that channel wins over it (retail DebuffColors_Threat). Read again
+	-- here: a Missing debuff follows combat as well as the aura list.
+	local dr, dg, db
+	if p.debuffColorsEnabled and not self.isFriendly and P.DebuffColorFor then
+		dr, dg, db = P.DebuffColorFor(self, self._dcAuras)
+	end
+	self._dcSig = dr and format("%.3f%.3f%.3f", dr, dg, db) or nil
+	self.debuffColorR, self.debuffColorG, self.debuffColorB = dr, dg, db
+	local DC = ENP.DebuffColorKit
+	local dcMode = DC and DC.Mode(p) or "nameplate"
+	local dcr = dr ~= nil
+	local onBar = dcr and (dcMode == "nameplate" or dcMode == "texture") and not self._badThreat
+	if onBar then
+		r, g, b = dr, dg, db
+	end
+	-- Texture Nameplate: the bar's texture swaps while it shows the color.
+	local wantTex = onBar and dcMode == "texture" and p.debuffColorsTexture or nil
+	if wantTex ~= self._dcTex then
+		self._dcTex = wantTex
+		self.health:SetStatusBarTexture(P.TexturePath(wantTex or p.healthBarTexture))
 	end
 	self.barR, self.barG, self.barB = r, g, b
 	self.health:SetStatusBarColor(r, g, b)
@@ -667,7 +685,7 @@ function Plate:UpdateColor()
 	else
 		self.threatBorderR, self.threatBorderG, self.threatBorderB = nil, nil, nil
 	end
-	if dcr and p.debuffColorsBorder then
+	if dcr and dcMode == "border" and not (p.threatColorBorder and self._threatBad and tr) then
 		self.threatBorderR, self.threatBorderG, self.threatBorderB = self.debuffColorR, self.debuffColorG, self.debuffColorB
 		local extra = p.debuffColorsBorderExtra or 0
 		if extra > 0 and not self._dcThick then
@@ -682,6 +700,9 @@ function Plate:UpdateColor()
 	self.threatNameR, self.threatNameG, self.threatNameB = nil, nil, nil
 	if p.threatColorName and tr then
 		self.threatNameR, self.threatNameG, self.threatNameB = tr, tg, tb
+	end
+	if dcr and dcMode == "name" and not (p.threatColorName and self._threatBad and tr) then
+		self.threatNameR, self.threatNameG, self.threatNameB = dr, dg, db
 	end
 	self:ColorTexts()
 
@@ -1094,30 +1115,56 @@ function Plate:UpdateTarget()
 	if self.ApplyCastColor and self.castShown then self:ApplyCastColor() end
 end
 
+-- Arrows sit outside the side elements they meet on the bar's line: a side
+-- aura row and the cast icon (normal or Full Sized, either side). An element
+-- whose Y offset moved it clear of the bar (above or below) is passed over
+-- (retail PositionArrowsOutsideAuras). Edges are measured in the health bar's
+-- coordinates (over the arrows' own height) and the arrows stay centered on
+-- the bar.
+local function SpanOf(f, health, ah)
+	if not (f and f:IsShown()) then return nil end
+	local l, r, t, b = f:GetLeft(), f:GetRight(), f:GetTop(), f:GetBottom()
+	local hs = health:GetEffectiveScale()
+	if not (l and hs and hs > 0) then return nil end
+	local k = f:GetEffectiveScale() / hs
+	l, r, t, b = l * k, r * k, t * k, b * k
+	local ht, hb = health:GetTop(), health:GetBottom()
+	if not (ht and hb) then return nil end
+	-- The arrows' own band: centered on the bar, arrow height tall.
+	local cy, half = (ht + hb) / 2, max(ht - hb, ah or 0) / 2
+	if b >= cy + half or t <= cy - half then return nil end
+	return l, r
+end
+
 function Plate:PlaceArrows()
 	local gap = 3
-	local leftAnchor, rightAnchor = self.health, self.health
-	local lx, rx = -gap, gap
-	if self.slotRows then
-		local lr = self.slotRows.left
-		local rr = self.slotRows.right
-		if lr and lr:IsShown() and lr.count and lr.count > 0 then leftAnchor = lr.first or lr end
-		if rr and rr:IsShown() and rr.count and rr.count > 0 then rightAnchor = rr.last or rr end
-	end
-	if self.castIconFrame and self.castShown and self.castIconFrame:IsShown() then
-		local p = P.Profile()
-		if not p.castIconOnRight and leftAnchor == self.health then
-			lx = lx - (self.castIconFrame:GetWidth() or 0) * (self.castIconFrame:GetScale() or 1)
+	local health = self.health
+	local hl, hr = health:GetLeft(), health:GetRight()
+	local minL, maxR = hl, hr
+	local function Take(f)
+		local l, r = SpanOf(f, health, self.leftArrow:GetHeight())
+		if l then
+			if minL and l < minL then minL = l end
+			if maxR and r > maxR then maxR = r end
 		end
 	end
-	self.leftArrow:ClearAllPoints()
-	self.leftArrow:SetPoint("RIGHT", leftAnchor, "LEFT", lx, 0)
-	self.rightArrow:ClearAllPoints()
-	self.rightArrow:SetPoint("LEFT", rightAnchor, "RIGHT", rx, 0)
-	if leftAnchor ~= self.health then
-		self.leftArrow:ClearAllPoints()
-		self.leftArrow:SetPoint("RIGHT", leftAnchor, "LEFT", lx, 0)
+	if hl and hr then
+		if self.slotRows then
+			for _, side in ipairs({ "left", "right" }) do
+				local row = self.slotRows[side]
+				if row and row:IsShown() and row.count and row.count > 0 then
+					Take(row.first); Take(row.last)
+				end
+			end
+		end
+		if self.castIconFrame and self.castShown then Take(self.castIconFrame) end
 	end
+	local lx = -gap - ((hl and minL) and (hl - minL) or 0)
+	local rx = gap + ((hr and maxR) and (maxR - hr) or 0)
+	self.leftArrow:ClearAllPoints()
+	self.leftArrow:SetPoint("RIGHT", health, "LEFT", lx, 0)
+	self.rightArrow:ClearAllPoints()
+	self.rightArrow:SetPoint("LEFT", health, "RIGHT", rx, 0)
 end
 
 function Plate:UpdateTargetOverlay()
@@ -1283,6 +1330,14 @@ function Plate:ApplyAlpha()
 	if nt < 1 and hasTargetNow and not self.isTarget
 		and not (p.nonTargetKeepFocus ~= false and self.isFocus) then
 		a = nt
+	end
+	-- Out of Combat Opacity (retail 9.7): enemy NPCs that are not in combat
+	-- (no Blizzard threat state; see ReadThreat) fade too. Target and kept
+	-- focus are exempt. Enemy players have no threat state on 5.4.8 plates.
+	local ooc = (p.outOfCombatAlpha or 100) / 100
+	if ooc < 1 and self.kind == "ENEMY_NPC" and not self.inCombat and not self.isTarget
+		and not (p.nonTargetKeepFocus ~= false and self.isFocus) then
+		a = a * ooc
 	end
 	self:SetAlpha(a)
 end

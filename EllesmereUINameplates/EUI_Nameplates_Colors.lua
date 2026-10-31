@@ -135,6 +135,9 @@ end
 
 function Plate:GetReactionColor()
 	self._nearAggro = false
+	-- True when the color picked is bad threat (Debuff Based Coloring gives
+	-- way to it, retail ns._reactionBadThreat).
+	self._badThreat = false
 	-- 1. Tapped always highest
 	if self.reaction == 1 then
 		return C("tapped")
@@ -156,19 +159,23 @@ function Plate:GetReactionColor()
 		elseif not isTank then
 			if InGroup() then
 				if status >= 3 then
+					self._badThreat = true
 					return C("dpsHasAggro")
 				elseif status >= 2 then
 					self._nearAggro = true
+					self._badThreat = true
 					return C("dpsNearAggro")
 				end
 			end
 		else
 			if status == 2 then
+				self._badThreat = true
 				return C("tankLosingAggro")
 			elseif status < 2 then
 				-- A tank without aggro: off-tank color when another tank holds
 				-- it (Plate:UpdateOffTankHeld, read on the slow tick).
 				if not self._offTankHeld then
+					self._badThreat = true
 					return C("tankNoAggro")
 				end
 				if P.On("offTankAggroEnabled") then
@@ -303,23 +310,29 @@ function Plate:GetReactionColor()
 end
 
 -- Threat color for the Border / Text channels (retail ns.ResolveThreatColor):
--- what threat alone says, nil when it says nothing.
+-- what threat alone says, nil when it says nothing. self._threatBad: the
+-- answer is bad threat (retail ns._threatOkA == 0).
 function Plate:ResolveThreatColor()
+	self._threatBad = false
 	if not threatColorsOn or self.threat == nil or self.isFriendly then return nil end
 	local status = self.threat
 	if P.IsTank() then
 		if status >= 3 then
 			if P.On("tankHasAggroEnabled") then return C("tankHasAggro") end
 			return nil
-		elseif status == 2 then
+		end
+		self._threatBad = true
+		if status == 2 then
 			return C("tankLosingAggro")
 		end
 		return C("tankNoAggro")
 	end
 	if not InGroup() then return nil end
 	if status >= 3 then
+		self._threatBad = true
 		return C("dpsHasAggro")
 	elseif status == 2 then
+		self._threatBad = true
 		return C("dpsNearAggro")
 	end
 	if P.On("dpsNoAggroEnabled") then

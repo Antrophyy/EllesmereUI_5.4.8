@@ -215,6 +215,7 @@ function Plate:ReadState()
 	local inCombat = threat ~= nil
 	if inCombat ~= self.inCombat then
 		self.inCombat = inCombat
+		self._alphaDirty = true
 		changed = true
 	end
 	local ri = RaidIndex(self.bRaid)
@@ -727,6 +728,7 @@ local function OnUpdate(_, elapsed)
 			unitChanged = plate:UpdateUnit()
 			if (wasTarget or false) ~= isTarget then
 				plate:UpdateTarget()
+				plate._alphaDirty = true
 			end
 			plate:UpdateMouseover()
 		elseif slow then
@@ -743,6 +745,10 @@ local function OnUpdate(_, elapsed)
 			plate:OnUnitChanged()
 		elseif stateChanged then
 			plate:UpdateColor()
+		end
+		if plate._alphaDirty then
+			plate._alphaDirty = nil
+			plate:ApplyAlpha()
 		end
 		if slow and plate.SlowUpdate then
 			plate:SlowUpdate()

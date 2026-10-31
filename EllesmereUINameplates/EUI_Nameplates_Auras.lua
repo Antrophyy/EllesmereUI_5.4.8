@@ -562,12 +562,12 @@ function Plate:UpdateAuras()
 	Fill(self, self.auraRows.cc, e and e.cc, 3)
 	self:UpdateAuraTimers()
 	if self.isTarget and p.showTargetArrows then self:PlaceArrows() end
-	-- Debuff based coloring follows the aura list.
+	-- Debuff based coloring follows the aura list (UpdateColor reads it
+	-- again, for the Missing debuffs that follow combat).
+	self._dcAuras = e
 	local r, g, b = P.DebuffColorFor(self, e)
 	local sig = r and format("%.3f%.3f%.3f", r, g, b) or nil
 	if sig ~= self._dcSig then
-		self._dcSig = sig
-		self.debuffColorR, self.debuffColorG, self.debuffColorB = r, g, b
 		self:UpdateColor()
 	end
 end
@@ -575,10 +575,20 @@ end
 -------------------------------------------------------------------------------
 --  Debuff Based Nameplate Coloring (retail EllesmereUINameplates_DebuffColors:
 --  per-class list "debuffColors" .. CLASS = "id:r,g,b;.../id+id:r,g,b;...",
---  combos (all spells on the unit) before singles, the higher entry wins).
---  Colors the health bar, or the border with Color Border.
+--  combos (all spells on the unit) before singles, the higher entry wins; a
+--  "!" entry colors while missing, from enemies fighting you or your group,
+--  over every other entry). Colors the health bar (in its own texture or in
+--  debuffColorsTexture), the border or the name (DC.Mode).
 -------------------------------------------------------------------------------
-local DC = { SINGLE = { r = 1, g = 0.43, b = 0.04 }, COMBO = { r = 0.10, g = 0.88, b = 0.32 }, MAX_SINGLES = 10, MAX_COMBOS = 5 }
+local DC = { SINGLE = { r = 1, g = 0.43, b = 0.04 }, COMBO = { r = 0.10, g = 0.88, b = 0.32 }, MAX_SINGLES = 10, MAX_MISSING = 5, MAX_COMBOS = 5 }
+
+-- "nameplate", "texture", "border" or "name" (retail DC.Mode).
+function DC.Mode(p)
+	p = p or P.Profile()
+	local m = p.debuffColorsMode
+	if m == "texture" or m == "name" then return m end
+	return p.debuffColorsBorder == true and "border" or "nameplate"
+end
 ENP.DebuffColorKit = DC
 
 local function ParseColor(s, d)
@@ -593,8 +603,8 @@ function DC.Parse(s)
 	if type(s) ~= "string" then return singles, combos end
 	local singlePart, comboPart = s:match("^([^/]*)/?(.*)$")
 	for entry in (singlePart or ""):gmatch("[^;]+") do
-		local id, color = entry:match("^(%d*):?(.*)$")
-		singles[#singles + 1] = { spell = tonumber(id) or 0, color = ParseColor(color, DC.SINGLE) }
+		local miss, id, color = entry:match("^(!?)(%d*):?(.*)$")
+		singles[#singles + 1] = { spell = tonumber(id) or 0, color = ParseColor(color, DC.SINGLE), missing = miss == "!" or nil }
 	end
 	for entry in (comboPart or ""):gmatch("[^;]+") do
 		local ids, color = entry:match("^([%d%+]*):?(.*)$")
@@ -609,7 +619,7 @@ local function Num(v) return (format("%.4f", v):gsub("%.?0+$", "")) end
 function DC.Encode(singles, combos)
 	if #singles == 0 and #combos == 0 then return nil end
 	local s, c = {}, {}
-	for i, e in ipairs(singles) do s[i] = e.spell .. ":" .. Num(e.color.r) .. "," .. Num(e.color.g) .. "," .. Num(e.color.b) end
+	for i, e in ipairs(singles) do s[i] = (e.missing and "!" or "") .. e.spell .. ":" .. Num(e.color.r) .. "," .. Num(e.color.g) .. "," .. Num(e.color.b) end
 	for i, e in ipairs(combos) do c[i] = table.concat(e.spells, "+") .. ":" .. Num(e.color.r) .. "," .. Num(e.color.g) .. "," .. Num(e.color.b) end
 	return table.concat(s, ";") .. "/" .. table.concat(c, ";")
 end
@@ -628,10 +638,32 @@ function P.DebuffColorFor(plate, e)
 	if #parsedS == 0 and #parsedC == 0 then return nil end
 	local onlyMine = p.debuffColorsPlayerOnly ~= false
 	local have = {}
-	for _, list in ipairs({ e.debuffs, e.cc }) do
-		for _, a in ipairs(list or {}) do
-			if a.id and (not onlyMine or IsMine(a.caster)) and (a.duration == 0 or (a.expires or 0) > GetTime()) then
-				have[a.id] = true
+	-- Missing: a debuff you keep up, gone from an enemy fighting you or your
+	-- group (its aura list is known: target, mouseover, focus or the cache).
+	local engaged
+	for _, s in ipairs(parsedS) do
+		if s.missing and s.spell > 0 then
+			if engaged == nil then engaged = DC.Engaged(plate) end
+			if not engaged then break end
+			if next(have) == nil then
+				for _, list in ipairs({ e.debuffs, e.cc }) do
+					for _, a in ipairs(list or {}) do
+						if a.id and (not onlyMine or IsMine(a.caster)) and (a.duration == 0 or (a.expires or 0) > GetTime()) then
+							have[a.id] = true
+						end
+					end
+				end
+				have[0] = true -- scanned
+			end
+			if not have[s.spell] then return s.color.r, s.color.g, s.color.b end
+		end
+	end
+	if not have[0] then
+		for _, list in ipairs({ e.debuffs, e.cc }) do
+			for _, a in ipairs(list or {}) do
+				if a.id and (not onlyMine or IsMine(a.caster)) and (a.duration == 0 or (a.expires or 0) > GetTime()) then
+					have[a.id] = true
+				end
 			end
 		end
 	end
@@ -645,9 +677,27 @@ function P.DebuffColorFor(plate, e)
 		end
 	end
 	for _, s in ipairs(parsedS) do
-		if s.spell > 0 and have[s.spell] then return s.color.r, s.color.g, s.color.b end
+		if not s.missing and s.spell > 0 and have[s.spell] then return s.color.r, s.color.g, s.color.b end
 	end
 	return nil
+end
+
+-- An enemy fighting you (the plate's threat) or, with a unit token, your
+-- group or pets.
+function DC.Engaged(plate)
+	if plate.threat ~= nil then return true end
+	local unit = plate.unit
+	if not unit or not UnitExists(unit) or not UnitAffectingCombat(unit) then return false end
+	if UnitExists("pet") and UnitThreatSituation("pet", unit) ~= nil then return true end
+	local raid = IsInRaid()
+	local n = GetNumGroupMembers() or 0
+	for i = 1, raid and n or (n - 1) do
+		local who = (raid and "raid" or "party") .. i
+		if UnitThreatSituation(who, unit) ~= nil then return true end
+		local pet = (raid and "raidpet" or "partypet") .. i
+		if UnitExists(pet) and UnitThreatSituation(pet, unit) ~= nil then return true end
+	end
+	return false
 end
 
 -- Duration texts and expiry (every 0.2 s from the plate driver).

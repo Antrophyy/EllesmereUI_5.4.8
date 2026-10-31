@@ -48,6 +48,11 @@ local defaults = {
     -- Solid border while it shows.
     debuffColorsBorder = false,
     debuffColorsBorderExtra = 0,
+    -- debuffColorsMode: "texture" (Texture Nameplate: the health bar in
+    -- debuffColorsTexture) or "name" (Color Name); unset reads
+    -- debuffColorsBorder (Color Border, else Color Nameplate).
+    debuffColorsMode = nil,
+    debuffColorsTexture = nil,
     -- Blizzard Style (Global Settings > Style): the stock nameplate's bar,
     -- background, selection and cast bar art on our plates with every feature
     -- intact. Default OFF; reload-gated.
@@ -626,6 +631,7 @@ local NAOWH_SEED = {
 	  ["r"] = 1,
 	},
 	["nonTargetAlpha"] = 100,
+	["outOfCombatAlpha"] = 100,
 	["npAuraFilters"] = {
 	  ["ccExclude"] = {
 
