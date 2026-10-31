@@ -407,6 +407,30 @@ function EABR.CurrentWhereBucket(inInstance)
 	return nil
 end
 
+-- Rogue, Paladin, Shaman and Pets each keep their own "Where to Show" (and,
+-- for the classes, reminder sound) in these consumables fields. A field that
+-- is not set yet reads the old shared specials value, so a profile from
+-- before the split behaves as it did until the section is edited (retail
+-- EABR.SPECIALS).
+EABR.SPECIALS = {
+	ROGUE   = { where = "rogueWhereToShow",   sound = "rogueSound" },
+	PALADIN = { where = "paladinWhereToShow", sound = "paladinSound" },
+	SHAMAN  = { where = "shamanWhereToShow",  sound = "shamanSound" },
+	PET     = { where = "petWhereToShow" },
+}
+function EABR.SpecialsWhere(co, field)
+	local t = field and co[field]
+	if type(t) == "table" then return t end
+	return co.specialsWhereToShow
+end
+-- A section set to no sound stores "none" (not nil), so it never reads
+-- through to the shared value; "none" has no sound file.
+function EABR.SpecialsSound(co, field)
+	local snd = field and co[field]
+	if snd == nil then snd = co.specialsSound end
+	return snd
+end
+
 function EABR.SectionShows(whereToShow, inInstance)
 	if whereToShow and whereToShow.in_combat == false and InCombat() then return false end
 	local bucket = EABR.CurrentWhereBucket(inInstance)
@@ -764,12 +788,18 @@ end
 local dismissed = {}
 EABR.dismissed = dismissed
 
+-- Class-special keys -> their section's sound field.
 local SPECIAL_KEYS = {}
-for _, t in ipairs({ D.ROGUE_POISONS, D.PALADIN_SEALS, D.SHAMAN_IMBUES, D.SHAMAN_SHIELDS }) do
-	for _, it in ipairs(t) do SPECIAL_KEYS[it.key] = true end
+do
+	local S = EABR.SPECIALS
+	for _, g in ipairs({ { D.ROGUE_POISONS, S.ROGUE.sound }, { D.PALADIN_SEALS, S.PALADIN.sound },
+		{ D.SHAMAN_IMBUES, S.SHAMAN.sound }, { D.SHAMAN_SHIELDS, S.SHAMAN.sound } }) do
+		for _, it in ipairs(g[1]) do SPECIAL_KEYS[it.key] = g[2] end
+	end
+	SPECIAL_KEYS.rogue_lethal, SPECIAL_KEYS.rogue_nonlethal = S.ROGUE.sound, S.ROGUE.sound
+	SPECIAL_KEYS.seal = S.PALADIN.sound
+	SPECIAL_KEYS.imbue_mh, SPECIAL_KEYS.imbue_oh = S.SHAMAN.sound, S.SHAMAN.sound
 end
-SPECIAL_KEYS.rogue_lethal, SPECIAL_KEYS.rogue_nonlethal, SPECIAL_KEYS.seal = true, true, true
-SPECIAL_KEYS.imbue_mh, SPECIAL_KEYS.imbue_oh = true, true
 
 function EABR.SoundPath(key)
 	local f = key and D.SOUND_FILES[key]
@@ -783,7 +813,8 @@ local function ResolveReminderSound(dk)
 	if prefix == "raidbuff" then return p.raidBuffs.sectionSound end
 	if prefix == "aura" then return p.auras.sectionSound end
 	if prefix == "consumable" then
-		if SPECIAL_KEYS[key] then return p.consumables.specialsSound end
+		local field = SPECIAL_KEYS[key]
+		if field then return EABR.SpecialsSound(p.consumables, field) end
 		return p.consumables.sectionSound
 	end
 	return nil
@@ -1507,7 +1538,7 @@ local function CollectSpecials(missing, playerClass, specID, inCombat)
 	end
 end
 
-local function CollectConsumables(missing, playerClass, specID, inInstance, inCombat)
+local function CollectConsumables(missing, playerClass, specID, inInstance, inCombat, inPvP)
 	local p = EABR.Profile()
 	local co = p.consumables
 	-- Drop a saved non-food (a potion saved by the earlier tracking).
@@ -1525,9 +1556,14 @@ local function CollectConsumables(missing, playerClass, specID, inInstance, inCo
 			end
 		end
 	end
-	if EABR.SectionShows(co.specialsWhereToShow, inInstance) then
+	-- Class specials follow the "Where to Show" of the player's class section.
+	local specialFields = EABR.SPECIALS[playerClass]
+	if specialFields and EABR.SectionShows(EABR.SpecialsWhere(co, specialFields.where), inInstance) then
 		CollectSpecials(missing, playerClass, specID, inCombat)
 	end
+	-- Arenas and battlegrounds remind the class specials only (retail: the
+	-- bag consumables stay off there).
+	if inPvP then return end
 	local shows = EABR.SectionShows(co.whereToShow, inInstance)
 	if shows and not inCombat and not InChallengeRun() then
 		UnderTake()
@@ -1634,7 +1670,7 @@ end
 local function CollectPets(missing, playerClass, specID, inInstance)
 	local co = EABR.Profile().consumables
 	if not D.PET_CLASSES[playerClass] then return end
-	if not (co.enabled and co.enabled.pet ~= false and EABR.SectionShows(co.specialsWhereToShow, inInstance)) then return end
+	if not (co.enabled and co.enabled.pet ~= false and EABR.SectionShows(EABR.SpecialsWhere(co, EABR.SPECIALS.PET.where), inInstance)) then return end
 	local suppress, petSpell, petLabel = false, nil, "Pet"
 	local enforced = nil
 	if playerClass == "HUNTER" then
@@ -1757,9 +1793,7 @@ local function Refresh()
 
 	CollectRaidBuffs(_missing, playerClass, inInstance)
 	CollectAuras(_missing, playerClass, specID, inInstance, inCombat)
-	if not inPvP then
-		CollectConsumables(_missing, playerClass, specID, inInstance, inCombat)
-	end
+	CollectConsumables(_missing, playerClass, specID, inInstance, inCombat, inPvP)
 	CollectPets(_missing, playerClass, specID, inInstance)
 
 	HandleAppearSounds(_missing)

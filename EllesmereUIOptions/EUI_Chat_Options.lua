@@ -290,7 +290,7 @@ local function BuildChat(p)
 	end
 
 	-- DISPLAY -------------------------------------------------------------
-	p:Section("Display")
+	p:Section("Display", { unlockKey = "ECHAT_MainChat" })
 	VisibilityRow(p)
 	p:Toggle("Lock Main Chat Size", "Hides the resize handle on the main chat frame, preventing accidental resizing.",
 		Getter("lockChatSize", false), Setter("lockChatSize"))

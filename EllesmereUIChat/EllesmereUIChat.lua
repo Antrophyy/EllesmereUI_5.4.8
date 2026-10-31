@@ -2115,6 +2115,9 @@ function ECHAT.RefreshVisibility()
 		ECHAT.SetIdleFadeAlpha(GetIdleFadeAlpha())
 	else
 		ECHAT.SetChatAlpha(a)
+		-- Retail 9.7: a visibility hide counts as idle, so the reveal finds the
+		-- chat already faded instead of showing it until the idle delay runs out.
+		if a == 0 and ECHAT.IdleOnVisHide then ECHAT.IdleOnVisHide() end
 	end
 end
 
@@ -2130,6 +2133,17 @@ local function StartIdleFade()
 	end
 	idleActive = true
 	ECHAT.SetIdleFadeAlpha(GetIdleFadeAlpha())
+end
+
+function ECHAT.IdleOnVisHide()
+	if idleActive or not P.started or not IdleApplicable() or DB().idleFadeEnabled == false then
+		return
+	end
+	if idleTimer then
+		idleTimer:Cancel()
+		idleTimer = nil
+	end
+	idleActive = true
 end
 
 local function CancelIdleFade()
@@ -2160,6 +2174,11 @@ ECHAT.ApplyIdleFadeHoverMotion = function() end
 local lastWake = 0
 function ECHAT.OnActiveMessage()
 	if not P.started or not IdleApplicable() then
+		return
+	end
+	-- Hidden by visibility: lines and whispers land unseen and must not wake
+	-- the idle fade (it would flash the chat on reveal).
+	if not visChatVisible then
 		return
 	end
 	local now = GetTime()
@@ -2240,6 +2259,10 @@ hoverPoll:SetScript("OnUpdate", function(_, dt)
 		return
 	end
 	pollAccum = 0
+	-- Hidden by visibility: nothing to hover (it stays idle until revealed).
+	if not visChatVisible and not hovering then
+		return
+	end
 	local over = CursorOverChat()
 	if over and not hovering then
 		hovering = true

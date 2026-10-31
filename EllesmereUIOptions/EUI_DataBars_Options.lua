@@ -1143,7 +1143,7 @@ local function TypeRows(cfg, b, s)
 			Toggle(s, "abbreviate", "Abbreviate Amount", "Shows large amounts using K/M suffixes (284,208g becomes 284.2Kg) instead of the full grouped number. The tooltip always shows the exact amount."),
 			{ type = "toggle", label = "Gold Tracking and History", tip = "Track and display gold amounts from all your characters on hover (account-wide).",
 			  get = function() return not (EllesmereUIDB and EllesmereUIDB.goldTracking == false) end,
-			  set = function(v) EllesmereUIDB.goldTracking = (not v) and false or nil end },
+			  set = function(v) if v then EllesmereUIDB.goldTracking = nil else EllesmereUIDB.goldTracking = false end end },
 		}
 	elseif t == "profession" or t == "profession2" then
 		local TD = { { "name", "Name and Bar" }, { "values", "Values" } }

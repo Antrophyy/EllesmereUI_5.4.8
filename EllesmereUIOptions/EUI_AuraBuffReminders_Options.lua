@@ -29,7 +29,7 @@ local function RDB() return Prof().raidBuffs end
 local function ADB() return Prof().auras end
 local function CDB() return Prof().consumables end
 
-local SPECIAL_WHERE_TIP = "Pick which content the class-special reminders (poisons/seals/imbues/shields) appear in.\nRested areas (cities and inns) always stay hidden."
+local SPECIAL_WHERE_TIP = "Pick which content this section's reminders appear in.\nRested areas (cities and inns) always stay hidden."
 
 local function ClassLabel(name, cls)
 	local c = cls and RAID_CLASS_COLORS and RAID_CLASS_COLORS[cls]
@@ -151,7 +151,7 @@ local GLOW_MODES = { { "default", "Default" }, { "class", "Class Color" }, { "cu
 local function BuildReminders(p)
 	local function off() return DDB().remindersEnabled == false end
 
-	p:Section("CORE")
+	p:Section("CORE", { unlockKey = "EABR_Reminders", unlockDisabled = off })
 	p:Toggle("Enable AuraBuff Reminders",
 		"Master toggle for all aura, buff, and consumable reminders. Talent reminders are not affected.",
 		function() return DDB().remindersEnabled ~= false end,
@@ -332,14 +332,39 @@ local function BuildReminders(p)
 	end
 	p:CloseRow()
 
-	local function SpecialWhere()
-		local c = CDB(); c.specialsWhereToShow = c.specialsWhereToShow or {}; return c.specialsWhereToShow
+	-- Each class section (and Pets) keeps its own Where to Show and sound.
+	-- Until edited it reads the old shared specials value (EABR.SPECIALS); the
+	-- first edit copies that into the section's own field.
+	local function SpecialWhere(field)
+		return function()
+			local c = CDB()
+			if type(c[field]) ~= "table" then
+				local old = c.specialsWhereToShow or {}
+				local t = {}
+				for k, v in pairs(old) do t[k] = v end
+				c[field] = t
+			end
+			return c[field]
+		end
 	end
+	local function SpecialSoundRow(field)
+		p:Dropdown("Reminder Sound", "Play a sound once when a reminder in this section newly appears.",
+			SoundItems,
+			function() return EABR.SpecialsSound(CDB(), field) or "none" end,
+			function() local v = EABR.SpecialsSound(CDB(), field) or "none"; return D.SOUND_NAMES[v] or v end,
+			function(v)
+				-- "none" is stored, so the section never reads the shared sound.
+				CDB()[field] = v
+				local path = EABR.SoundPath(v)
+				if path then PlaySoundFile(path, "Master") end
+			end)
+	end
+	local SP = EABR.SPECIALS
 
 	-- ROGUE POISONS
 	p:Section("ROGUE POISONS")
-	WhereRow(p, SpecialWhere, SPECIAL_WHERE_TIP)
-	SoundRow(p, CDB, "specialsSound")
+	WhereRow(p, SpecialWhere(SP.ROGUE.where), SPECIAL_WHERE_TIP)
+	SpecialSoundRow(SP.ROGUE.sound)
 	for _, it in ipairs(D.ROGUE_POISONS) do
 		EnabledToggle(p, CDB, it.key, ClassLabel(SpellLabel(it.castSpell, it.name), "ROGUE"))
 	end
@@ -347,8 +372,8 @@ local function BuildReminders(p)
 
 	-- PALADIN SEALS (retail: Paladin Rites)
 	p:Section("PALADIN SEALS")
-	WhereRow(p, SpecialWhere, SPECIAL_WHERE_TIP)
-	SoundRow(p, CDB, "specialsSound")
+	WhereRow(p, SpecialWhere(SP.PALADIN.where), SPECIAL_WHERE_TIP)
+	SpecialSoundRow(SP.PALADIN.sound)
 	for _, it in ipairs(D.PALADIN_SEALS) do
 		EnabledToggle(p, CDB, it.key, ClassLabel(SpellLabel(it.castSpell, it.name), "PALADIN"),
 			"Reminds you when no seal is active. Your spec's usual seal is cast first (Holy / Protection: Seal of Insight, Retribution: Seal of Truth) when it is ticked.")
@@ -357,8 +382,8 @@ local function BuildReminders(p)
 
 	-- SHAMAN IMBUES & SHIELDS
 	p:Section("SHAMAN IMBUES & SHIELDS")
-	WhereRow(p, SpecialWhere, SPECIAL_WHERE_TIP)
-	SoundRow(p, CDB, "specialsSound")
+	WhereRow(p, SpecialWhere(SP.SHAMAN.where), SPECIAL_WHERE_TIP)
+	SpecialSoundRow(SP.SHAMAN.sound)
 	for _, it in ipairs(D.SHAMAN_IMBUES) do
 		EnabledToggle(p, CDB, it.key, ClassLabel(SpellLabel(it.castSpell, it.name), "SHAMAN"),
 			"Weapon imbue by spec: Enhancement Windfury (main hand) + Flametongue (off hand), Elemental Flametongue, Restoration Earthliving.")
@@ -371,6 +396,9 @@ local function BuildReminders(p)
 
 	-- PETS
 	p:Section("PETS")
+	WhereRow(p, SpecialWhere(SP.PET.where),
+		"Pick which content the pet reminders appear in.\nRested areas (cities and inns) always stay hidden.")
+	p:Blank()
 	p:Toggle("Missing Pet",
 		"Show a reminder when you don't have an active pet summoned. Only applies to pet classes (Hunter, Warlock, Death Knight, Mage).",
 		function() return CDB().enabled.pet ~= false end,
