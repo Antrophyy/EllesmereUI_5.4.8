@@ -444,6 +444,39 @@ local function BuildGeneral(p)
 		function() return CheckboxSummary(EUI_BUTTONS, EuiButtonOn) end)
 
 	-------------------------------------------------------------------
+	-- UNLOCK MODE
+	-------------------------------------------------------------------
+	p:Section("Unlock Mode")
+
+	do
+		local OVERLAP = {
+			{ "disabled", "Disabled" }, { "scroll", "Scroll" }, { "shiftscroll", "Shift + Scroll" },
+			{ "controlscroll", "Ctrl + Scroll" }, { "altscroll", "Alt + Scroll" },
+		}
+		local function OverlapGet()
+			local db = EllesmereUIDB
+			return (db and db.unlockOverlapMethod) or "scroll"
+		end
+		p:Dropdown("Overlap Cycling", "Scroll with the chosen modifier to cycle overlapping frames in Unlock Mode.",
+			function()
+				local items = {}
+				for i, e in ipairs(OVERLAP) do items[i] = { value = e[1], name = e[2] } end
+				return items
+			end,
+			OverlapGet,
+			function()
+				local v = OverlapGet()
+				for _, e in ipairs(OVERLAP) do if e[1] == v then return e[2] end end
+				return "Scroll"
+			end,
+			function(v)
+				EllesmereUIDB = EllesmereUIDB or {}
+				EllesmereUIDB.unlockOverlapMethod = v
+				if EllesmereUI.RefreshUnlockOverlapMethod then EllesmereUI.RefreshUnlockOverlapMethod() end
+			end)
+	end
+
+	-------------------------------------------------------------------
 	-- COMBAT
 	-------------------------------------------------------------------
 	p:Section("Combat")
@@ -466,6 +499,12 @@ local function BuildGeneral(p)
 		function(v)
 			ns.SetCVarSafe("reducedLagTolerance", "1")
 			ns.SetCVarSafe("maxSpellStartRecoveryOffset", v)
+		end)
+	p:Toggle("Round Timer Seconds Down", "Timer seconds round down like Blizzard's buff frame, so a timer reads 0 in its last second. Off, it reads 1 until it ends. (Player Aura Bars timers.)",
+		function() return EllesmereUIDB and EllesmereUIDB.timerSecondsDown == true or false end,
+		function(v)
+			if not EllesmereUIDB then EllesmereUIDB = {} end
+			EllesmereUIDB.timerSecondsDown = v or nil
 		end)
 	local function ctOn(key) return GetCVar(key) == "1" end
 	p:MultiSelect("Combat Text", "Floating combat text over your targets. Periodic and pet damage only show while Damage is on.",

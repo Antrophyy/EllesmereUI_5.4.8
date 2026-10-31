@@ -240,7 +240,7 @@ local function Build(p)
 	end
 
 	-- DISPLAY -------------------------------------------------------------
-	p:Section("Display")
+	p:Section("Display", { unlockKey = "EBS_Minimap" })
 	VisibilityRow(p)
 	p:Cog("Minimap Opacity", {
 		SliderRow("Opacity", "opacity", 10, 100, 1, 100, "Fades the minimap while it is shown. Visibility still decides when it shows."),

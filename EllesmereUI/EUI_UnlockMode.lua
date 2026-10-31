@@ -93,6 +93,14 @@ end
 if EllesmereUI._unlockModeLoaded then return end
 EllesmereUI._unlockModeLoaded = true
 
+-- Overlap cycling in Unlock Mode: "disabled", or the wheel alone ("scroll",
+-- the default) or with Shift / Ctrl / Alt held ("shiftscroll" /
+-- "controlscroll" / "altscroll").
+function EllesmereUI.GetUnlockOverlapMethod()
+    local db = EllesmereUIDB
+    return (db and db.unlockOverlapMethod) or "scroll"
+end
+
 -------------------------------------------------------------------------------
 --  Anchor reapply stub (pre-EnsureLoaded): lets child addons (CDM) reposition
 --  anchored elements at login before the full body loads; deferred block replaces it.
@@ -738,6 +746,7 @@ ns.unlockParts.Positions(UM)
 ns.unlockParts.Tools(UM)
 ns.unlockParts.Movers(UM)
 ns.unlockParts.Session(UM)
+ns.unlockParts.Filter(UM)
 local HideAllGuidesAndHighlight, DeselectMover = UM.HideAllGuidesAndHighlight, UM.DeselectMover
 local SortMoverFrameLevels, HideBlizzOwnedOverlays = UM.SortMoverFrameLevels, UM.HideBlizzOwnedOverlays
 
@@ -866,8 +875,10 @@ end
 
 local function ResumeAfterCombat()
     if not combatSuspended then return end
+    -- A pull again inside the resume delay: stay suspended, so the end of that
+    -- combat resumes the session (its own PLAYER_REGEN_ENABLED calls this again).
+    if InCombatLockdown() then return end
     combatSuspended = false
-    if InCombatLockdown() then return end  -- safety check
 
     -- Re-enter unlock mode but skip snapshot/reset since we preserved state
     UM.isUnlocked = true

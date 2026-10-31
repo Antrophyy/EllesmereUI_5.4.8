@@ -2629,7 +2629,11 @@ function Page:RowWidth()
 	return CONTENT_W - CONTENT_PAD * 2
 end
 
-function Page:Section(text)
+-- opts (optional): unlockKey (an Unlock Mode element key, or a function
+-- returning one at the click, for a page whose selector picks the element),
+-- unlockDisabled (fn) and unlockDisabledTip: a "Move in Unlock Mode" button
+-- right after the title (retail BuildSectionUnlockJump).
+function Page:Section(text, opts)
 	self.openRow = nil
 	-- 20 px spacer between sections, like EllesmereUI pages.
 	if self.y < -6 then
@@ -2645,10 +2649,61 @@ function Page:Section(text)
 	line:SetPoint("BOTTOMLEFT")
 	line:SetPoint("BOTTOMRIGHT")
 	line:SetHeight(1)
+	if opts and opts.unlockKey then
+		self:SectionUnlockJump(frame, label, opts)
+	end
 	self.section = text
 	self:AddTarget("\2" .. text, frame, self.y)
 	self.rowIndex = 0
 	self.y = self.y - SECTION_H
+end
+
+-- "Move in Unlock Mode" on a section title: the unlocked-lock glyph in the
+-- accent, 70% at rest, full while hovered, 20% while disabled.
+function Page:SectionUnlockJump(frame, label, opts)
+	local button = CreateFrame("Button", nil, frame)
+	button:SetSize(20, 20)
+	button:SetPoint("LEFT", label, "RIGHT", 6, 0)
+	local icon = button:CreateTexture(nil, "ARTWORK")
+	icon:SetAllPoints()
+	icon:SetTexture(ART_PATH .. "unlockmode")
+	icon:SetTexCoord(0, 30 / 32, 0, 30 / 32)
+	local function Off()
+		return opts.unlockDisabled and opts.unlockDisabled() and true or false
+	end
+	function button:UpdateState()
+		self.off = Off()
+		icon:SetVertexColor(ACCENT[1], ACCENT[2], ACCENT[3])
+		self:SetAlpha(self.off and 0.2 or (self:IsMouseOver() and 1 or 0.7))
+	end
+	button:SetScript("OnClick", function(self)
+		if self.off then
+			return
+		end
+		local key = opts.unlockKey
+		if type(key) == "function" then
+			key = key()
+		end
+		if key then
+			ns.OpenUnlockModeAt(key)
+		end
+	end)
+	button:SetScript("OnEnter", function(self)
+		self:UpdateState()
+		if self.off and opts.unlockDisabledTip then
+			ShowTip(self, opts.unlockDisabledTip)
+		else
+			ShowTip(self, "Move in Unlock Mode")
+		end
+	end)
+	button:SetScript("OnLeave", function(self)
+		self:UpdateState()
+		HideTip()
+	end)
+	ForwardWheel(button)
+	RegisterRefresh(function() button:UpdateState() end)
+	button:UpdateState()
+	return button
 end
 
 -- Search targets: where a section or a setting is on the page, so a search
@@ -2940,13 +2995,26 @@ function Page:InlineIcon(tooltip, iconPath, onClick, size)
 	local icon = button:CreateTexture(nil, "ARTWORK")
 	icon:SetAllPoints()
 	icon:SetTexture(iconPath)
-	button:SetAlpha(0.45)
+	button.texture = icon
+	-- The eye (preview) glyphs wear the accent, a little brighter (retail accent glyphs).
+	local accent = type(iconPath) == "string" and (iconPath:find("eui%-visible") or iconPath:find("eui%-invisible")) and true or false
+	local idleA, hotA = accent and 0.6 or 0.45, accent and 1 or 0.9
+	local function Paint()
+		if accent then
+			icon:SetVertexColor(ACCENT[1], ACCENT[2], ACCENT[3])
+		end
+	end
+	Paint()
+	if accent then
+		RegisterRefresh(Paint)
+	end
+	button:SetAlpha(idleA)
 	button:SetScript("OnEnter", function(self)
-		self:SetAlpha(0.9)
+		self:SetAlpha(hotA)
 		ShowTip(self, tooltip)
 	end)
 	button:SetScript("OnLeave", function(self)
-		self:SetAlpha(0.45)
+		self:SetAlpha(idleA)
 		HideTip()
 	end)
 	button:SetScript("OnClick", function()
@@ -3214,7 +3282,14 @@ function Page:Cog(title, rows, opts)
 		local off = cell.disabled or (opts.disabled and opts.disabled())
 		self.off = off
 		local open = cogOpen and cogOpen.button == self
-		self:SetAlpha(off and 0.15 or ((open or self:IsMouseOver()) and 0.7 or 0.4))
+		-- The cog, directions and resize glyphs wear the accent (white while
+		-- disabled), a little brighter than white glyphs (retail accent cogs).
+		if off then
+			icon:SetVertexColor(1, 1, 1)
+		else
+			icon:SetVertexColor(ACCENT[1], ACCENT[2], ACCENT[3])
+		end
+		self:SetAlpha(off and 0.15 or ((open or self:IsMouseOver()) and 0.85 or 0.55))
 	end
 	button:SetScript("OnClick", function(self)
 		if self.off then
@@ -4010,6 +4085,20 @@ local function StartUnlockFromWindow()
 	if ns.EnterUnlockMode then
 		ns.EnterUnlockMode()
 	end
+end
+
+-- Opens Unlock Mode with the element `key` selected and its mover flashed
+-- once the movers have faded in (retail OpenUnlockModeAt). The open module
+-- and tab are the return target, as from the sidebar.
+function ns.OpenUnlockModeAt(key)
+	if InCombatLockdown() then
+		print("|cffff6060[EllesmereUI]|r Cannot enter Unlock Mode during combat.")
+		return false
+	end
+	ns._unlockAutoSelectKey = key
+	ns._unlockAutoSelectFlash = true
+	StartUnlockFromWindow()
+	return true
 end
 
 ---------------------------------------------------------------------------

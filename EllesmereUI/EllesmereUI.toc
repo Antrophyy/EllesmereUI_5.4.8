@@ -46,5 +46,6 @@ EUI_UnlockMode_Positions.lua
 EUI_UnlockMode_Tools.lua
 EUI_UnlockMode_Movers.lua
 EUI_UnlockMode_Session.lua
+EUI_UnlockMode_Filter.lua
 # First time setup popup (Welcome: addon picker + Import Profile; /eui setup)
 EllesmereUI_FirstInstall.lua
