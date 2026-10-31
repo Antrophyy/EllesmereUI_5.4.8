@@ -390,7 +390,7 @@ local function HideExhaustionRow(unit)
 	return { type = "toggle", label = "Hide Exhaustion",
 		tip = "Hides Sated, Exhaustion, Temporal Displacement and the other Bloodlust lockout debuffs.",
 		get = function() return S(unit).debuffHideExhaustion ~= false end,
-		set = function(v) S(unit).debuffHideExhaustion = (not v) and false or nil end }
+		set = function(v) if v then S(unit).debuffHideExhaustion = nil else S(unit).debuffHideExhaustion = false end end }
 end
 local DISPEL_OVERLAY = { { "none", "None" }, { "fill", "Fill Overlay" }, { "full", "Full Overlay" }, { "gradient", "Gradient Overlay" }, { "gradient_sharp", "Gradient Sharp" } }
 local ABSORB_PLACEMENT = { { "overlay", "Overlay" }, { "right", "From Right Edge" }, { "left", "From Left Edge" } }
@@ -429,8 +429,13 @@ local function NotNone(unit, key)
 	end
 end
 
-local function Dark()
-	return UF.db.darkTheme
+-- One frame's Dark Mode (its own toggle, else the profile-wide one).
+local function DarkFor(unit)
+	return function() return UF.DarkOn(UF.db[unit]) end
+end
+local function DarkModeToggle(p, unit)
+	p:Toggle("Dark Mode", "Dark health fill (#111111) with a light grey background for the missing health, on this frame only. Global Settings > Colors switches every frame.",
+		function() return UF.DarkOn(S(unit)) end, function(v) S(unit).darkTheme = v and true or false end)
 end
 
 -- Visibility checklist (Never / Always / Mouseover, match mode, Show / Hide lanes).
@@ -644,7 +649,7 @@ local function TextSlot(p, unit, slot, label, list, sync)
 end
 
 local function FillColorRow(p, unit, sync)
-	p:Label("Fill Color", "Color of the health fill: your own color or the unit's class (players) / reaction (NPCs) color.", Dark)
+	p:Label("Fill Color", "Color of the health fill: your own color or the unit's class (players) / reaction (NPCs) color.", DarkFor(unit))
 	local function classOn() return S(unit).healthClassColored ~= false end
 	local function dynamicOn() return (S(unit).healthColorMode or "none") ~= "none" end
 	if sync then
@@ -678,7 +683,7 @@ end
 
 local function BackgroundRow(p, unit, sync)
 	p:Slider("Bar Background", "Opacity of the background behind the missing health.", 0, 100, 1,
-		Get(unit, "customBgAlpha", 100), Set(unit, "customBgAlpha"), Dark)
+		Get(unit, "customBgAlpha", 100), Set(unit, "customBgAlpha"), DarkFor(unit))
 	if sync then
 		Sync(p, "Apply Bar Background to all Frames", unit, { "customBgColor", "customBgAlpha", "bgClassColored" })
 	end
@@ -1165,7 +1170,7 @@ local function AuraRows(p, unit)
 				elseif v == "MatchAll" then
 					s.debuffFilterMatch = s.debuffFilterMatch ~= "all" and "all" or nil
 				elseif v == "HideExhaustion" then
-					s.debuffHideExhaustion = (s.debuffHideExhaustion ~= false) and false or nil
+					if s.debuffHideExhaustion ~= false then s.debuffHideExhaustion = false else s.debuffHideExhaustion = nil end
 				else
 					s["debuff" .. v] = not s["debuff" .. v] or nil
 				end
@@ -1278,14 +1283,13 @@ local function UnitSelector(p, list, which)
 end
 
 local function BuildDisplay(p, unit)
-	p:Section("Display")
+	p:Section("Display", { unlockKey = unit })
 	VisibilityRow(p, unit)
 	p:Toggle("Enable " .. UF.UNIT_LABELS[unit] .. " Frame", "Turn this EllesmereUI frame on or off. Turning on a frame that was off may need a UI reload to hide Blizzard's frame.",
 		function() return UF.db.enabledFrames[unit] ~= false end,
 		function(v) UF.db.enabledFrames[unit] = v end)
 	BarTextureRow(p, unit, false, true)
-	p:Toggle("Dark Mode", "Dark health fill (#111111) with a light grey background for the missing health. Applies to all frames.",
-		function() return UF.db.darkTheme end, function(v) UF.db.darkTheme = v end)
+	DarkModeToggle(p, unit)
 	p:Slider("Border Size", "Border around the whole frame, in pixels.", 0, 8, 1, Get(unit, "borderSize", 1), Set(unit, "borderSize"))
 	Sync(p, "Apply Border to all Frames", unit, { "borderSize", "borderColor", "borderAlpha" })
 	p:Swatch("Border",
@@ -1503,7 +1507,7 @@ local function BuildPortrait(p, unit)
 		CS("Size", 1, 7, 1, unit, "detachedPortraitBorderSize", 7),
 		CS("Opacity", 0, 100, 1, unit, "detachedPortraitBorderOpacity", 100),
 		CT("Unit Color in Dark Mode", unit, "detachedPortraitUnitColorDark", false,
-			function() return not (S(unit).detachedPortraitClassColor ~= false and UF.db.darkTheme) end,
+			function() return not (S(unit).detachedPortraitClassColor ~= false and UF.DarkOn(S(unit))) end,
 			"Keeps the unit's class or reaction color on the ring in Dark Mode instead of your own class color."),
 		CD("Outer Ring", { { "none", "None" }, { "pixels", "Pixels Ring" }, { "pixels-textured", "Pixels Textured Ring" },
 			{ "pixels-shadow", "Pixels Ring Shadow" }, { "pixels-textured-shadow", "Pixels Textured Ring Shadow" }, { "thin-border", "Naowh Thin Circle" } },
@@ -1547,7 +1551,7 @@ local function BuildHealth(p, unit, mini)
 	FillColorRow(p, unit, sync)
 	BackgroundRow(p, unit, sync)
 	Toggle(p, "Smooth Health Bars", "Health changes slide instead of jumping.", unit, "smoothBars", false)
-	Slider(p, "Fill Opacity", "Opacity of the health fill.", 0, 100, 1, unit, "healthBarOpacity", 90, Dark)
+	Slider(p, "Fill Opacity", "Opacity of the health fill.", 0, 100, 1, unit, "healthBarOpacity", 90, DarkFor(unit))
 	if sync then
 		Sync(p, "Apply Bar Opacity to all Frames", unit, { "healthBarOpacity" })
 	end
@@ -1932,6 +1936,7 @@ local function BuildMini(p)
 		function(v) S(unit).borderSizeOverride = v end)
 	p:Toggle("Show Highlight Border", "Show the main frames' hover highlight border on this frame.",
 		function() return S(unit).showHighlightBorder ~= false end, function(v) S(unit).showHighlightBorder = v end)
+	DarkModeToggle(p, unit)
 	VisibilityRow(p, unit)
 	p:Blank()
 

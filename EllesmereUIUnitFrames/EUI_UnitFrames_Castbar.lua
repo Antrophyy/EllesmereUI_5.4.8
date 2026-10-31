@@ -159,7 +159,8 @@ local function SetIcon(frame, texture)
 	if c.iconOnPortrait and p:IsShown() then
 		p.castIcon:SetTexture(texture)
 		p.castIcon:SetShown(texture ~= nil)
-	else
+	elseif not p.castIcon.erbOwned then
+		-- (erbOwned: the Resource Bars cast bar shows its icon here)
 		p.castIcon:Hide()
 	end
 end
@@ -248,7 +249,7 @@ function UF.CastStop(frame, castID)
 	holder.tick:Hide()
 	holder.mid:Hide()
 	holder.uninterruptible:Hide()
-	frame.Portrait.castIcon:Hide()
+	if not frame.Portrait.castIcon.erbOwned then frame.Portrait.castIcon:Hide() end
 	if holder.preview then
 		return
 	end
@@ -271,6 +272,17 @@ function UF.CastInterruptible(frame, notInterruptible)
 	end
 end
 
+-- Resource Bars cast bar "Embed in Player Portrait": the player portrait it
+-- draws its spell icon on (the same castIcon layer as Show Icon on Portrait),
+-- or nil while no player portrait shows.
+function UF.GetPlayerCastPortrait()
+	local f = UF.frames and UF.frames.player
+	local p = f and f.Portrait
+	if p and p.castIcon and f:IsShown() and p:IsShown() then
+		return p
+	end
+end
+
 -- Full refresh (unit changed, settings changed, preview).
 function UF.CastUpdate(frame)
 	local holder = frame.Castbar
@@ -281,7 +293,7 @@ function UF.CastUpdate(frame)
 	if not holder.enabled then
 		holder.preview = nil
 		holder:Hide()
-		frame.Portrait.castIcon:Hide()
+		if not frame.Portrait.castIcon.erbOwned then frame.Portrait.castIcon:Hide() end
 		return
 	end
 	if UF.IsFake(frame) or (frame.preview and not UnitCastingInfo(frame.unit) and not UnitChannelInfo(frame.unit)) then

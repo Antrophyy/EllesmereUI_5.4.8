@@ -707,6 +707,14 @@ driver:SetScript("OnEvent", function(self, event, arg1)
 	elseif event == "PLAYER_FOCUS_CHANGED" then
 		RefreshKey("focus")
 		RefreshKey("focustarget")
+	elseif event == "UNIT_TARGET" then
+		-- The Target of Target / Focus Target frames change the moment the
+		-- target or focus switches who it attacks, not on the next poll.
+		if arg1 == "target" then
+			RefreshKey("targettarget")
+		elseif arg1 == "focus" then
+			RefreshKey("focustarget")
+		end
 	elseif event == "UNIT_PET" then
 		if arg1 == "player" then
 			RefreshKey("pet")
@@ -768,6 +776,7 @@ for _, event in ipairs({
 }) do
 	pcall(driver.RegisterEvent, driver, event)
 end
+pcall(driver.RegisterUnitEvent, driver, "UNIT_TARGET", "target", "focus")
 
 ---------------------------------------------------------------------------
 -- API for the settings window

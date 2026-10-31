@@ -661,7 +661,7 @@ local function BuildCore(p, cfg)
 		CogDropdown(cfg, "Position", POINTS, "durationPosition", "CENTER"),
 		{ type = "toggle", label = "Show S for Seconds", get = function() return cfg.durationShowSeconds == true end,
 		  set = function(v) cfg.durationShowSeconds = v or nil end },
-		{ type = "slider", label = "Precise Below (minutes, 0 = off)", min = 0, max = 60, step = 1,
+		{ type = "slider", label = "Precise Below (minutes, 0 = off)", min = 0, max = 90, step = 1,
 		  get = function() return cfg.durationPrecisionThreshold and floor(cfg.durationPrecisionThreshold / 60 + 0.5) or 0 end,
 		  set = function(v) cfg.durationPrecisionThreshold = v > 0 and floor(v * 60 + 0.5) or nil end },
 	}, { icon = "resize" })
@@ -865,7 +865,7 @@ local function BuildBars(p)
 	p:Section(e.label .. " " .. sub)
 	p:Toggle("Enable Bar", "Show this bar.", function() return cfg.enabled ~= false end, function(v)
 		if e.id == "default" then
-			cfg.enabled = (not v) and false or nil
+			if v then cfg.enabled = nil else cfg.enabled = false end
 		else
 			cfg.enabled = v and true or false
 		end

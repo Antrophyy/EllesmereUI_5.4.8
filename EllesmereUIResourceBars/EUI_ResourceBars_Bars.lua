@@ -836,8 +836,13 @@ local function IsPowerBarHidden()
 end
 ERB.IsPowerBarHidden = IsPowerBarHidden
 
-local function ShowCountText(sp)
+-- value: the number the text shows; with Hide at Zero (retail 9.7) a 0
+-- hides the text. Left out for texts that are not a resource count.
+local function ShowCountText(sp, value)
 	if not sp.showText or ERB.TextHiddenByForm(sp, true) then
+		return false
+	end
+	if value ~= nil and sp.hideTextAtZero and value == 0 then
 		return false
 	end
 	if sp.showTextOnlyIfNoPower and not IsPowerBarHidden() then
@@ -937,7 +942,7 @@ local function UpdateRunes(sp, res, ori)
 		end
 	end
 	if f.count then
-		if sp.runesSimple and ShowCountText(sp) then
+		if sp.runesSimple and ShowCountText(sp, readyN) then
 			f.count:SetText(tostring(readyN))
 			f.count:SetTextColor(TextColorOr(sp, tr, tg, tb, textInstead))
 			f.count:Show()
@@ -1007,7 +1012,7 @@ local function UpdateSecondaryBar(sp, res)
 		m:SetPoint("BOTTOM", bar, "BOTTOM")
 		m:SetWidth(px)
 		m:Show()
-		if ShowCountText(sp) then
+		if ShowCountText(sp, value) then
 			local arrow = (dir == "sun" and " >") or (dir == "moon" and "< ") or ""
 			local txt = format("%d", abs(value))
 			if dir == "moon" then txt = arrow .. txt elseif dir == "sun" then txt = txt .. arrow end
@@ -1032,7 +1037,7 @@ local function UpdateSecondaryBar(sp, res)
 	else
 		ApplyFill(fill, sp, r, g, b, fillA)
 	end
-	if ShowCountText(sp) then
+	if ShowCountText(sp, cur) then
 		if sp.showPercent then
 			bar.text:SetText(format("%d%%", mx > 0 and (cur / mx * 100) or 0))
 		else
@@ -1092,8 +1097,8 @@ local function UpdateSecondaryResource()
 		end
 	end
 	if secondaryFrame.count then
-		if ShowCountText(sp) then
-			local whole = res.frac and floor(cur) or cur
+		local whole = res.frac and floor(cur) or cur
+		if ShowCountText(sp, whole) then
 			secondaryFrame.count:SetText(tostring(whole))
 			secondaryFrame.count:SetTextColor(TextColorOr(sp, tr, tg, tb, textInstead))
 			secondaryFrame.count:Show()
@@ -1503,6 +1508,44 @@ local function SetVisible(frame, cfg, vis)
 	end
 end
 
+-- Show When Missing: a bar its Visibility setting hides still shows while
+-- the resource is below full. Only resources that rest at full count (health,
+-- energy, mana); a druid's mana in Cat / Bear Form counts for the mana toggle.
+-- Off with Visibility "never".
+local missState = {}
+local function Missing(cfg, isPower)
+	if not cfg or cfg.visibility == "never" then
+		return false
+	end
+	if not isPower then
+		if not cfg.showWhenMissing then return false end
+		local mx = UnitHealthMax("player") or 0
+		return mx > 0 and (UnitHealth("player") or 0) < mx
+	end
+	local pt = cachedPrimary
+	if cfg.showWhenMissing and pt == SPELL_POWER_ENERGY then
+		local mx = UnitPowerMax("player", pt) or 0
+		if mx > 0 and (UnitPower("player", pt) or 0) < mx then return true end
+	end
+	if cfg.showManaWhenMissing and (pt == SPELL_POWER_MANA or DruidManaShown(cfg)) then
+		local mx = UnitPowerMax("player", SPELL_POWER_MANA) or 0
+		if mx > 0 and (UnitPower("player", SPELL_POWER_MANA) or 0) < mx then return true end
+	end
+	return false
+end
+
+-- Health / power changed: re-run the visibility pass only when a Show When
+-- Missing state flips.
+function ERB.CheckMissing()
+	local p = Profile()
+	if not p then return end
+	local h = Missing(p.health, false)
+	local w = Missing(p.primary, true)
+	if h ~= (missState.health or false) or w ~= (missState.primary or false) then
+		ERB.UpdateVisibility()
+	end
+end
+
 function ERB.UpdateVisibility()
 	local p = Profile()
 	if not p then
@@ -1513,6 +1556,8 @@ function ERB.UpdateVisibility()
 	if healthBar then
 		local hp = p.health
 		local vis = hp.enabled and not inVehicle and not ERB.BarHiddenByForm(hp) and ERB.EvalVisibility(hp)
+		missState.health = Missing(hp, false)
+		if not vis and hp.enabled and not inVehicle and missState.health then vis = true end
 		if unlock and hp.enabled then vis = true end
 		moEligible.health = vis == "mouseover"
 		SetVisible(healthBar, hp, vis)
@@ -1522,6 +1567,10 @@ function ERB.UpdateVisibility()
 		local hidePower = sp.hidePowerIfResource and sp.enabled ~= false and cachedSecondary
 		local vis = not hidePower and pp.enabled ~= false and cachedPrimary and not inVehicle
 			and not ERB.BarHiddenByForm(pp) and ERB.EvalVisibility(pp)
+		missState.primary = Missing(pp, true)
+		if not vis and not hidePower and pp.enabled ~= false and cachedPrimary and not inVehicle and missState.primary then
+			vis = true
+		end
 		if unlock and pp.enabled ~= false then vis = true end
 		moEligible.primary = vis == "mouseover"
 		SetVisible(primaryBar, pp, vis)
@@ -1607,6 +1656,7 @@ events:SetScript("OnEvent", function(self, event, unit, arg2)
 	if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" or event == "UNIT_HEALTH_FREQUENT"
 		or event == "UNIT_ABSORB_AMOUNT_CHANGED" or event == "UNIT_HEAL_ABSORB_AMOUNT_CHANGED" then
 		UpdateHealthBar()
+		ERB.CheckMissing()
 		if cachedSecondary and cachedSecondary.power == "STAGGER" then
 			if event == "UNIT_MAXHEALTH" then QueueRebuild() else UpdateSecondaryResource() end
 		end
@@ -1622,6 +1672,7 @@ events:SetScript("OnEvent", function(self, event, unit, arg2)
 		if arg2 and cachedPrimary and arg2 == ERB.PowerToken(cachedPrimary) then
 			UpdatePrimaryBar()
 		end
+		if arg2 == "ENERGY" or arg2 == "MANA" then ERB.CheckMissing() end
 		UpdateSecondaryResource()
 	elseif REBUILD[event] then
 		if (event == "UNIT_MAXPOWER" or event == "UNIT_DISPLAYPOWER" or event == "UNIT_ENTERED_VEHICLE"

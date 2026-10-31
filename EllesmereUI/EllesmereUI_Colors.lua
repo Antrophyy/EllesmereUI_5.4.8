@@ -410,8 +410,21 @@ local function RegisterMistsProviders()
 	if UF and not ns._dmUFRegistered then
 		ns._dmUFRegistered = true
 		ns.RegisterDarkModeToggle({ id = "unitFrames", label = "Unit Frames",
-			isOn = function() return UF.db and UF.db.darkTheme == true end,
-			setOn = function(on) if UF.db then UF.db.darkTheme = on end end })
+			-- On while every frame is dark; switching sets every frame's own choice.
+			isOn = function()
+				if not UF.db then return false end
+				for _, key in ipairs({ "player", "target", "focus", "targettarget", "focustarget", "pet", "boss" }) do
+					if not UF.DarkOn(UF.db[key]) then return false end
+				end
+				return true
+			end,
+			setOn = function(on)
+				if not UF.db then return end
+				UF.db.darkTheme = on
+				for _, key in ipairs({ "player", "target", "focus", "targettarget", "focustarget", "pet", "boss" }) do
+					if UF.db[key] then UF.db[key].darkTheme = on end
+				end
+			end })
 	end
 	local ERB = ns.ERB
 	if ERB and not ns._dmRBRegistered then

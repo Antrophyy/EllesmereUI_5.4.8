@@ -89,13 +89,28 @@ local function CastCfg()
 	return Profile().castBar
 end
 
+-- Embed in Player Portrait: the spell icon shows over the Unit Frames player
+-- portrait while casting, and the bar keeps no icon of its own.
+local function IconOnPortrait(c)
+	return c.iconOnPortrait == true and c.showIcon ~= false
+end
+ERB.CastIconOnPortrait = IconOnPortrait
+
+-- The Unit Frames player portrait to draw on, or nil (no portrait shown).
+local function PlayerPortrait()
+	local UF = EllesmereUI.UF
+	return UF and UF.GetPlayerCastPortrait and UF.GetPlayerCastPortrait() or nil
+end
+ERB.CastPlayerPortrait = PlayerPortrait
+
 local function IconFree(c)
-	return c.showIcon ~= false and ((c.iconSize or 0) > 0 or (c.iconOffsetX or 0) ~= 0 or (c.iconOffsetY or 0) ~= 0)
+	return c.showIcon ~= false and not IconOnPortrait(c)
+		and ((c.iconSize or 0) > 0 or (c.iconOffsetX or 0) ~= 0 or (c.iconOffsetY or 0) ~= 0)
 end
 ERB.CastIconFree = IconFree
 
 local function IconW(c)
-	if c.showIcon == false or IconFree(c) then
+	if c.showIcon == false or IconOnPortrait(c) or IconFree(c) then
 		return 0
 	end
 	return c.height or 20
@@ -246,6 +261,10 @@ local function RestoreFill()
 	-- in its own colour. Out of Range Gray still paints over it.
 	if cb.uninterruptible and c.uninterruptibleOverride then
 		r, g, b = c.uninterruptibleR or 0.5, c.uninterruptibleG or 0.5, c.uninterruptibleB or 0.5
+	-- Channel Color Override (retail 9.6.5): a channel fills in its own colour;
+	-- the uninterruptible colour wins over it.
+	elseif cb.channeling and c.channelOverride then
+		r, g, b = c.channelR or 0.3, c.channelG or 0.8, c.channelB or 0.3
 	end
 	P.ApplyFill(cb.bar:GetStatusBarTexture(), c, r, g, b, (c.fillOpacity or 100) / 100)
 	cb.rangeOut = nil
@@ -272,6 +291,14 @@ local function SetVisible(on)
 	end
 end
 
+local function ClearPortraitIcon()
+	if cb.portraitIcon then
+		cb.portraitIcon.castIcon.erbOwned = nil
+		cb.portraitIcon.castIcon:Hide()
+		cb.portraitIcon = nil
+	end
+end
+
 local function ShowIdle()
 	if not cb then
 		return
@@ -287,6 +314,7 @@ local function ShowIdle()
 	cb.nameText:SetText("")
 	cb.timerText:SetText("")
 	cb.iconFrame:Hide()
+	ClearPortraitIcon()
 	cb.spark:Hide()
 	HideTicks()
 	HideLatency()
@@ -351,6 +379,21 @@ end
 
 local function SetIcon(texture)
 	local c = CastCfg()
+	if IconOnPortrait(c) then
+		cb.iconFrame:Hide()
+		local p = texture and PlayerPortrait()
+		if p then
+			if cb.portraitIcon and cb.portraitIcon ~= p then ClearPortraitIcon() end
+			p.castIcon.erbOwned = true
+			p.castIcon:SetTexture(texture)
+			p.castIcon:Show()
+			cb.portraitIcon = p
+		else
+			ClearPortraitIcon()
+		end
+		return
+	end
+	ClearPortraitIcon()
 	if texture and c.showIcon ~= false then
 		cb.icon:SetTexture(texture)
 		cb.iconFrame:Show()
@@ -383,6 +426,7 @@ local function OnCastStart()
 	end
 	SetUninterruptible(notInterruptible)
 	cb.casting, cb.channeling = true, false
+	if c.channelOverride then RestoreFill() end
 	cb.castID = castID
 	cb.startTime, cb.endTime = startMS / 1000, endMS / 1000
 	cb.spellName = name
@@ -406,6 +450,7 @@ local function OnChannelStart(spellID)
 	end
 	SetUninterruptible(notInterruptible)
 	cb.casting, cb.channeling = false, true
+	if c.channelOverride then RestoreFill() end
 	cb.auraChannel = nil
 	cb.castID = nil
 	cb.startTime, cb.endTime = startMS / 1000, endMS / 1000
@@ -449,6 +494,7 @@ local function UpdateAuraChannel()
 	end
 	local fresh = not cb.auraChannel
 	cb.casting, cb.channeling = false, true
+	if c.channelOverride then RestoreFill() end
 	cb.auraChannel = spellID
 	cb.castID = nil
 	cb.startTime, cb.endTime = expires - duration, expires
@@ -495,11 +541,12 @@ local function LayoutCastBar()
 	local px = P.PixelFor(cb)
 	local bs = c.borderSize or 0
 	cb.border:Apply(bs, c.borderR, c.borderG, c.borderB, c.borderA)
-	-- Extend Top / Extend Bottom (retail borderExtendTop / Bottom): the border
+	-- Extend Top / Bottom / Left / Right (retail borderExtend*): the border
 	-- grows past the bar's edges without resizing the bar.
+	local extL, extR = (c.borderExtendLeft or 0) * px, (c.borderExtendRight or 0) * px
 	cb.border:ClearAllPoints()
-	cb.border:SetPoint("TOPLEFT", cb, "TOPLEFT", 0, (c.borderExtendTop or 0) * px)
-	cb.border:SetPoint("BOTTOMRIGHT", cb, "BOTTOMRIGHT", 0, -(c.borderExtendBottom or 0) * px)
+	cb.border:SetPoint("TOPLEFT", cb, "TOPLEFT", -extL, (c.borderExtendTop or 0) * px)
+	cb.border:SetPoint("BOTTOMRIGHT", cb, "BOTTOMRIGHT", extR, -(c.borderExtendBottom or 0) * px)
 	-- Bottom Separator (retail edgeSep / edgeSepY): a border-colored line
 	-- along the bar's bottom edge, icon included.
 	if c.edgeSep and bs > 0 then
@@ -510,8 +557,8 @@ local function LayoutCastBar()
 			cb.edgeSep = t
 		end
 		t:ClearAllPoints()
-		t:SetPoint("BOTTOMLEFT", cb, "BOTTOMLEFT", 0, (c.edgeSepY or 0) * px)
-		t:SetPoint("BOTTOMRIGHT", cb, "BOTTOMRIGHT", 0, (c.edgeSepY or 0) * px)
+		t:SetPoint("BOTTOMLEFT", cb, "BOTTOMLEFT", -extL, (c.edgeSepY or 0) * px)
+		t:SetPoint("BOTTOMRIGHT", cb, "BOTTOMRIGHT", extR, (c.edgeSepY or 0) * px)
 		t:SetHeight(bs * px)
 		t:SetVertexColor(c.borderR or 0, c.borderG or 0, c.borderB or 0, c.borderA or 1)
 		t:Show()
@@ -520,7 +567,7 @@ local function LayoutCastBar()
 	end
 	-- Icon.
 	cb.iconFrame:ClearAllPoints()
-	if c.showIcon == false then
+	if c.showIcon == false or IconOnPortrait(c) then
 		cb.iconFrame:Hide()
 	elseif IconFree(c) then
 		local size = ((c.iconSize or 0) > 0) and c.iconSize or h

@@ -68,6 +68,7 @@ local function BarDefaults(extra)
 		barAlpha = 1.0,
 		oocFadeEnabled = false,
 		oocAlpha = 0.5,
+		showWhenMissing = false,  -- reveal a hidden bar while below full
 		visibility = "always",
 		visOnlyInstances = false,
 		visHideMounted = false,
@@ -117,6 +118,7 @@ local DEFAULTS = {
 			thresholdPartialOnly = false,
 			expandIfNoResource = false,
 			shiftElementsIfNoPower = "None",
+			showManaWhenMissing = false,
 		}),
 		secondary = {
 			enabled = true,
@@ -139,6 +141,7 @@ local DEFAULTS = {
 			bgR = 1, bgG = 1, bgB = 1, bgA = 0.1,
 			showText = true,
 			showTextOnlyIfNoPower = false,
+			hideTextAtZero = false,
 			showPercent = false,
 			showMaxStacks = true,
 			textSize = 11,
@@ -191,6 +194,7 @@ local DEFAULTS = {
 			iconSize = 0,
 			iconOffsetX = 0,
 			iconOffsetY = 0,
+			iconOnPortrait = false,  -- Embed in Player Portrait (Unit Frames)
 			width = 220,
 			height = 20,
 			anchorX = 0,
@@ -229,6 +233,8 @@ local DEFAULTS = {
 			outOfRangeGray = false,
 			uninterruptibleOverride = false,
 			uninterruptibleR = 0.5, uninterruptibleG = 0.5, uninterruptibleB = 0.5,
+			channelOverride = false,
+			channelR = 0.3, channelG = 0.8, channelB = 0.3,
 			showTotalDuration = false,
 			latencyEnabled = false,
 			latencyShowText = false,

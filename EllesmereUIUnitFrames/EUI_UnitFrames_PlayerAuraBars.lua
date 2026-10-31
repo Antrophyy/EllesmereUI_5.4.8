@@ -1114,19 +1114,30 @@ local function SetFont(fs, size, mode)
 	end
 end
 
--- Retail AuraKit duration format.
+-- Retail AuraKit duration format (9.7: rounds like Blizzard's buff frame).
+-- Minutes, hours and days round up, so a fresh 1-hour flask reads 60m; the
+-- seconds show below 90 seconds, the hours from 90 minutes, the days from
+-- 36 hours. Seconds round up unless Round Timer Seconds Down is on
+-- (EllesmereUIDB.timerSecondsDown, Global Settings > Combat).
+local HOURS_AT, DAYS_AT = 5401, 129601
 local function DurationText(r, seconds, precise)
-	if r < 60 then
-		return format(seconds and "%ds" or "%d", ceil(r))
+	local db = EllesmereUIDB
+	local t = (db and db.timerSecondsDown == true) and floor(r) or ceil(r)
+	if precise and precise > 60 then
+		if t < 60 then
+			return format(seconds and "%ds" or "%d", t)
+		end
+		if r < precise + 1 and r < HOURS_AT then
+			t = min(t, precise)
+			return format("%d:%02d", floor(t / 60), t % 60)
+		end
+	elseif t < 90 then
+		return format(seconds and "%ds" or "%d", t)
 	end
-	if precise and precise > 60 and r < min(precise, 3599) then
-		local t = ceil(r)
-		return format("%d:%02d", floor(t / 60), t % 60)
-	end
-	if r < 61 then return "1m" end
-	if r < 3600 then return format("%dm", floor(r / 60)) end
-	if r < 86400 then return format("%dh", floor(r / 3600)) end
-	return format("%dd", floor(r / 86400))
+	-- A value rounded up past 90m / 36h reads in the next unit, as Blizzard's.
+	if r < HOURS_AT and ceil(r / 60) <= 90 then return format("%dm", ceil(r / 60)) end
+	if r < DAYS_AT and ceil(r / 3600) <= 36 then return format("%dh", ceil(r / 3600)) end
+	return format("%dd", ceil(r / 86400))
 end
 P.DurationText = DurationText
 
@@ -1175,8 +1186,13 @@ local function IconOnEnter(self)
 	GameTooltip:Show()
 end
 
-local function IconOnLeave()
-	GameTooltip:Hide()
+-- Only the icon that owns the tooltip hides it: with a negative Spacing or
+-- Row Spacing neighbouring icons overlap, and the one being left must not
+-- hide the tooltip the next one just showed (retail hitInsetX/Y fix).
+local function IconOnLeave(self)
+	if GameTooltip:IsOwned(self) then
+		GameTooltip:Hide()
+	end
 end
 
 local function IconOnClick(self, button)

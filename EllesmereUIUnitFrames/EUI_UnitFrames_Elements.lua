@@ -196,7 +196,7 @@ function UF.UpdateHealth(frame)
 	local alpha = (s.healthBarOpacity or 90) / 100
 	local tex = health:GetStatusBarTexture()
 	local r, g, b
-	if UF.db.darkTheme then
+	if UF.DarkOn(s) then
 		r, g, b = 0.067, 0.067, 0.067
 		alpha = 0.9
 		-- Global Settings > Colors: Dark Mode Fill
@@ -204,7 +204,7 @@ function UF.UpdateHealth(frame)
 	else
 		r, g, b = HealthColor(frame, s, unit, pct)
 	end
-	if s.gradientEnabled and not UF.db.darkTheme then
+	if s.gradientEnabled and not UF.DarkOn(s) then
 		local gc = s.gradientColor or { r = 0.2, g = 0.2, b = 0.8 }
 		tex:SetVertexColor(1, 1, 1, 1)
 		tex:SetGradientAlpha(s.gradientDir or "HORIZONTAL", r, g, b, alpha, gc.r, gc.g, gc.b, alpha)
@@ -215,7 +215,7 @@ function UF.UpdateHealth(frame)
 
 	-- Background (missing part)
 	local bgr, bgg, bgb, bga
-	if UF.db.darkTheme then
+	if UF.DarkOn(s) then
 		bgr, bgg, bgb, bga = 0.31, 0.31, 0.31, 1
 		-- Global Settings > Colors: Dark Mode Background
 		if ns.GetDarkModeBg then bgr, bgg, bgb, bga = ns.GetDarkModeBg() end
@@ -666,7 +666,7 @@ function UF.UpdatePortraitBorder(frame)
 	local r, g, b
 	if s.detachedPortraitClassColor ~= false then
 		r, g, b = Fake(frame) and UF.PlayerClassColor() or UF.UnitColor(frame.unit)
-		if UF.db.darkTheme and not s.detachedPortraitUnitColorDark then
+		if UF.DarkOn(s) and not s.detachedPortraitUnitColorDark then
 			r, g, b = UF.PlayerClassColor()
 		end
 	else

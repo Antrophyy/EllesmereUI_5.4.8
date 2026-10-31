@@ -650,12 +650,31 @@ end
 
 local function OpacityRow(p, tbl, offFn, name)
 	p:Slider("Opacity", nil, 0, 100, 5, GetPct(tbl, "barAlpha", 1), SetPct(tbl, "barAlpha"), offFn)
-	p:Cog("Out of Combat Opacity", {
+	local rows = {
 		{ type = "toggle", label = "Fade Out of Combat", get = function() return tbl().oocFadeEnabled == true end,
 		  set = function(v) tbl().oocFadeEnabled = v end },
 		{ type = "slider", label = "Opacity", min = 0, max = 100, step = 1, get = GetPct(tbl, "oocAlpha", 0.5), set = SetPct(tbl, "oocAlpha"),
 		  disabled = function() return not tbl().oocFadeEnabled end },
-	}, { disabled = offFn, disabledTip = Req(name) })
+	}
+	-- Show When Missing (Health and Power bars): reveal a bar its Visibility
+	-- setting hides while the resource is below full.
+	if name == "Health Bar" then
+		rows[#rows + 1] = { type = "toggle", label = "Show When Health Missing",
+			tip = "Shows the Health bar while your health is below full, even when its Visibility setting hides it.",
+			get = function() return tbl().showWhenMissing == true end,
+			set = function(v) tbl().showWhenMissing = v end }
+	elseif name == "Power Bar" then
+		rows[#rows + 1] = { type = "toggle", label = "Show When Energy Missing",
+			tip = "Shows the Power bar while its energy is below full, even when its Visibility setting hides it. Resources that rest at empty, such as rage, are not affected.",
+			get = function() return tbl().showWhenMissing == true end,
+			set = function(v) tbl().showWhenMissing = v end }
+		rows[#rows + 1] = { type = "toggle", label = "Show When Mana Missing",
+			tip = "Shows the Power bar while it shows mana (or a druid's mana bar in Cat or Bear Form) and mana is below full, even when its Visibility setting hides it.",
+			get = function() return tbl().showManaWhenMissing == true end,
+			set = function(v) tbl().showManaWhenMissing = v end }
+	end
+	p:Cog(name == "Class Resource" and "Out of Combat Opacity" or "Out of Combat Opacity & Visibility", rows,
+		{ disabled = offFn, disabledTip = Req(name) })
 	p:Sync("Apply Opacity to all Bars", function()
 		local v = tbl().barAlpha or 1
 		local pr = P()
@@ -911,8 +930,8 @@ local function BuildBarDisplay(p)
 	}, { icon = "directions" })
 
 	-- CLASS RESOURCE BAR ------------------------------------------------------
-	p:Section("Class Resource Bar")
 	local function ClassOff() return not S().enabled end
+	p:Section("Class Resource Bar", { unlockKey = "ERB_ClassResource", unlockDisabled = ClassOff, unlockDisabledTip = "Requires Class Resource Bar" })
 	p:Toggle("Show Class Resource", nil, Get(S, "enabled", true), function(v) S().enabled = v; Restructure() end)
 	p:Cog("Class Resource", {
 		{ type = "toggle", label = "Hide Power Bar if Resource", get = Get(S, "hidePowerIfResource", false), set = Set(S, "hidePowerIfResource") },
@@ -1013,7 +1032,9 @@ local function BuildBarDisplay(p)
 			{ type = "toggle", label = "Show %", get = function() return S().showPercent and true or false end, set = Set(S, "showPercent") },
 			{ type = "toggle", label = "Only if Power Bar Hidden", tip = "Show the resource text only while the power bar is hidden - disabled, filtered off for this spec, a spec with no power, or hidden by \"Hide Power Bar if Resource\". Off = always show the text.",
 			  get = Get(S, "showTextOnlyIfNoPower", false), set = Set(S, "showTextOnlyIfNoPower") },
-			{ type = "slider", label = "Size", min = 8, max = 24, step = 1, get = Get(S, "textSize", 11), set = Set(S, "textSize") },
+			{ type = "toggle", label = "Hide at Zero", tip = "Hide the resource text while the resource reads zero, instead of showing a 0. Off = always show the current value.",
+			  get = Get(S, "hideTextAtZero", false), set = Set(S, "hideTextAtZero") },
+			{ type = "slider", label = "Size", min = 8, max = 64, step = 1, get = Get(S, "textSize", 11), set = Set(S, "textSize") },
 			{ type = "dropdown", label = "Anchor", tip = "Anchor the text inside the bar. The X/Y offsets move it from there.",
 			  items = function() return Items(ANCHORS) end, get = Get(S, "textAnchor", "CENTER"), set = Set(S, "textAnchor") },
 			{ type = "slider", label = "X Offset", min = -100, max = 100, step = 1, get = Get(S, "textXOffset", 0), set = Set(S, "textXOffset") },
@@ -1046,8 +1067,8 @@ local function BuildBarDisplay(p)
 	end
 
 	-- POWER BAR -----------------------------------------------------------------
-	p:Section("Power Bar")
 	local function PowOff() return PW().enabled == false end
+	p:Section("Power Bar", { unlockKey = "ERB_Power", unlockDisabled = PowOff, unlockDisabledTip = "Requires Power Bar" })
 	p:Toggle("Show Power Bar", nil, function() return PW().enabled ~= false end, function(v) PW().enabled = v; Restructure() end)
 	FormCog(p, PW, "barDisabledForms", "Enable/Disable Bar per Form")
 	p:Dropdown("Orientation", nil, function() return Items(ORIENTATIONS) end,
@@ -1118,8 +1139,8 @@ local function BuildBarDisplay(p)
 	end
 
 	-- HEALTH BAR ----------------------------------------------------------------
-	p:Section("Health Bar")
 	local function HpOff() return not H().enabled end
+	p:Section("Health Bar", { unlockKey = "ERB_Health", unlockDisabled = HpOff, unlockDisabledTip = "Requires Health Bar" })
 	p:Toggle("Show Health Bar", nil, Get(H, "enabled", false), function(v) H().enabled = v; Restructure() end)
 	FormCog(p, H, "barDisabledForms", "Enable/Disable Bar per Form")
 	p:Dropdown("Orientation", nil, function() return Items(ORIENTATIONS) end,
@@ -1424,7 +1445,7 @@ local function BuildCastPreview(page, host, width)
 		local c = CB()
 		local scale = UIParent:GetEffectiveScale() / max(0.01, host:GetEffectiveScale())
 		local h = c.height or 20
-		local iconW = (c.showIcon ~= false and not ERB.CastIconFree(c)) and h or 0
+		local iconW = (c.showIcon ~= false and not ERB.CastIconFree(c) and not ERB.CastIconOnPortrait(c)) and h or 0
 		local w = (c.width or 220)
 		local total = w + iconW
 		local avail = (width - 40) / scale
@@ -1508,7 +1529,137 @@ local function BuildCastPreview(page, host, width)
 		end
 		timer:SetTextColor(c.timerR or 1, c.timerG or 1, c.timerB or 1, c.timerA or 1)
 		timer:SetShown(c.showTimer ~= false)
-		container:SetShown(c.enabled and true or false)
+		-- Dimmed while the bar is off, like the page's greyed controls (retail).
+		container:SetAlpha(c.enabled and 1 or 0.3)
+	end
+	page:OnRefresh(Update)
+	Update()
+	return 80
+end
+
+-- Pixel borders for the previews below: four edges, borderSize physical pixels.
+local function PreviewEdges(frame)
+	local edges = {}
+	for i = 1, 4 do edges[i] = frame:CreateTexture(nil, "OVERLAY", nil, 7) end
+	return function(c)
+		local px = 768 / (ns.PhysicalHeight and ns.PhysicalHeight() or 1080) / UIParent:GetEffectiveScale()
+		local bs = (c.borderSize or 0) * px
+		edges[1]:ClearAllPoints(); edges[1]:SetPoint("TOPLEFT"); edges[1]:SetPoint("TOPRIGHT"); edges[1]:SetHeight(max(0.01, bs))
+		edges[2]:ClearAllPoints(); edges[2]:SetPoint("BOTTOMLEFT"); edges[2]:SetPoint("BOTTOMRIGHT"); edges[2]:SetHeight(max(0.01, bs))
+		edges[3]:ClearAllPoints(); edges[3]:SetPoint("TOPLEFT"); edges[3]:SetPoint("BOTTOMLEFT"); edges[3]:SetWidth(max(0.01, bs))
+		edges[4]:ClearAllPoints(); edges[4]:SetPoint("TOPRIGHT"); edges[4]:SetPoint("BOTTOMRIGHT"); edges[4]:SetWidth(max(0.01, bs))
+		for i = 1, 4 do
+			edges[i]:SetTexture(c.borderR or 0, c.borderG or 0, c.borderB or 0, c.borderA or 1)
+			edges[i]:SetShown(bs > 0)
+		end
+	end
+end
+
+-- GCD Bar preview (retail): one static mock of the bar at a random fill,
+-- styled from the GCD Bar settings. Always laid flat; a vertical bar shows at
+-- its configured size turned on its side. Dimmed while the bar is off.
+local function BuildGCDPreview(page, host, width)
+	local container = CreateFrame("Frame", nil, host)
+	container:SetSize(10, 10)
+	container:SetPoint("CENTER", host, "TOP", 0, -40)
+	local bg = container:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	local fill = container:CreateTexture(nil, "ARTWORK")
+	local spark = container:CreateTexture(nil, "OVERLAY")
+	spark:SetTexture("Interface\\AddOns\\EllesmereUIResourceBars\\media\\cast_spark")
+	spark:SetBlendMode("ADD")
+	local Edges = PreviewEdges(container)
+	local frac = math.random(30, 85) / 100
+	local function Update()
+		local c = GB()
+		local scale = UIParent:GetEffectiveScale() / max(0.01, host:GetEffectiveScale())
+		local w, h = c.width or 220, c.height or 12
+		local o = c.orientation or "HORIZONTAL"
+		if o == "VERTICAL_UP" or o == "VERTICAL_DOWN" then
+			w, h = max(w, h), min(w, h)
+		end
+		local avail = (width - 40) / scale
+		container:SetScale(w > avail and scale * avail / w or scale)
+		container:SetSize(w, h)
+		bg:SetTexture(c.bgR or 0, c.bgG or 0, c.bgB or 0, c.bgA or 0.7)
+		local f = c.depleteFill and (1 - frac) or frac
+		local fromRight = (o == "HORIZONTAL_LEFT")
+		fill:ClearAllPoints()
+		fill:SetPoint(fromRight and "TOPRIGHT" or "TOPLEFT", container, fromRight and "TOPRIGHT" or "TOPLEFT")
+		fill:SetSize(max(1, w * f), h)
+		fill:SetTexture(ERB.TexturePath(c.texture))
+		local r, g, b = c.fillR or 0.267, c.fillG or 0.729, c.fillB or 0.898
+		if c.classColored then r, g, b = ERB.ClassColor() end
+		local fa = c.fillA or 1
+		if c.gradientEnabled then
+			fill:SetVertexColor(1, 1, 1, 1)
+			if c.gradientDir == "VERTICAL" then
+				fill:SetGradientAlpha("VERTICAL", c.gradientR or 0.2, c.gradientG or 0.2, c.gradientB or 0.8, (c.gradientA or 1) * fa, r, g, b, fa)
+			else
+				fill:SetGradientAlpha("HORIZONTAL", r, g, b, fa, c.gradientR or 0.2, c.gradientG or 0.2, c.gradientB or 0.8, (c.gradientA or 1) * fa)
+			end
+		else
+			fill:SetVertexColor(r, g, b, fa)
+		end
+		spark:ClearAllPoints()
+		spark:SetSize(8, h)
+		spark:SetPoint("CENTER", fill, fromRight and "LEFT" or "RIGHT")
+		spark:SetShown(c.showSpark and true or false)
+		Edges(c)
+		container:SetAlpha(c.enabled and 1 or 0.3)
+	end
+	page:OnRefresh(Update)
+	Update()
+	return 80
+end
+
+-- Totem Bar preview (retail): a row (or column) of sample totem icons with
+-- their timers, styled from the Totem Bar settings. Dimmed while no class
+-- uses the bar.
+local TOTEM_PREVIEW_ICONS = {
+	"Interface\\Icons\\Spell_Fire_SearingTotem", "Interface\\Icons\\Spell_Nature_StoneSkinTotem",
+	"Interface\\Icons\\INV_Spear_04", "Interface\\Icons\\Spell_Nature_Windfury",
+}
+local function BuildTotemPreview(page, host, width)
+	local container = CreateFrame("Frame", nil, host)
+	container:SetSize(10, 10)
+	container:SetPoint("CENTER", host, "TOP", 0, -40)
+	local slots = {}
+	for i = 1, #TOTEM_PREVIEW_ICONS do
+		local f = CreateFrame("Frame", nil, container)
+		local icon = f:CreateTexture(nil, "ARTWORK")
+		icon:SetAllPoints()
+		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+		icon:SetTexture(TOTEM_PREVIEW_ICONS[i])
+		local timer = f:CreateFontString(nil, "OVERLAY")
+		timer:SetPoint("CENTER")
+		slots[i] = { frame = f, timer = timer, edges = PreviewEdges(f), secs = math.random(5, 55) }
+	end
+	local function Update()
+		local c = TB()
+		local scale = UIParent:GetEffectiveScale() / max(0.01, host:GetEffectiveScale())
+		local size, gap = c.iconSize or 30, c.spacing or 2
+		local n = #slots
+		local vertical = (c.orientation == "VERTICAL")
+		-- Laid flat like the GCD preview: the header is a wide strip.
+		local total = n * size + (n - 1) * gap
+		local avail = (width - 40) / scale
+		container:SetScale(total > avail and scale * avail / total or scale)
+		container:SetSize(total, size)
+		local font = ns.GetFontPath and ns.GetFontPath("resourceBars") or ns.FONT
+		local flag = ns.GetFontOutlineFlag and ns.GetFontOutlineFlag("resourceBars") or "OUTLINE"
+		for i, slot in ipairs(slots) do
+			local f = slot.frame
+			f:ClearAllPoints()
+			f:SetSize(size, size)
+			f:SetPoint("LEFT", container, "LEFT", (i - 1) * (size + gap), 0)
+			slot.edges(c)
+			slot.timer:SetFont(font, c.timerSize or 11, flag)
+			slot.timer:SetText(tostring(slot.secs))
+			slot.timer:SetShown(c.showTimer ~= false)
+		end
+		local _ = vertical
+		container:SetAlpha(c.enabledClasses and 1 or 0.3)
 	end
 	page:OnRefresh(Update)
 	Update()
@@ -1518,23 +1669,31 @@ end
 local function BuildCastBar(p)
 	local function Off() return not CB().enabled end
 	local req = Req("Player Cast Bar")
-	p:Section("Layout")
+	p:Section("Layout", { unlockKey = "ERB_CastBar", unlockDisabled = Off, unlockDisabledTip = req })
 	p:Toggle("Enable Player Cast Bar", nil, Get(CB, "enabled", true), Set(CB, "enabled"))
 	Drop(p, "Frame Strata", "Controls the order that overlapping elements display in. Set higher to show above other elements.",
 		STRATAS, CB, "frameStrata", "MEDIUM", Off)
 	p:Slider("Height", nil, 1, 60, 1, Get(CB, "height", 20), Set(CB, "height"), Off)
 	p:Slider("Width", nil, 50, 800, 1, Get(CB, "width", 220), Set(CB, "width"), Off)
 	p:Toggle("Show Spell Icon", nil, function() return CB().showIcon ~= false end, Set(CB, "showIcon"), Off)
+	local function OnPortrait() return CB().iconOnPortrait == true end
 	p:Cog("Spell Icon Settings", {
+		{ type = "toggle", label = "Embed in Player Portrait", tip = "Show the spell icon over the Unit Frames player portrait while casting. Needs a player portrait.",
+		  get = Get(CB, "iconOnPortrait", false),
+		  set = function(v)
+			if v and not (CB().iconOnPortrait or ERB.CastPlayerPortrait()) then return end
+			CB().iconOnPortrait = v
+		  end,
+		  disabled = function() return not OnPortrait() and not ERB.CastPlayerPortrait() end },
 		{ type = "toggle", label = "Icon on Right", tip = "Attach the spell icon to the right of the cast bar instead of the left.",
-		  get = Get(CB, "iconOnRight", false), set = Set(CB, "iconOnRight") },
+		  get = Get(CB, "iconOnRight", false), set = Set(CB, "iconOnRight"), disabled = OnPortrait },
 		{ type = "toggle", label = "Show Icon Divider", tip = "Draw a 1px divider between the spell icon and the cast bar, matching the border color.",
 		  get = Get(CB, "showIconDivider", false), set = Set(CB, "showIconDivider"),
-		  disabled = function() return ERB.CastIconFree(CB()) end },
+		  disabled = function() return OnPortrait() or ERB.CastIconFree(CB()) end },
 		{ type = "slider", label = "Icon Size", tip = "0 matches the bar height. Any other size or offset detaches the icon from the bar.",
-		  min = 0, max = 64, step = 1, get = Get(CB, "iconSize", 0), set = Set(CB, "iconSize") },
-		{ type = "slider", label = "Offset X", min = -100, max = 100, step = 1, get = Get(CB, "iconOffsetX", 0), set = Set(CB, "iconOffsetX") },
-		{ type = "slider", label = "Offset Y", min = -100, max = 100, step = 1, get = Get(CB, "iconOffsetY", 0), set = Set(CB, "iconOffsetY") },
+		  min = 0, max = 64, step = 1, get = Get(CB, "iconSize", 0), set = Set(CB, "iconSize"), disabled = OnPortrait },
+		{ type = "slider", label = "Offset X", min = -100, max = 100, step = 1, get = Get(CB, "iconOffsetX", 0), set = Set(CB, "iconOffsetX"), disabled = OnPortrait },
+		{ type = "slider", label = "Offset Y", min = -100, max = 100, step = 1, get = Get(CB, "iconOffsetY", 0), set = Set(CB, "iconOffsetY"), disabled = OnPortrait },
 	}, { disabled = function() return Off() or CB().showIcon == false end, disabledTip = req })
 	p:Toggle("Show Spark", nil, Get(CB, "showSpark", true), Set(CB, "showSpark"), Off)
 	p:Toggle("Always Show", "Keep the cast bar visible (sitting empty) when you are not casting, instead of hiding it.",
@@ -1546,7 +1705,7 @@ local function BuildCastBar(p)
 		Get(CB, "borderSize", 1), Set(CB, "borderSize"), Off)
 	local cbg, cbs = RGBA(CB, "border", 0, 0, 0, 1)
 	p:Swatch("Border Color", cbg, cbs, { alpha = true, disabled = function() return Off() or (CB().borderSize or 0) == 0 end })
-	-- Border Options (retail): Extend Top / Bottom, Bottom Separator.
+	-- Border Options (retail): Extend Top / Bottom / Left / Right, Bottom Separator.
 	p:Cog("Border Options", {
 		{ type = "slider", label = "Extend Top", min = 0, max = 50, step = 1,
 		  tip = "Grows the border past the bar's top edge without resizing the bar.",
@@ -1554,6 +1713,12 @@ local function BuildCastBar(p)
 		{ type = "slider", label = "Extend Bottom", min = 0, max = 50, step = 1,
 		  tip = "Grows the border past the bar's bottom edge without resizing the bar.",
 		  get = Get(CB, "borderExtendBottom", 0), set = Set(CB, "borderExtendBottom") },
+		{ type = "slider", label = "Extend Left", min = 0, max = 300, step = 1,
+		  tip = "Grows the border past the bar's left edge without resizing the bar.",
+		  get = Get(CB, "borderExtendLeft", 0), set = Set(CB, "borderExtendLeft") },
+		{ type = "slider", label = "Extend Right", min = 0, max = 300, step = 1,
+		  tip = "Grows the border past the bar's right edge without resizing the bar.",
+		  get = Get(CB, "borderExtendRight", 0), set = Set(CB, "borderExtendRight") },
 		{ type = "toggle", label = "Bottom Separator", tip = "Draws a border-colored line along the bar's bottom edge.",
 		  get = function() return CB().edgeSep == true end, set = function(v) CB().edgeSep = v and true or false end },
 		{ type = "slider", label = "Separator Y Offset", min = -50, max = 50, step = 1,
@@ -1585,6 +1750,12 @@ local function BuildCastBar(p)
 		  get = function() local c = CB(); return c.uninterruptibleR or 0.5, c.uninterruptibleG or 0.5, c.uninterruptibleB or 0.5 end,
 		  set = function(r, g, b) local c = CB(); c.uninterruptibleR, c.uninterruptibleG, c.uninterruptibleB = r, g, b end,
 		  disabled = function() return not CB().uninterruptibleOverride end },
+		{ type = "toggle", label = "Channel Color Override", tip = "Channeled spells fill in their own color.",
+		  get = function() return CB().channelOverride == true end, set = Set(CB, "channelOverride") },
+		{ type = "color", label = "Channel Color",
+		  get = function() local c = CB(); return c.channelR or 0.3, c.channelG or 0.8, c.channelB or 0.3 end,
+		  set = function(r, g, b) local c = CB(); c.channelR, c.channelG, c.channelB = r, g, b end,
+		  disabled = function() return not CB().channelOverride end },
 	}, { disabled = Off, disabledTip = req })
 	p:Dropdown("Bar Texture", nil, TextureItems, Get(CB, "texture", "none"),
 		function() return ERB.TextureLabel(CB().texture) end, Set(CB, "texture"),
@@ -1665,7 +1836,7 @@ local GCD_ORIENT = {
 local function BuildGCD(p)
 	local function Off() return not GB().enabled end
 	local req = Req("GCD Bar")
-	p:Section("Layout")
+	p:Section("Layout", { unlockKey = "ERB_GCDBar", unlockDisabled = Off, unlockDisabledTip = req })
 	p:Toggle("Enable GCD Bar", "Shows a bar that fills over the global cooldown.", Get(GB, "enabled", false), Set(GB, "enabled"))
 	p:Cog("GCD Bar Position", {
 		{ type = "slider", label = "X Offset", min = -600, max = 600, step = 1,
@@ -1734,7 +1905,7 @@ local CLASS_ORDER = { "DEATHKNIGHT", "DRUID", "HUNTER", "MAGE", "MONK", "PALADIN
 local function BuildTotem(p)
 	local function Off() return not TB().enabledClasses end
 	local req = "Select a class above"
-	p:Section("Layout")
+	p:Section("Layout", { unlockKey = "ERB_TotemBar", unlockDisabled = Off, unlockDisabledTip = req })
 	p:MultiSelect("Enabled Classes", "The totem bar shows for the classes picked here (the settings are shared by all characters).",
 		function()
 			local items = { { value = "NONE", name = "None (Disabled)" } }
@@ -1801,11 +1972,24 @@ end
 
 local function BuildSwing(p)
 	local function Off() return not SW().enabled end
-	p:Section("Swing Timer")
+	p:Section("Swing Timer", { unlockKey = "ERB_SwingTimer", unlockDisabled = Off, unlockDisabledTip = "Requires Swing Timer" })
 	p:Toggle("Enable Swing Timer", "Bars for your main hand, off hand and ranged auto attacks (Unlock Mode: Swing Timer).",
 		function() return SW().enabled == true end, Set(SW, "enabled"))
 	p:Toggle("Combine Hands", "Show only the main hand row for dual wielding.", function() return SW().combineHands == true end,
 		Set(SW, "combineHands"), Off)
+	-- Tracked Weapons (retail cog): rows without a weapon, the shield row.
+	p:Cog("Tracked Weapons", {
+		{ type = "toggle", label = "Always Show Rows",
+		  tip = "Show the Off Hand row even when no weapon is equipped in that slot, so the bar keeps the same layout.",
+		  get = function() return SW().alwaysShowRows == true end, set = Set(SW, "alwaysShowRows") },
+		{ type = "toggle", label = "Hide Label Without Weapon",
+		  tip = "A row shown only because of Always Show Rows drops its label while no weapon is equipped in that slot. A shield keeps its Shield label.",
+		  get = function() return SW().hideLabelNoWeapon == true end, set = Set(SW, "hideLabelNoWeapon"),
+		  disabled = function() return not SW().alwaysShowRows end },
+		{ type = "toggle", label = "Show Shield As Off Hand",
+		  tip = "Show the Off Hand row, labelled Shield, while a shield is equipped. Always Show Rows also labels it.",
+		  get = function() return SW().shieldRow == true end, set = Set(SW, "shieldRow") },
+	}, { disabled = Off })
 	p:Slider("Width", nil, 40, 600, 1, Get(SW, "width", 214), Set(SW, "width"), Off)
 	p:Slider("Height", nil, 2, 40, 1, Get(SW, "height", 6), Set(SW, "height"), Off)
 	p:Slider("Row Spacing", nil, 0, 20, 1, Get(SW, "spacing", 2), Set(SW, "spacing"), Off)
@@ -1863,8 +2047,10 @@ ns.RegisterSettingsModule({
 		  build = BuildMain, header = BuildPreviewHeader, pageKey = PageKey },
 		{ key = "castBar", name = "Cast Bar", description = "Custom class resource, health, and mana bar display.",
 		  build = BuildCastBar, header = BuildCastPreview },
-		{ key = "gcdBar", name = "GCD Bar", description = "Custom class resource, health, and mana bar display.", build = BuildGCD },
-		{ key = "totemBar", name = "Totem Bar", description = "Custom class resource, health, and mana bar display.", build = BuildTotem },
+		{ key = "gcdBar", name = "GCD Bar", description = "Custom class resource, health, and mana bar display.",
+		  build = BuildGCD, header = BuildGCDPreview },
+		{ key = "totemBar", name = "Totem Bar", description = "Custom class resource, health, and mana bar display.",
+		  build = BuildTotem, header = BuildTotemPreview },
 		{ key = "swingTimer", name = "Swing Timer", description = "Main hand, off hand and ranged swing timers.", build = BuildSwing },
 	},
 	onEnter = function()

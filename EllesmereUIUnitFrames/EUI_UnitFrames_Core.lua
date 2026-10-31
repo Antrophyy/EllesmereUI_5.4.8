@@ -414,6 +414,14 @@ function UF.InitDB()
 	return UF.db
 end
 
+-- Dark Mode of one frame's settings (retail UF_DarkThemeOn): a frame's own
+-- choice, else the profile-wide one, so profiles keep their look until a
+-- frame's toggle is changed.
+function UF.DarkOn(s)
+	if s and s.darkTheme ~= nil then return s.darkTheme end
+	return (UF.db and UF.db.darkTheme) or false
+end
+
 -- Settings table of a unit key ("boss1".."boss5" share "boss").
 function UF.Settings(unitKey)
 	if unitKey and unitKey:match("^boss%d$") then

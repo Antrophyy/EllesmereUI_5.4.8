@@ -9,7 +9,9 @@
 --  Settings (profile.swingTimer): enabled, width, height, spacing,
 --  combineHands (one row, main hand), showTime, showLabel, hideWhenIdle,
 --  textSize, mhColor / ohColor / rangedColor, bgColor, unlockPos, showSpark,
---  sparkWidth, sparkOverhang, mhSparkColor / ohSparkColor / rangedSparkColor.
+--  sparkWidth, sparkOverhang, mhSparkColor / ohSparkColor / rangedSparkColor,
+--  alwaysShowRows, hideLabelNoWeapon, shieldRow (retail Tracked Weapons cog;
+--  the per-queued-attack colours have no counterpart, 5.4.8 has no queue row).
 -------------------------------------------------------------------------------
 local addonName, P = ...
 local ns = P.ns
@@ -42,17 +44,45 @@ local function On()
 end
 ERB.SwingTimerActive = On
 
+-- Shield in the off hand slot: it never swings but counts as an off hand.
+local OFFHAND_SLOT = 17
+local function OffHandIsShield()
+	local id = GetInventoryItemID("player", OFFHAND_SLOT)
+	if not id then return false end
+	return select(9, GetItemInfo(id)) == "INVTYPE_SHIELD"
+end
+local function ShieldOff(c)
+	return c and (c.shieldRow or c.alwaysShowRows) and OffHandIsShield() or false
+end
+
 -- Which rows this character has: main hand always, off hand with a one-hand
--- weapon there, ranged for hunters.
+-- weapon there (or a shield with Show Shield As Off Hand), ranged for
+-- hunters. Always Show Rows shows the off hand row without a weapon too.
+-- Returns shown, canSwing.
 local function HasRow(key)
-	if key == "mh" then return true end
+	if key == "mh" then return true, true end
 	local c = Cfg()
 	if key == "oh" then
-		if c.combineHands then return false end
 		local _, oh = UnitAttackSpeed and UnitAttackSpeed("player")
-		return oh ~= nil and oh > 0
+		local can = oh ~= nil and oh > 0
+		local shield = not can and ShieldOff(c)
+		-- A combined off hand rides the Main Hand row; a shield keeps its own.
+		if c.combineHands and not shield then return false, can end
+		return can or shield or c.alwaysShowRows == true, can
 	end
-	return select(2, UnitClass("player")) == "HUNTER"
+	local hunter = select(2, UnitClass("player")) == "HUNTER"
+	return hunter, hunter
+end
+
+-- The row's label: the slot name, "Shield" on a shield's off hand row, or
+-- nothing on a weaponless row with Hide Label Without Weapon.
+local function LabelFor(key, c, can)
+	if not c.showLabel then return "" end
+	if not can then
+		if key == "oh" and ShieldOff(c) then return "Shield" end
+		if c.alwaysShowRows and c.hideLabelNoWeapon then return "" end
+	end
+	return LABELS[key]
 end
 
 local function Row(key)
@@ -135,7 +165,8 @@ function ERB.LayoutSwingTimer()
 	local n = 0
 	for _, key in ipairs(ROWS) do
 		local r = Row(key)
-		if HasRow(key) then
+		local shown, can = HasRow(key)
+		if shown then
 			r.active = true
 			r:ClearAllPoints()
 			r:SetSize(w, h + 2)
@@ -147,7 +178,7 @@ function ERB.LayoutSwingTimer()
 			r.bg:SetTexture(bg.r, bg.g, bg.b, bg.a or 0.6)
 			P.SetFont(r.time, c.textSize or 10)
 			P.SetFont(r.label, c.textSize or 10)
-			r.label:SetText(c.showLabel and LABELS[key] or "")
+			r.label:SetText(LabelFor(key, c, can))
 			-- Spark: width, overhang past the bar's top and bottom, and its own
 			-- colour per weapon (unset: white).
 			local over = c.sparkOverhang or 0
