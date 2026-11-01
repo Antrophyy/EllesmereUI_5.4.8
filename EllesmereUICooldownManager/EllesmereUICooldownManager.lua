@@ -477,6 +477,12 @@ CDM.SPELL_REPLACED_BY = {
 	[101546] = 116847,   -- Spinning Crane Kick -> Rushing Jade Wind
 }
 
+-- Summons with no player aura on 5.4.8: on a Buffs bar they show for this
+-- many seconds after the cast (a per-spec spellDurations entry wins).
+CDM.SUMMON_DURATIONS = {
+	[123904] = 45,   -- Invoke Xuen, the White Tiger
+}
+
 -- Hosted buff marker (retail: a buff shown on a cooldown bar).
 local HOSTED_BASE = 2000000000
 
@@ -544,6 +550,7 @@ function CDM.ResolveEntry(bd, id, sd)
 	if not name then return nil end
 	e.spellID, e.name, e.icon = sid, name, icon
 	local dur = sd and sd.spellDurations and sd.spellDurations[id]
+	if not dur and isBuffBar then dur = CDM.SUMMON_DURATIONS[sid] end
 	if dur and dur > 0 and not CDM.LUST_SET[sid] then
 		e.kind, e.duration = "timed", dur
 		return e
