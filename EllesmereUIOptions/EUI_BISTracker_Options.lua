@@ -474,7 +474,8 @@ local function BuildLootList(p, raidID, bossID)
 						tt:AddLine("Click: want the " .. (forged and "normal " or "") .. d.long .. " version of this item.", 0.05, 0.82, 0.62)
 					end)
 				else
-					ShowTextTip(self, d.long, "This boss does not drop this item on " .. d.long .. ".")
+					ShowTextTip(self, d.long, "The journal lists no " .. d.long .. " version of this item"
+						.. (state ~= "ok" and " yet (still loading; the page updates when it arrives)." or "."))
 				end
 			end)
 			chip:SetScript("OnLeave", function()
@@ -658,6 +659,7 @@ local function ActiveTab()
 end
 
 -- Loot page key: raid, boss and whether all item names were known when built.
+local shownLootKey -- key of the Loot page built last
 local function LootKey()
 	local raid = SelectedRaid()
 	local boss = raid and SelectedBoss(raid)
@@ -682,7 +684,16 @@ local function LootKey()
 	if boss == 0 and state == "loading" then
 		return tostring(raid) .. ":0:" .. fc .. "/" .. fs .. ":loading"
 	end
-	return tostring(raid) .. ":" .. tostring(boss) .. ":" .. fc .. "/" .. fs .. ":" .. state .. ":" .. #items .. ":" .. table.concat(picked, "\1")
+	-- Difficulty versions found: a late item name adds one (e.g. the Heroic
+	-- version of an item already listed), and the page must show it.
+	local versions = 0
+	for _, it in ipairs(items) do
+		for _ in pairs(it.byDiff) do
+			versions = versions + 1
+		end
+	end
+	shownLootKey = tostring(raid) .. ":" .. tostring(boss) .. ":" .. fc .. "/" .. fs .. ":" .. state .. ":" .. #items .. ":" .. versions .. ":" .. table.concat(picked, "\1")
+	return shownLootKey
 end
 
 PAGES = {
@@ -816,9 +827,18 @@ BIS.OnLootData = function()
 	local raid = SelectedRaid()
 	local boss = raid and SelectedBoss(raid)
 	local cached = boss and BIS.LootState and BIS.LootState(boss, raid)
-	if cached ~= "ok" and cached ~= "empty" and cached ~= "partial" then
-		ns.RebuildSettingsPage()
+	if cached == "ok" or cached == "empty" then
+		return
 	end
+	if cached == "partial" then
+		-- Gave up waiting, but names can still come in: rebuild only when
+		-- that changed the list (new item or difficulty version).
+		local before = shownLootKey
+		if LootKey() == before then
+			return
+		end
+	end
+	ns.RebuildSettingsPage()
 end
 BIS.OnListChanged = function()
 	local tab = ActiveTab()

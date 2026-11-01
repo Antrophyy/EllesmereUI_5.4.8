@@ -480,6 +480,14 @@ function BIS.GetLoot(raidID, bossID)
 				if type(itemID) ~= "number" and type(link) == "string" then
 					itemID = tonumber(link:match("item:(%d+)"))
 				end
+				if (not name or name == "") and itemID and GetItemInfo then
+					-- The item cache may already know it (the journal's own
+					-- name comes later).
+					local cachedName, cachedLink = GetItemInfo(itemID)
+					if cachedName then
+						name, link = cachedName, link or cachedLink
+					end
+				end
 				if not name or name == "" then
 					done = false
 					if itemID and GetItemInfo then
@@ -563,6 +571,8 @@ function BIS.LootState(bossID, raidID)
 			local st = BIS.LootState(b.id)
 			if st == nil or st == "loading" then
 				return "loading"
+			elseif st == "partial" then
+				state = "partial"
 			end
 		end
 		return state
