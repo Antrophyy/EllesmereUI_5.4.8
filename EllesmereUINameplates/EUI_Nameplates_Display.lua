@@ -849,7 +849,7 @@ function Plate:UpdateHealthTexts(cur, mx)
 		local el = fs.element
 		if HEALTH_ELEMENTS[el] then
 			local dec = p[s.key .. "PctDecimal"] == true
-			local pctText = dead and (dec and "0.0" or "0") or (dec and format("%.1f", pct) or format("%d", floor(pct)))
+			local pctText = dead and (dec and "0.0" or "0") or (dec and pct < 100 and format("%.1f", pct) or format("%d", floor(pct)))
 			if el == "healthPercent" then
 				fs:SetText(pctText .. "%")
 			elseif el == "healthPercentNoSign" then

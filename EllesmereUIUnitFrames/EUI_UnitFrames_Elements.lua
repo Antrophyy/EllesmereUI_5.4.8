@@ -374,7 +374,8 @@ local function PercentText(frame, pct, withSign)
 	local dec = Decimals(frame)
 	local value = pct * 100
 	local text
-	if dec > 0 then
+	-- Full health reads "100%", not "100.0%".
+	if dec > 0 and value < 100 then
 		text = format("%." .. dec .. "f", floor(value * 10 ^ dec) / 10 ^ dec)
 		if UF.db.showDecimalTrimZeros then
 			text = text:gsub("%.?0+$", "")
