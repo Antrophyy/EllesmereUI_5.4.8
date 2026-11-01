@@ -687,18 +687,26 @@ end
 -- in the breakdown as "Synced from group". Deaths are shared as they
 -- happen: one you missed is added with the killing blow as its recap, and
 -- replaced by the full recap if you see the death yourself.
---   totals: "T\t<fight seconds>\t<guid>,<n1>,...,<n7>;<guid>,..." (base 36)
---   enemies: "E\t<fight seconds>\t<guid>,<taken>,<name>;<guid>,..."
+--   totals: "T\t<fight seconds>:<since start>\t<guid>,<n1>,...,<n7>;<guid>,..." (base 36)
+--   enemies: "E\t<fight seconds>:<since start>\t<guid>,<taken>,<name>;<guid>,..."
+-- <since start> is taken when the message goes out, so the receiver knows
+-- when the sender's fight began: numbers only join the fight here that
+-- started at the same moment and lasted about as long. (Matching by length
+-- alone let a late message of one fight raise another, short one, and the
+-- raised numbers then spread to the whole group.)
 --   death:  "D\t<guid>\t<spell>\t<amount>\t<overkill>\t<instakill 0/1>\t<source>"
 -- Messages stay under 255 bytes and go out one per half second; only the
 -- 10 enemies that took the most new damage go in a round, and a round waits
 -- while the last one is still being sent.
 ---------------------------------------------------------------------------
-local SYNC_PREFIX = "EUIDM"
+local SYNC_PREFIX = "EUIDM2" -- 2: fights are matched by their start (older installs are ignored)
 local SYNC_INTERVAL = 10
 local SYNC_MAX_LEN = 240
 local SYNC_ALIGN = 15 -- fights whose lengths differ more than this are not the same fight
-local SYNC_RECENT = 10 -- seconds after a fight ended that late totals still join it
+local SYNC_START = 8 -- fights whose starts differ more than this are not the same fight
+local SYNC_RECENT = 10 -- seconds after a fight ended that its encounter end still sends it
+local SYNC_BACK = 3 -- finished fights that late numbers can still join
+local SYNC_HEAD = 16 -- room kept for the header, written when the message goes out
 local SYNC_ID = "Synced from group"
 local SYNC_ENEMIES = 10 -- enemies per round
 local SYNC_FIELDS = { "damage", "healing", "taken", "interrupts", "dispels", "dmgActive", "healActive" }
@@ -716,11 +724,11 @@ local function SyncChannel()
 	return nil
 end
 
-local outbox = {} -- { text, channel, prio }, sent one per tick
-local function Queue(text, prio)
+local outbox = {} -- { text, channel, prio, kind, seg }, sent one per tick
+local function Queue(text, prio, kind, seg)
 	local channel = SyncChannel()
 	if not channel then return end
-	outbox[#outbox + 1] = { text, channel, prio }
+	outbox[#outbox + 1] = { text, channel, prio, kind, seg }
 end
 
 -- Totals still waiting to go out.
@@ -731,9 +739,16 @@ local function Sending()
 	return false
 end
 
+local B36 -- forward
+
 local function Flush()
 	local m = tremove(outbox, 1)
 	if not m then return end
+	if m[5] then
+		-- Fight length and time since its start, as of now.
+		local seg = m[5]
+		m[1] = m[4] .. "\t" .. B36(E.Duration(seg)) .. ":" .. B36(GetTime() - seg.start) .. "\t" .. m[1]
+	end
 	local ctl = _G.ChatThrottleLib
 	if ctl and ctl.SendAddonMessage then
 		ctl:SendAddonMessage(m[3], SYNC_PREFIX, m[1], m[2])
@@ -742,7 +757,7 @@ local function Flush()
 	end
 end
 
-local function B36(n)
+B36 = function(n)
 	n = floor(n or 0)
 	if n <= 0 then return "" end
 	local digits, out = "0123456789abcdefghijklmnopqrstuvwxyz", ""
@@ -754,21 +769,34 @@ local function B36(n)
 	return out
 end
 
--- Values of the current fight last sent or learnt from the group, per
+-- Values of a fight last sent or learnt from the group, per fight and
 -- player: only numbers that grew since are sent again.
-local known = {}
+local knownOf = setmetatable({}, { __mode = "k" })
+local function Known(seg)
+	local k = knownOf[seg]
+	if not k then
+		k = {}
+		knownOf[seg] = k
+	end
+	return k
+end
 
--- Entries joined into messages of at most SYNC_MAX_LEN bytes.
-local function Packer(head)
-	local text, n = head, 0
+-- Fights recorded since the addon loaded: only those take numbers from the
+-- group (a fight restored from the last session has another clock).
+local live = setmetatable({}, { __mode = "k" })
+
+-- Entries joined into messages of at most SYNC_MAX_LEN bytes; the header
+-- (fight length and start) is added when each one goes out.
+local function Packer(kind, seg)
+	local text, n = "", 0
 	return function(entry)
 		if not entry then
-			if n > 0 then Queue(text, "BULK") end
+			if n > 0 then Queue(text, "BULK", kind, seg) end
 			return
 		end
-		if n > 0 and #text + 1 + #entry > SYNC_MAX_LEN then
-			Queue(text, "BULK")
-			text, n = head, 0
+		if n > 0 and SYNC_HEAD + #text + 1 + #entry > SYNC_MAX_LEN then
+			Queue(text, "BULK", kind, seg)
+			text, n = "", 0
 		end
 		text = text .. (n > 0 and ";" or "") .. entry
 		n = n + 1
@@ -776,7 +804,8 @@ local function Packer(head)
 end
 
 -- Enemy GUIDs travel without "0x"; names lose the separators.
-local function SendEnemies(seg, seconds, full)
+local function SendEnemies(seg, full)
+	local known = Known(seg)
 	local grown = {}
 	for guid, a in pairs(seg.actors) do
 		if a.enemy and type(guid) == "string" and guid:find("^0x") then
@@ -787,7 +816,7 @@ local function SendEnemies(seg, seconds, full)
 	end
 	-- Big pulls: the enemies that took the most new damage; the rest go in a later round.
 	table.sort(grown, function(x, y) return x.gain > y.gain end)
-	local add = Packer("E\t" .. seconds .. "\t")
+	local add = Packer("E", seg)
 	for i = 1, min(#grown, SYNC_ENEMIES) do
 		local e = grown[i]
 		known[e.guid] = known[e.guid] or {}
@@ -801,8 +830,8 @@ end
 -- lost message is made up for).
 local function SendTotals(seg, full)
 	if not seg or not SyncOn() or not SyncChannel() then return end
-	local seconds = B36(E.Duration(seg))
-	local add = Packer("T\t" .. seconds .. "\t")
+	local known = Known(seg)
+	local add = Packer("T", seg)
 	for guid, a in pairs(seg.actors) do
 		if a.group and unitOf[guid] then
 			local k = known[guid]
@@ -826,16 +855,27 @@ local function SendTotals(seg, full)
 		end
 	end
 	add()
-	SendEnemies(seg, seconds, full)
+	SendEnemies(seg, full)
 end
 
--- The fight synced totals belong to: the one in progress, or the one that
--- just ended (the sender's final totals can arrive after it ended here).
-local function SyncTarget()
-	if current and current.shown then return current end
-	local seg = segments[1]
-	if seg and seg == lastStopped and seg.finish and GetTime() - seg.finish <= SYNC_RECENT then return seg end
-	return current
+-- The fight synced numbers belong to: of the one in progress and the last
+-- few that ended (the sender's final totals can arrive after the fight
+-- ended here, or after the next one started), the one that started when
+-- the sender's did and lasted about as long. nil when none did: then the
+-- numbers are of a fight not recorded here and are dropped.
+local function SyncTarget(seconds, since)
+	local start = GetTime() - since
+	local best, off
+	local function Try(seg)
+		if not seg or not live[seg] then return end
+		local d = math.abs(seg.start - start)
+		if d <= SYNC_START and math.abs(E.Duration(seg) - seconds) <= SYNC_ALIGN and (not best or d < off) then
+			best, off = seg, d
+		end
+	end
+	Try(current)
+	for i = 1, min(SYNC_BACK, #segments) do Try(segments[i]) end
+	return best
 end
 
 local function Raise(seg, a, f, delta)
@@ -848,9 +888,10 @@ local function Raise(seg, a, f, delta)
 	end
 end
 
-local function MergeTotals(seconds, body)
-	local seg = SyncTarget()
-	if not seg or math.abs(E.Duration(seg) - seconds) > SYNC_ALIGN then return end
+local function MergeTotals(seconds, since, body)
+	local seg = SyncTarget(seconds, since)
+	if not seg then return end
+	local known = Known(seg)
 	local changed = false
 	for entry in body:gmatch("[^;]+") do
 		local short, rest = entry:match("^([^,]+),?(.*)$")
@@ -889,9 +930,10 @@ local function MergeTotals(seconds, body)
 end
 
 local ENEMY_FLAGS = 0x00000a48 -- hostile NPC
-local function MergeEnemies(seconds, body)
-	local seg = SyncTarget()
-	if not seg or math.abs(E.Duration(seg) - seconds) > SYNC_ALIGN then return end
+local function MergeEnemies(seconds, since, body)
+	local seg = SyncTarget(seconds, since)
+	if not seg then return end
+	local known = Known(seg)
 	local changed = false
 	for entry in body:gmatch("[^;]+") do
 		local hex, v, name = entry:match("^(%x+),([%w]*),(.*)$")
@@ -966,10 +1008,11 @@ function E.OnAddonMessage(prefix, text, _, sender)
 	if prefix ~= SYNC_PREFIX or type(text) ~= "string" or not SyncOn() then return end
 	if sender and sender:match("^[^%-]+") == UnitName("player") then return end
 	local kind, a1, rest = text:match("^(%u)\t([^\t]*)\t(.*)$")
-	if kind == "T" then
-		MergeTotals(tonumber(a1, 36) or 0, rest)
-	elseif kind == "E" then
-		MergeEnemies(tonumber(a1, 36) or 0, rest)
+	if kind == "T" or kind == "E" then
+		local seconds, since = a1:match("^(%w*):(%w*)$")
+		if not seconds then return end
+		seconds, since = tonumber(seconds, 36) or 0, tonumber(since, 36) or 0
+		if kind == "T" then MergeTotals(seconds, since, rest) else MergeEnemies(seconds, since, rest) end
 	elseif kind == "D" then
 		local id, amount, overkill, instakill, source = rest:match("^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t(.*)$")
 		if id then MergeDeath(a1, id, amount, overkill, instakill, source) end
@@ -994,7 +1037,7 @@ end
 
 E.Listen(function(what)
 	if what == "start" then
-		wipe(known)
+		if current then live[current] = true end
 		-- A little spread so the group's messages do not all go at once.
 		syncNext = GetTime() + SYNC_INTERVAL + math.random() * 2
 	elseif what == "stop" then

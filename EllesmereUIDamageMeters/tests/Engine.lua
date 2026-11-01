@@ -687,19 +687,24 @@ Test("group sync shares totals every 10 seconds and the higher number wins", fun
 	Equal(#sent, 0, "nothing before 10 seconds")
 	for _ = 1, 16 do Tick(0.5) end
 	Equal(#sent, 1, "one message")
-	Equal(sent[1].prefix, "EUIDM"); Equal(sent[1].channel, "PARTY")
+	Equal(sent[1].prefix, "EUIDM2"); Equal(sent[1].channel, "PARTY")
 	assert(#sent[1].text < 255)
 	assert(sent[1].text:find("1,rs", 1, true), sent[1].text) -- Alex: 1000 damage = "rs" in base 36
 	assert(sent[1].text:find("2,dw", 1, true), sent[1].text) -- Casey: 500 = "dw"
 	Equal(#enemies, 1, "enemy damage taken")
-	Equal(enemies[1].text, "E\t" .. sent[1].text:match("^T\t(%w+)") .. "\tF130000000000010,15o,Boss") -- 1500 = "15o"
+	assert(enemies[1].text:match("^E\t%w+:%w+\tF130000000000010,15o,Boss$"), enemies[1].text) -- 1500 = "15o"
 	-- Nothing grew: nothing is sent again.
 	for _ = 1, 22 do Tick(0.5) end
 	Equal(#sent, 1, "unchanged numbers are not resent")
 	-- Another user saw more of Casey's damage, healing and an interrupt; less of Alex's.
 	local seconds = E.Duration(E.GetCurrent())
 	local function B36(n) local d, o = "0123456789abcdefghijklmnopqrstuvwxyz", ""; while n > 0 do local r = n % 36; o = d:sub(r + 1, r + 1) .. o; n = (n - r) / 36 end; return o end
-	Fire("CHAT_MSG_ADDON", "EUIDM", "T\t" .. B36(math.floor(seconds)) .. "\t2," .. B36(4000) .. "," .. B36(700) .. ",," .. B36(1) .. ";1," .. B36(10), "PARTY", "Bob")
+	-- Header of a sender whose fight started startOffset seconds after this one.
+	local function Head(seg, extra, startOffset)
+		local since = math.floor(now - seg.start - (startOffset or 0))
+		return B36(math.floor(E.Duration(seg)) + (extra or 0)) .. ":" .. B36(since)
+	end
+	Fire("CHAT_MSG_ADDON", "EUIDM2", "T\t" .. Head(E.GetCurrent()) .. "\t2," .. B36(4000) .. "," .. B36(700) .. ",," .. B36(1) .. ";1," .. B36(10), "PARTY", "Bob")
 	local rows = DM.GetSources(E.GetCurrent(), T.DamageDone)
 	Equal(rows[1].name, "Casey"); Equal(rows[1].total, 4000); Equal(rows[2].name, "Alex"); Equal(rows[2].total, 1000)
 	local spells = DM.GetBreakdown(E.GetCurrent(), T.DamageDone, rows[1])
@@ -709,14 +714,20 @@ Test("group sync shares totals every 10 seconds and the higher number wins", fun
 	local o = DM.GetSources(E.GetOverall(), T.DamageDone)
 	Equal(o[1].name, "Casey"); Equal(o[1].total, 4000)
 	-- Enemies: the higher damage taken wins; an enemy not seen here is added.
-	Fire("CHAT_MSG_ADDON", "EUIDM", "E\t" .. B36(math.floor(seconds)) .. "\tF130000000000010," .. B36(6000) .. ",Boss;F130000000000099," .. B36(800) .. ",Far Add;F130000000000010,1,Boss", "PARTY", "Bob")
+	Fire("CHAT_MSG_ADDON", "EUIDM2", "E\t" .. Head(E.GetCurrent()) .. "\tF130000000000010," .. B36(6000) .. ",Boss;F130000000000099," .. B36(800) .. ",Far Add;F130000000000010,1,Boss", "PARTY", "Bob")
 	local foes = DM.GetSources(E.GetCurrent(), T.EnemyDamageTaken)
 	Equal(#foes, 2); Equal(foes[1].name, "Boss"); Equal(foes[1].total, 6000); Equal(foes[2].name, "Far Add"); Equal(foes[2].total, 800)
 	local hitters = DM.GetBreakdown(E.GetCurrent(), T.EnemyDamageTaken, foes[1])
 	Equal(hitters[1].label, "Synced from group"); Equal(hitters[1].amount, 4500)
 	Equal(DM.GetSources(E.GetOverall(), T.EnemyDamageTaken)[1].total, 6000)
 	-- Totals of a fight of a different length are another fight: ignored.
-	Fire("CHAT_MSG_ADDON", "EUIDM", "T\t" .. B36(math.floor(seconds) + 60) .. "\t2," .. B36(9000), "PARTY", "Bob")
+	Fire("CHAT_MSG_ADDON", "EUIDM2", "T\t" .. Head(E.GetCurrent(), 60) .. "\t2," .. B36(9000), "PARTY", "Bob")
+	Equal(DM.GetSources(E.GetCurrent(), T.DamageDone)[1].total, 4000)
+	-- Totals of a fight as long but started at another time are another fight too.
+	Fire("CHAT_MSG_ADDON", "EUIDM2", "T\t" .. Head(E.GetCurrent(), 0, 30) .. "\t2," .. B36(9000), "PARTY", "Bob")
+	Equal(DM.GetSources(E.GetCurrent(), T.DamageDone)[1].total, 4000)
+	-- Old installs (no fight start in the header) are ignored.
+	Fire("CHAT_MSG_ADDON", "EUIDM2", "T\t" .. B36(math.floor(seconds)) .. "\t2," .. B36(9000), "PARTY", "Bob")
 	Equal(DM.GetSources(E.GetCurrent(), T.DamageDone)[1].total, 4000)
 	-- Learnt numbers are not echoed back; own new damage is sent.
 	Log("SPELL_DAMAGE", playerGUID, "Alex", ME, BOSS_GUID, "Boss", BOSS, 100, "Arcane Shot", 64, 1000, -1, 64, 0, 0, 0)
@@ -730,10 +741,10 @@ Test("group sync shares totals every 10 seconds and the higher number wins", fun
 	Equal(E.InCombat(), false)
 	Equal(#sent, 3, "final totals")
 	-- Late totals from the group still join the fight that just ended.
-	Fire("CHAT_MSG_ADDON", "EUIDM", "T\t" .. B36(math.floor(E.Duration(E.GetCurrent()))) .. "\t2," .. B36(5000), "PARTY", "Bob")
+	Fire("CHAT_MSG_ADDON", "EUIDM2", "T\t" .. Head(E.GetCurrent()) .. "\t2," .. B36(5000), "PARTY", "Bob")
 	Equal(DM.GetSources(E.GetCurrent(), T.DamageDone)[1].total, 5000)
 	-- Your own messages are ignored.
-	Fire("CHAT_MSG_ADDON", "EUIDM", "T\t1\t2," .. B36(99999), "PARTY", "Alex")
+	Fire("CHAT_MSG_ADDON", "EUIDM2", "T\t1:1\t2," .. B36(99999), "PARTY", "Alex")
 	Equal(DM.GetSources(E.GetCurrent(), T.DamageDone)[1].total, 5000)
 	SendAddonMessage = nil
 end)
@@ -747,7 +758,7 @@ Test("group sync shares deaths", function()
 	Log("SPELL_DAMAGE", playerGUID, "Alex", ME, BOSS_GUID, "Boss", BOSS, 100, "Arcane Shot", 64, 1000, -1, 64, 0, 0, 0)
 	Tick(1)
 	-- A death you did not see: added with the killing blow.
-	Fire("CHAT_MSG_ADDON", "EUIDM", "D\t2\t903\t5000\t1200\t0\tBoss", "PARTY", "Bob")
+	Fire("CHAT_MSG_ADDON", "EUIDM2", "D\t2\t903\t5000\t1200\t0\tBoss", "PARTY", "Bob")
 	local deaths = DM.GetSources(E.GetCurrent(), T.Deaths)
 	Equal(#deaths, 1); Equal(deaths[1].name, "Casey"); Equal(deaths[1].class, "MAGE")
 	local recap = DM.GetBreakdown(E.GetCurrent(), T.Deaths, deaths[1])
@@ -771,7 +782,7 @@ Test("group sync shares deaths", function()
 	-- Someone else's death waits a moment and is dropped if another user sent it first.
 	Tick(6)
 	Log("UNIT_DIED", nil, nil, 0, partyGUID, "Casey", PARTY)
-	Fire("CHAT_MSG_ADDON", "EUIDM", "D\t2\t0\t0\t0\t0\t", "PARTY", "Bob")
+	Fire("CHAT_MSG_ADDON", "EUIDM2", "D\t2\t0\t0\t0\t0\t", "PARTY", "Bob")
 	for _ = 1, 6 do Tick(0.5) end
 	Equal(#sent, 1, "dropped")
 	Tick(6)
@@ -858,6 +869,64 @@ Test("group sync sends every number when a boss encounter ends", function()
 	assert(again:find("E\t", 1, true) and again:find(",rs,Sync Boss", 1, true), again)
 	inCombat = false; Tick(0.5); Tick(0.5)
 	SendAddonMessage = nil
+end)
+
+local function B36(n) local d, o = "0123456789abcdefghijklmnopqrstuvwxyz", ""; n = math.floor(n); while n > 0 do local r = n % 36; o = d:sub(r + 1, r + 1) .. o; n = (n - r) / 36 end; return o end
+local function SyncHead(seg) return B36(E.Duration(seg)) .. ":" .. B36(now - seg.start) end
+local function OverallDamage(name)
+	for _, row in ipairs(DM.GetSources(E.GetOverall(), T.DamageDone)) do
+		if row.name == name then return row.total end
+	end
+	return 0
+end
+
+Test("late group totals join the fight they are of, not a short fight that started after it", function()
+	inCombat = false; Tick(15); E.CheckEnd()
+	Equal(E.Reset(), true)
+	inCombat = true
+	Log("SPELL_DAMAGE", partyGUID, "Casey", PARTY, ADD_GUID, "Gunner", ADD, 200, "Frostbolt", 16, 2000, -1, 16, 0, 0, 0)
+	Tick(8)
+	inCombat = false; Tick(0.5)
+	local gunner = DM.GetSegments()[1].combat
+	Equal(gunner.name, "Gunner")
+	Tick(12)
+	-- A stray hit starts a fight here; the sender's final totals of the
+	-- Gunner fight (8 seconds, as long as this one could become) arrive.
+	inCombat = true
+	Log("SPELL_DAMAGE", ADD_GUID, "Add", ADD, playerGUID, "Alex", ME, 900, "Smash", 1, 100, -1, 1, 0, 0, 0)
+	Tick(1)
+	Fire("CHAT_MSG_ADDON", "EUIDM2", "T\t" .. SyncHead(gunner) .. "\t2," .. B36(2000), "PARTY", "Bob")
+	Equal(OverallDamage("Casey"), 2000, "not counted twice in Overall")
+	Fire("CHAT_MSG_ADDON", "EUIDM2", "T\t" .. SyncHead(gunner) .. "\t2," .. B36(3000), "PARTY", "Bob")
+	Equal(DM.GetSources(gunner, T.DamageDone)[1].total, 3000, "the Gunner fight is raised")
+	Equal(OverallDamage("Casey"), 3000)
+	inCombat = false; Tick(0.5)
+	Equal(DM.GetSegments()[1].combat, gunner, "the stray fight is dropped")
+end)
+
+Test("after a wipe the group's final totals join the wipe, not the reset pull", function()
+	inCombat = false; Tick(15); E.CheckEnd()
+	Equal(E.Reset(), true)
+	Fire("ENCOUNTER_START", 88, "Wipe Boss", 14, 10)
+	inCombat = true
+	Log("SPELL_DAMAGE", partyGUID, "Casey", PARTY, BOSS_GUID, "Wipe Boss", BOSS, 200, "Frostbolt", 16, 5000, -1, 16, 0, 0, 0)
+	Tick(60)
+	inCombat = false
+	Fire("ENCOUNTER_END", 88, "Wipe Boss", 14, 10, 0)
+	local wipe = DM.GetSegments()[1].combat
+	Equal(wipe.name, "Wipe Boss")
+	-- The server starts the encounter again for a moment.
+	Tick(3)
+	Fire("ENCOUNTER_START", 88, "Wipe Boss", 14, 10)
+	Tick(1)
+	-- Another user saw all of Casey's damage in the wipe.
+	Fire("CHAT_MSG_ADDON", "EUIDM2", "T\t" .. SyncHead(wipe) .. "\t2," .. B36(8000), "PARTY", "Bob")
+	Equal(DM.GetSources(wipe, T.DamageDone)[1].total, 8000)
+	Equal(OverallDamage("Casey"), 8000)
+	Fire("ENCOUNTER_END", 88, "Wipe Boss", 14, 10, 0)
+	Tick(1)
+	Equal(DM.GetSegments()[1].combat, wipe)
+	Equal(DM.GetSources(wipe, T.DamageDone)[1].total, 8000)
 end)
 
 print(string.format("%d passed, %d failed", passed, #failures))
