@@ -183,6 +183,16 @@ function CDM.BuildAll()
 			local entries = lists[bd.key] or {}
 			f.entries = entries
 			local iw, ih = CDM.IconDims(bd)
+			-- Keep each entry's gain/ready state across rebuilds (BAG_UPDATE,
+			-- SPELLS_CHANGED, ... rebuild mid-combat): without it a buff that is
+			-- still up counts as freshly gained and replays its sound.
+			local prev = {}
+			for _, icon in ipairs(f.icons) do
+				local oe = icon._entry
+				if oe and oe.id ~= nil then
+					prev[oe.id] = { icon._wasActive, icon._wasOnCD }
+				end
+			end
 			for i, e in ipairs(entries) do
 				local icon = f.icons[i]
 				if not icon then
@@ -191,6 +201,10 @@ function CDM.BuildAll()
 				end
 				CDM.StyleIcon(icon, bd, iw, ih)
 				CDM.SetIconEntry(icon, e, e._ss)
+				local st = e.id ~= nil and prev[e.id]
+				if st then
+					icon._wasActive, icon._wasOnCD = st[1], st[2]
+				end
 			end
 			for i = #entries + 1, #f.icons do
 				local icon = f.icons[i]
