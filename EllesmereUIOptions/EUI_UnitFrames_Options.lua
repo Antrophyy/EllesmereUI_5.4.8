@@ -819,9 +819,12 @@ local function PowerRows(p, unit, full, sync)
 		p:Swatch("Spell Cost Color", function() return ns.SpellCostPrediction.Color(S(unit)) end,
 			function(r, g, b) S(unit).powerCostColor = { r = r, g = g, b = b } end,
 			{ disabled = function() return S(unit).powerCostPrediction ~= true end })
-	else
-		p:Blank()
 	end
+	Toggle(p, "Hide at 0%", "Hides the power bar and its text while the unit has no power.", unit, "powerHideAtZero", false)
+	if sync then
+		Sync(p, "Apply Hide at 0% to all Frames", unit, { "powerHideAtZero" })
+	end
+	p:Blank()
 end
 
 -- Cast bar rows. kick = target / focus / boss colors and options.

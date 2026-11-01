@@ -265,6 +265,9 @@ function UF.UpdatePower(frame)
 	local pct = (maxP and maxP > 0) and min(1, cur / maxP) or 0
 	SetBarValue(power, pct, s.smoothBars)
 	frame.powerCur, frame.powerMax, frame.powerToken = cur, maxP, token
+	-- Hide at 0%: fade the bar (and its text, a child of the bar) while the
+	-- unit has no power. Alpha, not Hide, so the layout never shifts.
+	power:SetAlpha((s.powerHideAtZero and not Fake(frame) and (cur or 0) <= 0) and 0 or 1)
 
 	local r, g, b = UF.PowerColor(token, pType)
 	local alpha = (s.powerBarOpacity or 100) / 100
