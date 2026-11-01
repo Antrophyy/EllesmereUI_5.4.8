@@ -273,6 +273,37 @@ function BS.Forbidden(frame)
 	return frame and frame.IsForbidden and frame:IsForbidden() or false
 end
 
+-- 5.4.8 caps inherited child levels at 128, even below a raised parent.
+-- Use only on control subtrees whose children belong above their parents.
+function BS.EnsureChildFrameLevels(frame)
+	if not frame or BS.Forbidden(frame) then return end
+	local level = frame:GetFrameLevel()
+	for _, child in ipairs({ frame:GetChildren() }) do
+		if not BS.Forbidden(child) then
+			if child:GetFrameLevel() <= level then
+				child:SetFrameLevel(level + 1)
+			end
+			BS.EnsureChildFrameLevels(child)
+		end
+	end
+end
+
+local levelWatchers = setmetatable({}, { __mode = "k" })
+function BS.WatchChildFrameLevels(frame)
+	if not frame or BS.Forbidden(frame) or levelWatchers[frame] then return end
+	levelWatchers[frame] = true
+	local level
+	local function Refresh()
+		BS.EnsureChildFrameLevels(frame)
+		level = frame:GetFrameLevel()
+	end
+	frame:HookScript("OnShow", Refresh)
+	frame:HookScript("OnUpdate", function()
+		if frame:GetFrameLevel() ~= level then Refresh() end
+	end)
+	Refresh()
+end
+
 -- Solid color texture (retail SetColorTexture).
 function BS.SolidTex(parent, layer, r, g, b, a, sublevel)
 	local t = parent:CreateTexture(nil, layer or "ARTWORK", nil, sublevel or 0)

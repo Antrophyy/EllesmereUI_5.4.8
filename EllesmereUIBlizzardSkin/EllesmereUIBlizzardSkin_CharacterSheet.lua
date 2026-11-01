@@ -2112,6 +2112,7 @@ local function BuildStatsPanel()
 	RefreshSectionColors()
 	UpdateSectionVisibility()
 	RefreshStatsVisibility()
+	ns.BlizzSkin.WatchChildFrameLevels(statsPanel)
 end
 
 ---------------------------------------------------------------------------
@@ -2288,6 +2289,7 @@ local function BuildTitlesPanel()
 		PaintSelection()
 		child:SetHeight(max(1, -y))
 		scroll:SetVerticalScroll(0)
+		ns.BlizzSkin.EnsureChildFrameLevels(panel)
 	end
 
 	local invalidate = CreateFrame("Frame")
@@ -2329,6 +2331,7 @@ local function BuildTitlesPanel()
 		search:SetText("")
 		RefreshTitlesList()
 	end)
+	ns.BlizzSkin.WatchChildFrameLevels(panel)
 end
 
 -- Blizzard's equipment set rows in the flat EllesmereUI look.
@@ -2369,6 +2372,7 @@ local function SkinEquipmentRows()
 			end
 		end
 	end
+	ns.BlizzSkin.EnsureChildFrameLevels(pane)
 end
 
 local function BuildSidebar()
@@ -2422,6 +2426,7 @@ local function BuildSidebar()
 		pane:SetPoint("TOPLEFT", S.statsPanel, "TOPLEFT", 0, -27)
 		pane:SetPoint("BOTTOMRIGHT", S.statsPanel, "BOTTOMRIGHT", -21, 0)
 		pane:SetFrameLevel(S.statsPanel:GetFrameLevel() + 1)
+		ns.BlizzSkin.WatchChildFrameLevels(pane)
 		hooksecurefunc("PaperDollEquipmentManagerPane_Update", SkinEquipmentRows)
 		if pane.scrollBar then
 			pane.scrollBar:HookScript("OnValueChanged", SkinEquipmentRows)
@@ -2567,6 +2572,7 @@ local function BuildSlotLabels()
 			data.isMainHand = true
 		end
 	end
+	if gemContainer then ns.BlizzSkin.WatchChildFrameLevels(gemContainer) end
 
 	-- Eye toggle in the top left: hides all slot text for the session.
 	if Themed() then

@@ -89,6 +89,9 @@ Interrupt cooldown tracker, extracted from `ExRT` / `ExCD2` logic for Mists of P
 - bar texture and font (Blizzard, ExRT media if ExRT is installed, LibSharedMedia). Long lists are split into pages.
 - class color names, icon desaturation, cooldown-only display
 - bars always have a dim background track, so an empty (0%) bar is still visible
+- **Panel layering**: the tracker and its bars use the LOW layer, beneath normal Character, Guild, Achievements, and other game panels. Opening a panel does not hide the tracker; it only covers overlapping bars. This replaces the earlier HIGH layer that forced the tracker above the Raid Timeline. Bar tooltips and the separate Unlock Mode mover keep their usual layers.
+
+Interrupt Tracker layering checks (Lua 5.1, from the repository root): `lua EllesmereUIInterruptTracker\tests\Layering.lua`. The tests load the tracker with mocked client frames; no game installation is accessed.
 
 ## Character Sheet (Blizzard Skins)
 
@@ -97,15 +100,19 @@ The EllesmereUI character sheet (`EllesmereUIBlizzardSkin_CharacterSheet.lua`), 
 - **Style**: EllesmereUI (sheet art + dark overlay), Modern (flat color + opacity), Blizz Default (Blizzard's sheet with the EllesmereUI stats and slot text), Off. A change between EllesmereUI / Modern and the others needs a UI reload.
 - **Size**: Width (540-900, default 640) and Height (424-720, default 500) sliders for EllesmereUI and Modern; EllesmereUI's own sheet is 540 x 424. The right slot column and the stats follow the right edge, the slot rows spread over the height, the model fills the middle, the weapons stay centered. Every tab uses the same size: the Reputation rows stretch to the full width and extra rows are created for a taller sheet (NUM_FACTIONS_DISPLAYED follows the height), the Currency list fills the sheet with rows as wide as the list.
 - **Layout like EllesmereUI**: sheet that is always open wide, slots in 2 columns, weapons at the bottom, own player model (left drag rotates, right drag pans, wheel zooms, drop an item to equip), stats column on the right with Character / Titles / Equipment labels, flat bottom tabs with an accent underline, eye button to hide the slot text.
+- **Raised-window layering**: the 5.4.8 client can cap newly created child frames at level 128 even when the character window has been raised above it. The sheet explicitly keeps stats, title controls, native equipment-set rows, and socket icons above their parents, including new rows and later window raises. This prevents blank Titles, invisible gems, and unclickable equipment sets after repeated window/loot interactions. Blizzard's equipment-set selection, equip, edit, and save handlers are unchanged.
 - **Reputation and Currency tabs** (EllesmereUI and Modern, like EllesmereUI's Skin_RepCurrency): header rows with a faint plate, white hover and a chevron in place of the +/- box; flat reputation bars on a dark trough with a 1 px border; white Expressway text (currencies you have 0 of stay gray); slim 4 px scrollbar thumbs; the reputation detail popup as a dark panel and the currency options popup with the sheet backdrop, both with flat checkboxes (green tick) and the plain X. Retail EllesmereUI keeps currency rows stock only because of a retail-only transfer taint, so here they get the same rows as reputation.
 - **Fonts and sizes like EllesmereUI** (Expressway): item level 18, section titles 11, stat rows 10, slot item level 11, upgrade level 11, enchant 9 (setting), labels 10, tabs 9, titles list 11.
 - **Core Options**: Item Details (Item Level, Upgrade Level, Gems), Icon Zoom, Enchants (None / Text / Colored Text) and Enchant Text Size, Gear Flyout Item Levels, Hide Slot Flyout Arrows, Show Item Durability (Above Model / Stats Header / Frame Footer, label on/off).
 - **Stat Display**: Stat Sections (Attributes, Secondary, Attack, Defense, Currencies, PvP), Secondary Text (Percent / Value / Value (Percent)), Secondary Highlights, Show Mana, Currencies (Valor, Justice), Blizzard UI Color (Blizz Default), a color per section. Section titles collapse on click; the arrows move sections. Order and collapsed state are saved.
 - **Mapped to MoP**: upgrade track -> item upgrade level (1/2); crests -> Valor and Justice; tertiary stats -> Hit and Expertise (Secondary), Resilience and PvP Power (PvP); missing enchant check on the MoP enchant slots (rings only for enchanters), at level 90.
-- **Not in 5.4.8, left out**: Mythic+ rating, PvP item level, Season Panel, Socket Panel, Upgrades tab, Diminishing Returns tooltips, the inspect sheet.
+- **Socket Panel**: an optional paged row of equipped gems/empty sockets at the bottom right; hover for gem information, click for the bag-gem picker. Socketing still uses Blizzard's confirmation flow.
+- **Not in 5.4.8, left out**: Mythic+ rating, PvP item level, Season Panel, Upgrades tab, Diminishing Returns tooltips, the inspect sheet.
 - Item level, upgrade level and enchant come from a scanning tooltip (5.4.8 `GetItemInfo` has the base item level only).
 - ElvUI: if its Skins > Character Frame is on, the sheet removes ElvUI's borders on these frames and prints a hint to turn that skin off.
 - Saved settings: `EllesmereUIBlizzardSkinDB.charSheet`.
+
+Character-sheet regression checks (Lua 5.1, from the repository root): `lua EllesmereUIBlizzardSkin\tests\CharacterLayers.lua`. The mocked client reproduces the inherited-level-128 limit and exercises the real title/equipment/socket builders without accessing a game installation.
 
 ## Bags (UI Reskin Addons)
 

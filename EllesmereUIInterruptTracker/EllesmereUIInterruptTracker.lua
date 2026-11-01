@@ -1304,8 +1304,8 @@ local function CreateLine(index)
 end
 
 addon:SetClampedToScreen(true)
--- HIGH so it draws above the Raid Ability Timeline (MEDIUM) when the two overlap.
-addon:SetFrameStrata("HIGH")
+-- Combat HUD stays below normal game panels, regardless of their frame level.
+addon:SetFrameStrata("LOW")
 addon:SetMovable(true)
 addon:EnableMouse(true)
 addon:RegisterForDrag("LeftButton")

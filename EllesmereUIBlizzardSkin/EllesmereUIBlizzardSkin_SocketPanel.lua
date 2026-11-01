@@ -695,6 +695,7 @@ do
 		end
 		panel:SetWidth(contentW)
 		panel:Show()
+		BS.EnsureChildFrameLevels(panel)
 	end
 
 	---------------------------------------------------------------------------
@@ -1020,6 +1021,7 @@ do
 		if not SeatSocketWindow() then
 			evtFrame:RegisterEvent("ADDON_LOADED")
 		end
+		BS.WatchChildFrameLevels(panel)
 	end
 
 	local function PanelOn()
