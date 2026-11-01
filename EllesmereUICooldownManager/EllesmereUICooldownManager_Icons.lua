@@ -458,6 +458,9 @@ local function EntryCooldown(e)
 	return 0, 0
 end
 
+-- Start time of the aura each entry last played its gain sound for.
+local gainSoundStart = {}
+
 -- Updates one icon. Returns true when the icon wants its slot shown
 -- (false = hidden; the bar collapses or keeps the slot by the caller's rules).
 function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
@@ -528,7 +531,16 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 				local left = dur and dur > 0 and (start + dur - now) or nil
 				if not (below and below > 0 and left and left <= below) then show = false end
 			end
-			if not f._wasActive and ss and ss.buffActiveSoundKey then CDM.PlaySoundKey(ss.buffActiveSoundKey) end
+			if not f._wasActive and ss and ss.buffActiveSoundKey then
+				-- Once per aura instance: an icon that loses its state (rebound,
+				-- moved, briefly not seeing the aura) must not replay the sound
+				-- for the same Bloodlust / proc it already announced.
+				local played = start and gainSoundStart[e.id]
+				if not (played and math.abs(played - start) < 0.5) then
+					CDM.PlaySoundKey(ss.buffActiveSoundKey)
+				end
+				if start then gainSoundStart[e.id] = start end
+			end
 			f._wasActive = true
 		else
 			local lostKey = ss and (ss.buffLostSoundKey or ss.buffInactiveSoundKey)
