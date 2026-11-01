@@ -136,6 +136,7 @@ local function CreateDefaults()
 		standaloneTimerBorderColor = C4(0, 0, 0, 1),
 		standaloneTimerBorderSize = 0,
 		refreshRate = 1,
+		reportRows = 10,
 		hideResetButton = false,
 		toggleIncludeTimer = false,
 		toggleIncludeSpellHistory = false,
@@ -684,7 +685,7 @@ end
 -- Segment menu label (Details style): "Boss #3  Wipe 34%" / "Boss #4  Kill".
 local KILL_COLOR, WIPE_COLOR = "|cff5fd35f", "|cffff5f5f"
 function DM.SegmentLabel(s)
-	local text = s.name
+	local text = s.name or "Combat"
 	if not s.boss then return text end
 	if s.try then text = text .. " #" .. s.try end
 	if s.result == "kill" then
@@ -1385,7 +1386,7 @@ local function HeaderButton(W, texFile, tooltip, onClick)
 	return btn
 end
 
--- Header buttons laid out from the right: settings, segment, mode, reset, window.
+-- Header buttons from the right: settings, segment, mode, reset, report, window.
 local function LayoutHeader(W)
 	local c = DB()
 	local sz = c.hdrIconSize or 22
@@ -1470,6 +1471,7 @@ CreateDMWindow = function(idx)
 	W.segmentBtn = HeaderButton(W, MEDIA .. "dm_sheet", "Select Segment", function(self) W.ShowSegmentMenu(self) end)
 	W.modeBtn = HeaderButton(W, TYPE_ICONS[W.curDMType or T.DamageDone], "Switch Meter Type", function(self) W.ShowModeMenu(self) end)
 	W.resetBtn = HeaderButton(W, MEDIA .. "dm_undo", "Reset Data", function() DM.ResetData() end)
+	W.reportBtn = HeaderButton(W, MEDIA .. "dm_report", "Report to Chat", function() DM.OpenChatReport(W) end)
 	if idx == 1 then
 		W.winBtn = HeaderButton(W, MEDIA .. "dm_open", function()
 			if #windows >= MAX_WINDOWS then return format("You may only have %d windows active", MAX_WINDOWS) end
@@ -2924,6 +2926,340 @@ do
 				notes[#notes + 1] = "Damage Meters: meter windows and settings come from the retail profile."
 			end
 			return out
+		end
+	end
+
+	---------------------------------------------------------------------------
+	-- Chat reports: snapshot the selected view and send as bandwidth permits.
+	---------------------------------------------------------------------------
+	do
+		local CHANNELS = {
+			{ "PARTY", "Party" }, { "RAID", "Raid" }, { "INSTANCE_CHAT", "Instance" },
+			{ "GUILD", "Guild" }, { "OFFICER", "Officer" }, { "SAY", "Say" },
+			{ "YELL", "Yell" }, { "WHISPER", "Whisper" },
+		}
+		local channelNames = {}
+		for _, entry in ipairs(CHANNELS) do channelNames[entry[1]] = entry[2] end
+		local reportFrame, sending
+		local sendFrame = CreateFrame("Frame")
+		sendFrame:Hide()
+		local FALLBACK_BURST, FALLBACK_RATE, MESSAGE_OVERHEAD = 1200, 800, 40
+		local available, lastRefill = FALLBACK_BURST, GetTime()
+
+		local function Plain(text)
+			return tostring(text or ""):gsub("|H.-|h(.-)|h", "%1"):gsub("|T.-|t", "")
+				:gsub("|A.-|a", ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+				:gsub("|", "/"):gsub("[%z\1-\31\127]", " ")
+		end
+
+		-- SendChatMessage's byte limit must not split a multibyte character.
+		local function Clip(text, limit)
+			if #text <= limit then return text end
+			local last = limit - 3
+			while last > 0 do
+				local byte = text:byte(last + 1)
+				if byte < 128 or byte >= 192 then break end
+				last = last - 1
+			end
+			return text:sub(1, last) .. "..."
+		end
+
+		local function ReportLine(rank, label, value)
+			local prefix, suffix = rank .. ". ", value ~= "" and (": " .. Plain(value)) or ""
+			return prefix .. Clip(Plain(label), 255 - #prefix - #suffix) .. suffix
+		end
+
+		function DM.BuildChatReport(W)
+			if not W or not TYPE_NAMES[W.curDMType] then return nil, "Select a meter type before reporting." end
+			local combat = GetCombat(W)
+			if not combat then return nil, "There is no combat data to report." end
+			local overall = not W.curSessionID and W.curSession == S.Overall
+			local session = overall and "Overall" or (W.curSessionID and "Fight" or "Current")
+			if not overall then session = session .. ": " .. DM.SegmentLabel(combat) end
+			local title = "[EUI] " .. TYPE_NAMES[W.curDMType]
+			if W.source then title = title .. " - " .. ShortName(W.source.name) end
+			title = Clip(Plain(title .. " - " .. session .. " (" .. FormatTimer(CombatTime(combat)) .. ")"), 255)
+			local rows = {}
+			if W.source then
+				local list = GetBreakdown(combat, W.curDMType, W.source)
+				local total = 0
+				for _, entry in ipairs(list) do total = total + entry.amount end
+				for i = 1, min(#list, BAR_POOL_SIZE) do
+					local entry = list[i]
+					local label, value = entry.label, format("%s (%.1f%%)", Abbrev(entry.amount), total > 0 and entry.amount / total * 100 or 0)
+					if W.curDMType == T.Deaths then label, value = DeathLine(entry) end
+					rows[i] = ReportLine(i, label, value)
+				end
+			else
+				local list = GetSources(combat, W.curDMType)
+				for i = 1, min(#list, BAR_POOL_SIZE) do
+					local src = list[i]
+					local value
+					if W.curDMType == T.Deaths then
+						value = overall and "1 death" or FormatTimer(src.deathTime or 0)
+					elseif W.curDMType == T.Interrupts or W.curDMType == T.Dispels then
+						value = Abbrev(src.total)
+					else
+						value = FormatBarValue(src.total, src.perSec, DB().numberFormat or 2)
+					end
+					rows[i] = ReportLine(i, ShortName(src.name), value)
+				end
+			end
+			if #rows == 0 then return nil, "There are no rows to report in this view." end
+			return { title = title, rows = rows }
+		end
+
+		local function Destination(channel, target)
+			if not channelNames[channel] then return false, "Choose a supported chat destination." end
+			if channel == "RAID" and not IsInRaid(LE_PARTY_CATEGORY_HOME) then
+				return false, "You are not in a raid group."
+			elseif channel == "PARTY" and (not IsInGroup(LE_PARTY_CATEGORY_HOME) or IsInRaid(LE_PARTY_CATEGORY_HOME)) then
+				return false, "You are not in a party. Use Raid or Instance for those groups."
+			elseif channel == "INSTANCE_CHAT" and not (LE_PARTY_CATEGORY_INSTANCE and IsInGroup(LE_PARTY_CATEGORY_INSTANCE)) then
+				return false, "You are not in an instance group."
+			elseif (channel == "GUILD" or channel == "OFFICER") and not IsInGuild() then
+				return false, "You are not in a guild."
+			elseif channel == "WHISPER" then
+				-- Windows Lua's %s/%c can match bytes inside valid UTF-8 names.
+				target = type(target) == "string" and target:match("^[ \t\r\n]*(.-)[ \t\r\n]*$") or ""
+				if target == "" or #target > 128 or target:find("[%z\1-\32\127|]") then
+					return false, "Enter a character name for Whisper (Name or Name-Realm)."
+				end
+				return true, target
+			end
+			return true
+		end
+
+		local function ReportError(message)
+			ns.Print("Damage Meters: " .. message)
+			return false, message
+		end
+
+		local function UpdateSendButtons()
+			if not reportFrame then return end
+			reportFrame.send:SetEnabled(sending == nil)
+			reportFrame.send.label:SetAlpha(sending and 0.4 or 1)
+			reportFrame.cancel.label:SetText(sending and "Stop Report" or "Close")
+		end
+
+		function DM.CancelChatReport()
+			sending = nil
+			sendFrame:Hide()
+			UpdateSendButtons()
+		end
+
+		function DM.IsChatReporting() return sending ~= nil end
+
+		local FlushReport
+		local function OnReportLineSent(job)
+			if sending ~= job then return end
+			job.waiting = false
+			job.index = job.index + 1
+			if not job.flushing then FlushReport() end
+		end
+
+		FlushReport = function()
+			local job = sending
+			if not job or job.waiting or job.flushing then return true end
+			job.flushing = true
+			while sending == job and job.index <= #job.lines do
+				local valid, recipient = Destination(job.channel, job.target)
+				if not valid then
+					job.flushing = false
+					DM.CancelChatReport()
+					return ReportError("Report stopped: " .. recipient)
+				end
+				local text = job.lines[job.index]
+				local ctl = _G.ChatThrottleLib
+				local ok, err
+				if ctl and type(ctl.SendChatMessage) == "function" then
+					-- Keep at most one line in CTL so Stop Report can discard
+					-- everything else. Its callback can run before this returns.
+					job.waiting = true
+					ok, err = pcall(ctl.SendChatMessage, ctl, "BULK", "EUIDMReport",
+						text, job.channel, nil, recipient, "EUIDMReport", OnReportLineSent, job)
+				else
+					local now = GetTime()
+					available = min(FALLBACK_BURST, available + max(0, now - lastRefill) * FALLBACK_RATE)
+					lastRefill = now
+					local cost = #text + MESSAGE_OVERHEAD
+					if cost > available then break end
+					available = available - cost
+					ok, err = pcall(SendChatMessage, text, job.channel, nil, recipient)
+					if ok then job.index = job.index + 1 end
+				end
+				if not ok then
+					job.flushing = false
+					DM.CancelChatReport()
+					return ReportError("Report stopped: " .. tostring(err))
+				end
+				if job.waiting then break end
+			end
+			job.flushing = false
+			if sending == job and job.index > #job.lines then DM.CancelChatReport() end
+			return true
+		end
+
+		function DM.SendChatReport(report, rowCount, channel, target)
+			if sending then return ReportError("A report is already being sent. Wait or use Stop Report.") end
+			if type(rowCount) ~= "number" or rowCount ~= rowCount or rowCount ~= floor(rowCount)
+				or rowCount < 1 or rowCount > BAR_POOL_SIZE then
+				return ReportError("Choose a whole number of rows from 1 to " .. BAR_POOL_SIZE .. ".")
+			end
+			if type(report) ~= "table" or type(report.title) ~= "string"
+				or type(report.rows) ~= "table" or #report.rows == 0 then
+				return ReportError("There is no report to send. Open Report to Chat from a populated meter.")
+			end
+			local valid, recipient = Destination(channel, target)
+			if not valid then return ReportError(recipient) end
+			local lines = { Clip(Plain(report.title), 255) }
+			for i = 1, min(rowCount, #report.rows) do
+				if type(report.rows[i]) ~= "string" then return ReportError("The report contains an invalid row.") end
+				lines[#lines + 1] = Clip(Plain(report.rows[i]), 255)
+			end
+			DB().reportRows, DB().reportChannel = rowCount, channel
+			sending = { lines = lines, index = 1, channel = channel, target = recipient }
+			sendFrame:Show()
+			UpdateSendButtons()
+			return FlushReport()
+		end
+
+		sendFrame:SetScript("OnUpdate", FlushReport)
+
+		local function Text(parent, label, size, x, y)
+			local text = parent:CreateFontString(nil, "OVERLAY")
+			SetDMFont(text, size)
+			text:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+			text:SetJustifyH("LEFT")
+			text:SetText(label)
+			return text
+		end
+
+		local function Button(parent, label, width)
+			local button = CreateFrame("Button", nil, parent)
+			button:SetSize(width, 24)
+			local bg = button:CreateTexture(nil, "BACKGROUND")
+			bg:SetAllPoints()
+			Solid(bg, 0.15, 0.15, 0.15, 1)
+			button.label = Text(button, label, 11, 8, -6)
+			button:SetScript("OnEnter", function() Solid(bg, 0.23, 0.23, 0.23, 1) end)
+			button:SetScript("OnLeave", function() Solid(bg, 0.15, 0.15, 0.15, 1) end)
+			return button
+		end
+
+		local function Input(parent, width, y)
+			local edit = CreateFrame("EditBox", nil, parent)
+			edit:SetSize(width, 24)
+			edit:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -12, y)
+			edit:SetAutoFocus(false)
+			SetDMFont(edit, 11)
+			edit:SetTextInsets(6, 6, 0, 0)
+			local bg = edit:CreateTexture(nil, "BACKGROUND")
+			bg:SetAllPoints()
+			Solid(bg, 0.02, 0.02, 0.02, 1)
+			edit:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+			edit:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+			return edit
+		end
+
+		local function BuildReportFrame()
+			local f = CreateFrame("Frame", "EllesmereUIDMReportFrame", UIParent)
+			f:SetFrameStrata("DIALOG")
+			f:SetFrameLevel(20)
+			f:SetSize(320, 246)
+			f:SetClampedToScreen(true)
+			f:EnableMouse(true)
+			local bg = f:CreateTexture(nil, "BACKGROUND")
+			bg:SetAllPoints()
+			Solid(bg, 0.06, 0.06, 0.06, 0.98)
+			PaintEdges(MakeEdges(f, "BORDER"), f, 1, 0.3, 0.3, 0.3, 1)
+			Text(f, "Report to Chat", 14, 12, -12)
+			f.summary = Text(f, "", 10, 12, -34)
+			f.summary:SetWidth(296)
+			f.summary:SetHeight(30)
+			Text(f, "Rows (1-" .. BAR_POOL_SIZE .. ")", 11, 12, -78)
+			f.rows = Input(f, 70, -72)
+			f.rows:SetNumeric(true)
+			f.rows:SetMaxLetters(2)
+			Text(f, "Destination", 11, 12, -110)
+			f.channel = Button(f, "", 160)
+			f.channel:SetPoint("TOPRIGHT", f, "TOPRIGHT", -12, -104)
+			f.recipientLabel = Text(f, "Character name", 11, 12, -142)
+			f.recipient = Input(f, 160, -136)
+			f.recipient:SetMaxLetters(128)
+			f.error = Text(f, "", 10, 12, -171)
+			f.error:SetWidth(296)
+			f.error:SetHeight(34)
+			f.error:SetTextColor(1, 0.4, 0.4)
+			local function SetChannel(channel)
+				f.destination = channel
+				f.channel.label:SetText(channelNames[channel])
+				f.recipient:ClearFocus()
+				f.recipient:SetShown(channel == "WHISPER")
+				f.recipientLabel:SetShown(channel == "WHISPER")
+			end
+			f.SetChannel = SetChannel
+			f.channel:SetScript("OnClick", function(self)
+				local items = {}
+				for _, entry in ipairs(CHANNELS) do
+					local channel = entry[1]
+					items[#items + 1] = { text = entry[2], isActive = f.destination == channel,
+						onClick = function() SetChannel(channel) end }
+				end
+				ShowMenu(items, self)
+			end)
+			f.send = Button(f, "Send Report", 142)
+			f.send:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 12, 12)
+			f.send:SetScript("OnClick", function()
+				local ok, err = DM.SendChatReport(f.report, tonumber(f.rows:GetText()), f.destination, f.recipient:GetText())
+				if ok then
+					f:Hide()
+				else
+					f.error:SetTextColor(1, 0.4, 0.4)
+					f.error:SetText(err)
+				end
+			end)
+			f.cancel = Button(f, "Close", 142)
+			f.cancel:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -12, 12)
+			f.cancel:SetScript("OnClick", function()
+				if sending then DM.CancelChatReport() end
+				f:Hide()
+			end)
+			f:SetScript("OnHide", function()
+				f.rows:ClearFocus()
+				f.recipient:ClearFocus()
+				HideMenus()
+			end)
+			tinsert(UISpecialFrames, "EllesmereUIDMReportFrame")
+			f:Hide()
+			return f
+		end
+
+		function DM.OpenChatReport(W)
+			local report, err = DM.BuildChatReport(W)
+			if not report then return ReportError(err) end
+			HideMenus()
+			if not reportFrame then reportFrame = BuildReportFrame() end
+			local f, c = reportFrame, DB()
+			f.report = report
+			f.summary:SetText(report.title)
+			f.rows:SetText(tostring(c.reportRows))
+			f.recipient:SetText("")
+			f.error:SetTextColor(0.7, 0.7, 0.7)
+			f.error:SetText("Snapshot of this view; sends up to the chosen rows plus a header.")
+			local channel = c.reportChannel
+			if not channelNames[channel] then
+				if LE_PARTY_CATEGORY_INSTANCE and IsInGroup(LE_PARTY_CATEGORY_INSTANCE) then channel = "INSTANCE_CHAT"
+				elseif IsInRaid() then channel = "RAID"
+				elseif IsInGroup() then channel = "PARTY"
+				else channel = "SAY" end
+			end
+			f.SetChannel(channel)
+			f:ClearAllPoints()
+			f:SetPoint("BOTTOMRIGHT", W.reportBtn or W.frame, "TOPRIGHT", 0, 6)
+			UpdateSendButtons()
+			f:Show()
+			return true
 		end
 	end
 end

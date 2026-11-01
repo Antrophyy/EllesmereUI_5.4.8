@@ -31,6 +31,9 @@ function Frame:CreateTexture() return CreateFrame("Texture", nil, self) end
 function Frame:CreateFontString() return CreateFrame("FontString", nil, self) end
 function Frame:SetScript(event, fn) self.scripts[event] = fn end
 function Frame:GetScript(event) return self.scripts[event] end
+function Frame:SetPoint(...) self.point = { ... } end
+function Frame:ClearAllPoints() self.point = nil end
+function Frame:SetEnabled(enabled) self.enabled = enabled end
 function Frame:HookScript(event, fn)
 	local previous = self.scripts[event]
 	self.scripts[event] = function(...)
@@ -88,13 +91,14 @@ function Frame:IsOwned(owner) return self.owner == owner end
 function Frame:SetOwner(owner) self.owner = owner end
 local noop = function() end
 for _, method in ipairs({
-	"SetPoint", "ClearAllPoints", "SetAllPoints", "SetClampedToScreen", "SetMovable", "SetResizable",
+	"SetAllPoints", "SetClampedToScreen", "SetMovable", "SetResizable",
 	"SetMinResize", "SetMaxResize", "EnableMouse", "EnableMouseWheel", "SetHitRectInsets",
 	"SetJustifyH", "SetJustifyV", "SetWordWrap", "SetTextColor", "SetVertexColor", "SetTexCoord",
 	"SetStatusBarColor", "SetScrollChild", "RegisterForClicks", "RegisterForDrag",
 	"SetBackdrop", "SetBackdropColor", "SetBackdropBorderColor", "SetBlendMode",
 	"SetHighlightTexture", "SetNormalTexture", "SetShadowColor", "SetShadowOffset",
 	"SetDrawLayer", "SetDesaturated", "StartMoving", "StopMovingOrSizing", "StartSizing",
+	"SetAutoFocus", "SetMaxLetters", "SetNumeric", "SetTextInsets", "ClearFocus",
 }) do
 	Frame[method] = noop
 end
@@ -102,6 +106,7 @@ end
 UIParent = CreateFrame("Frame")
 UIParent:SetSize(2560, 1440)
 GameTooltip = CreateFrame("GameTooltip")
+UISpecialFrames = {}
 format = string.format
 function GetTime() return now end
 function InCombatLockdown() return locked end
@@ -928,6 +933,442 @@ Test("after a wipe the group's final totals join the wipe, not the reset pull", 
 	Equal(DM.GetSegments()[1].combat, wipe)
 	Equal(DM.GetSources(wipe, T.DamageDone)[1].total, 8000)
 end)
+
+do
+	local sent = {}
+	local group, raid, instance, guild
+	local oldGroup, oldRaid, oldGuild = IsInGroup, IsInRaid, IsInGuild
+	local oldHome, oldInstance = LE_PARTY_CATEGORY_HOME, LE_PARTY_CATEGORY_INSTANCE
+	local oldThrottle = ChatThrottleLib
+	LE_PARTY_CATEGORY_HOME, LE_PARTY_CATEGORY_INSTANCE = 1, 2
+	function IsInGroup(category) return category == 2 and instance or category ~= 2 and group end
+	function IsInRaid() return raid end
+	function IsInGuild() return guild end
+	local function Send(text, channel, language, target)
+		sent[#sent + 1] = { text = text, channel = channel, language = language, target = target, at = now }
+	end
+	local function Throttle(immediate)
+		local ctl = { pending = {}, immediate = immediate or 0, maxPending = 0, depth = 0, maxDepth = 0 }
+		function ctl:SendChatMessage(priority, prefix, text, channel, language, target, queueName, callback, job)
+			Equal(priority, "BULK"); Equal(prefix, "EUIDMReport"); Equal(queueName, "EUIDMReport")
+			self.depth = self.depth + 1
+			self.maxDepth = math.max(self.maxDepth, self.depth)
+			if self.immediate > 0 then
+				self.immediate = self.immediate - 1
+				Send(text, channel, language, target)
+				callback(job)
+			else
+				self.pending[#self.pending + 1] = {
+					text = text, channel = channel, language = language, target = target, callback = callback, job = job,
+				}
+				self.maxPending = math.max(self.maxPending, #self.pending)
+			end
+			self.depth = self.depth - 1
+		end
+		function ctl:FlushOne()
+			local message = table.remove(self.pending, 1)
+			assert(message, "no throttled message pending")
+			Send(message.text, message.channel, message.language, message.target)
+			message.callback(message.job)
+		end
+		ChatThrottleLib = ctl
+		return ctl
+	end
+	local function LongReport()
+		local report = { title = "Large Report", rows = {} }
+		for i = 1, 40 do report.rows[i] = string.rep("x", 200) end
+		return report
+	end
+	local function BytesSince(index)
+		local bytes = 0
+		for i = (index or 0) + 1, #sent do bytes = bytes + #sent[i].text + 40 end
+		return bytes
+	end
+	local function ReportTest(name, fn)
+		Test(name, function()
+			DM.CancelChatReport()
+			wipe(sent)
+			ChatThrottleLib = nil
+			now = now + 2 -- refill the shared fallback budget between independent cases
+			group, raid, instance, guild = true, false, false, true
+			SendChatMessage = Send
+			DM.DB().numberFormat, DM.DB().timeType = 2, "effective"
+			fn()
+			DM.CancelChatReport()
+		end)
+	end
+	local function Fixture(dmType)
+		local actor = {
+			guid = playerGUID, name = "Alex-Realm", group = true, class = "HUNTER",
+			damage = 20000, healing = 5000, taken = 1000, interrupts = 3, dispels = 2,
+			dmgActive = 10, healActive = 5,
+			dmgSpells = { { id = 100, amount = 15000 }, { id = 1, amount = 5000 } },
+			healSpells = { { id = 300, amount = 5000 } },
+			intSpells = { { id = 400, amount = 3 } },
+			dispSpells = { { id = 500, amount = 2 } },
+			takenFrom = { { name = "Boss", amount = 1000 } },
+		}
+		local combat = {
+			name = "Report Boss", boss = true, try = 2, result = "kill", start = now - 20, finish = now,
+			actors = {
+				alex = actor,
+				casey = { name = "Casey", group = true, damage = 10000, healing = 12000, taken = 3000, interrupts = 1, dispels = 4 },
+				robin = { name = "Robin", group = true, damage = 5000, healing = 1000, taken = 500 },
+				boss = { name = "Boss", enemy = true, taken = 35000, takenFrom = { { name = "Alex", amount = 20000 } } },
+			},
+			deaths = {
+				{ name = "Alex", time = 11, at = now - 9, events = {
+					{ id = 300, amount = 100, heal = true, source = "Casey", at = now - 11, hp = 35 },
+					{ id = 1, amount = 500, source = "Boss", at = now - 10, hp = 0, overkill = 50 },
+				} },
+				{ name = "Casey", time = 12, at = now - 8, events = {} },
+			},
+		}
+		return { curDMType = dmType or T.DamageDone, curSession = DM.S.Current, curSessionID = combat }, combat
+	end
+
+	ReportTest("reports damage, healing, taken, enemy taken, interrupts, dispels, and deaths", function()
+		local cases = {
+			{ T.DamageDone, "1. Alex: 20K (1K)" },
+			{ T.HealingDone, "1. Casey: 12K (600)" },
+			{ T.DamageTaken, "1. Casey: 3K (150)" },
+			{ T.EnemyDamageTaken, "1. Boss: 35K (1.7K)" },
+			{ T.Interrupts, "1. Alex: 3" },
+			{ T.Dispels, "1. Casey: 4" },
+			{ T.Deaths, "1. Alex: 0:11" },
+		}
+		for _, case in ipairs(cases) do
+			local report = assert(DM.BuildChatReport(Fixture(case[1])))
+			Equal(report.rows[1], case[2])
+			assert(report.title:find(DM.TYPE_NAMES[case[1]], 1, true))
+			assert(report.title:find("Fight: Report Boss #2  Kill (0:20)", 1, true))
+			assert(not report.title:find("|", 1, true))
+		end
+	end)
+	ReportTest("report amounts follow number formatting and activity-time settings", function()
+		local W = Fixture()
+		local values = { [0] = "1K", [1] = "20K", [2] = "20K (1K)", [3] = "20K / 1K" }
+		for mode = 0, 3 do
+			DM.DB().numberFormat = mode
+			Equal(DM.BuildChatReport(W).rows[1], "1. Alex: " .. values[mode])
+		end
+		DM.DB().numberFormat, DM.DB().timeType = 2, "activity"
+		Equal(DM.BuildChatReport(W).rows[1], "1. Alex: 20K (2K)")
+	end)
+	ReportTest("reports current and overall sessions without confusing them with a stored fight", function()
+		local W, combat = Fixture()
+		local current, overall = E.GetCurrent, E.GetOverall
+		W.curSessionID = nil
+		E.GetCurrent = function() return combat end
+		combat.name, combat.boss = nil, nil
+		local report = DM.BuildChatReport(W)
+		assert(report.title:find("Current: Combat (0:20)", 1, true))
+		W.curSession = DM.S.Overall
+		E.GetOverall = function() return combat end
+		report = DM.BuildChatReport(W)
+		E.GetCurrent, E.GetOverall = current, overall
+		assert(report.title:find("Overall (0:20)", 1, true))
+		Equal(report.rows[1], "1. Alex: 20K (1K)")
+	end)
+	ReportTest("open spell breakdowns and death recaps report their displayed rows", function()
+		local W = Fixture()
+		W.source = DM.GetSources(W.curSessionID, W.curDMType)[1]
+		local report = DM.BuildChatReport(W)
+		Equal(report.rows[1], "1. Spell 100: 15K (75.0%)")
+		Equal(report.rows[2], "2. Melee: 5K (25.0%)")
+		assert(report.title:find("Damage Done - Alex", 1, true))
+		W = Fixture(T.Deaths)
+		W.source = DM.GetSources(W.curSessionID, W.curDMType)[1]
+		report = DM.BuildChatReport(W)
+		Equal(#report.rows, 2)
+		assert(report.rows[1]:find("-1.0s Melee", 1, true))
+		assert(report.rows[1]:find("-500 0%", 1, true))
+		assert(report.rows[2]:find("+100 35%", 1, true))
+		assert(not report.rows[1]:find("|", 1, true))
+	end)
+	ReportTest("opening a report snapshots strings, not mutable combat or window state", function()
+		local W, combat = Fixture()
+		local report = DM.BuildChatReport(W)
+		combat.actors.alex.damage, combat.name = 1, "Changed"
+		W.curDMType = T.HealingDone
+		Equal(report.rows[1], "1. Alex: 20K (1K)")
+		assert(not report.title:find("Changed", 1, true))
+	end)
+	ReportTest("short reports send the header and selected rows immediately without a timer delay", function()
+		local report = DM.BuildChatReport(Fixture())
+		Equal(DM.SendChatReport(report, 2, "PARTY"), true)
+		Equal(#sent, 3)
+		Equal(sent[1].text, report.title); Equal(sent[2].text, report.rows[1]); Equal(sent[3].text, report.rows[2])
+		for _, message in ipairs(sent) do Equal(message.at, now) end
+		Equal(DM.IsChatReporting(), false)
+		Tick(5); Equal(#sent, 3)
+		Equal(sent[1].channel, "PARTY"); Equal(sent[1].target, nil)
+		Equal(DM.DB().reportRows, 2); Equal(DM.DB().reportChannel, "PARTY")
+	end)
+	ReportTest("short reports stop at available rows and retain a separate queued copy", function()
+		local ctl = Throttle()
+		local report = DM.BuildChatReport(Fixture(T.Interrupts))
+		Equal(DM.SendChatReport(report, 40, "GUILD"), true)
+		local first = report.rows[1]
+		report.rows[1] = "Mutated"
+		for _ = 1, 3 do ctl:FlushOne() end
+		Equal(#sent, 3); Equal(sent[2].text, first); Equal(sent[1].channel, "GUILD")
+		Equal(ctl.maxPending, 1); Equal(DM.IsChatReporting(), false)
+	end)
+	ReportTest("large fallback reports respect byte budgets rather than one-line-per-second pacing", function()
+		local W, combat = Fixture()
+		for i = 1, 50 do combat.actors["extra" .. i] = { name = "Extra " .. i, group = true, damage = i } end
+		Equal(#DM.BuildChatReport(W).rows, 40)
+		local report = LongReport()
+		Equal(DM.SendChatReport(report, 40, "SAY"), true)
+		Equal(#sent, 5); assert(BytesSince() <= 1200)
+		Tick(0.1)
+		Equal(#sent, 6); assert(BytesSince() <= 1280)
+		local before = #sent
+		Tick(100)
+		assert(#sent > before + 1); assert(BytesSince(before) <= 1200, "long frames must not bank an unlimited burst")
+		for _ = 1, 12 do Tick(1) end
+		Equal(#sent, 41); Equal(DM.IsChatReporting(), false)
+	end)
+	ReportTest("the default ten-row report fits in the immediate native burst", function()
+		local W, combat = Fixture()
+		for i = 1, 7 do combat.actors["extra" .. i] = { name = "Extra " .. i, group = true, damage = 100 * i } end
+		local report = DM.BuildChatReport(W)
+		Equal(DM.SendChatReport(report, 10, "RAID"), false)
+		raid = true
+		Equal(DM.SendChatReport(report, 10, "RAID"), true)
+		Equal(#sent, 11); Equal(DM.IsChatReporting(), false)
+		for _, message in ipairs(sent) do Equal(message.at, now) end
+	end)
+	ReportTest("ChatThrottleLib sends all available bulk lines immediately without recursive sends", function()
+		local ctl = Throttle(math.huge)
+		local report = LongReport()
+		Equal(DM.SendChatReport(report, 40, "WHISPER", "Friend-Realm"), true)
+		Equal(#sent, 41); Equal(ctl.maxPending, 0); Equal(ctl.maxDepth, 1)
+		for _, message in ipairs(sent) do
+			Equal(message.at, now); Equal(message.channel, "WHISPER"); Equal(message.target, "Friend-Realm")
+		end
+		Equal(sent[1].text, report.title); Equal(DM.IsChatReporting(), false)
+		Tick(1); Equal(#sent, 41)
+	end)
+	ReportTest("deferred throttle callbacks resume immediately and queue at most one line per report", function()
+		local ctl = Throttle(2)
+		local report = DM.BuildChatReport(Fixture())
+		Equal(DM.SendChatReport(report, 3, "PARTY"), true)
+		Equal(#sent, 2); Equal(#ctl.pending, 1); Equal(DM.IsChatReporting(), true)
+		Tick(0.1); Equal(#sent, 2); Equal(#ctl.pending, 1)
+		ctl:FlushOne()
+		Equal(#sent, 3); Equal(#ctl.pending, 1); Equal(sent[3].text, report.rows[2])
+		ctl:FlushOne()
+		Equal(#sent, 4); Equal(#ctl.pending, 0); Equal(sent[4].text, report.rows[3])
+		Equal(ctl.maxPending, 1); Equal(DM.IsChatReporting(), false)
+	end)
+	ReportTest("cancelled throttle callbacks cannot advance or cancel a replacement report", function()
+		local ctl = Throttle()
+		local first = DM.BuildChatReport(Fixture())
+		Equal(DM.SendChatReport(first, 3, "PARTY"), true)
+		DM.CancelChatReport()
+		local second = { title = "Replacement", rows = { "1. New row" } }
+		Equal(DM.SendChatReport(second, 1, "WHISPER", "Friend"), true)
+		Equal(#ctl.pending, 2)
+		ctl:FlushOne() -- the old line already handed to the library can still arrive
+		Equal(#sent, 1); Equal(sent[1].text, first.title)
+		Equal(#ctl.pending, 1); Equal(DM.IsChatReporting(), true)
+		ctl:FlushOne(); Equal(sent[2].text, "Replacement")
+		ctl:FlushOne(); Equal(sent[3].text, "1. New row")
+		Equal(#ctl.pending, 0); Equal(DM.IsChatReporting(), false)
+	end)
+	ReportTest("the fallback byte budget is shared across cancelled and replacement reports", function()
+		local report = LongReport()
+		Equal(DM.SendChatReport(report, 40, "SAY"), true)
+		Equal(#sent, 5)
+		DM.CancelChatReport()
+		Equal(DM.SendChatReport(report, 1, "SAY"), true)
+		Equal(#sent, 6); assert(BytesSince() <= 1200)
+		Equal(DM.IsChatReporting(), true)
+		Tick(0.2)
+		Equal(#sent, 7); Equal(DM.IsChatReporting(), false)
+	end)
+	ReportTest("Whisper uses the typed character name and keeps the recipient out of saved settings", function()
+		local report = DM.BuildChatReport(Fixture())
+		Equal(DM.SendChatReport(report, 1, "WHISPER", "  Friend-Realm  "), true)
+		Tick(0.1); Tick(1)
+		Equal(#sent, 2)
+		for _, line in ipairs(sent) do Equal(line.channel, "WHISPER"); Equal(line.target, "Friend-Realm") end
+		Equal(DM.DB().reportRecipient, nil)
+	end)
+	ReportTest("Whisper preserves UTF-8 character-name bytes under Windows locale rules", function()
+		local name = string.char(208, 144, 208, 160)
+		local report = DM.BuildChatReport(Fixture())
+		Equal(DM.SendChatReport(report, 1, "WHISPER", " " .. name .. " "), true)
+		Tick(0.1); Tick(1)
+		Equal(sent[1].target, name); Equal(sent[2].target, name)
+	end)
+	ReportTest("invalid row counts, recipients, and unavailable destinations fail explicitly without sending", function()
+		local report = DM.BuildChatReport(Fixture())
+		local count = #messages
+		for _, rows in ipairs({ 0, -1, 41, 1.5, "2" }) do Equal(DM.SendChatReport(report, rows, "PARTY"), false) end
+		Equal(DM.SendChatReport(report, 0 / 0, "PARTY"), false)
+		for _, name in ipairs({ "", "Two Names", "Bad|Name", "Name\nOther" }) do
+			Equal(DM.SendChatReport(report, 1, "WHISPER", name), false)
+		end
+		Equal(DM.SendChatReport(report, 1, "WHISPER"), false)
+		Equal(DM.SendChatReport(report, 1, "UNSUPPORTED"), false)
+		Equal(DM.SendChatReport(report, 1, "RAID"), false)
+		Equal(DM.SendChatReport(report, 1, "INSTANCE_CHAT"), false)
+		group, guild = false, false
+		Equal(DM.SendChatReport(report, 1, "PARTY"), false)
+		Equal(DM.SendChatReport(report, 1, "GUILD"), false)
+		Equal(DM.SendChatReport(report, 1, "OFFICER"), false)
+		Equal(DM.SendChatReport({ title = "Invalid", rows = { false } }, 1, "SAY"), false)
+		Equal(DM.SendChatReport(nil, 1, "SAY"), false)
+		assert(#messages > count)
+		Tick(5); Equal(#sent, 0); Equal(DM.IsChatReporting(), false)
+	end)
+	ReportTest("Raid, Instance, Officer, and Yell route to the requested chat type", function()
+		local report = DM.BuildChatReport(Fixture())
+		raid, instance = true, true
+		for _, channel in ipairs({ "RAID", "INSTANCE_CHAT", "OFFICER", "YELL" }) do
+			Equal(DM.SendChatReport(report, 1, channel), true)
+			Tick(0.1); Tick(1)
+			Equal(sent[#sent].channel, channel); Equal(sent[#sent].target, nil)
+		end
+	end)
+	ReportTest("losing party or guild membership stops remaining lines with a visible message", function()
+		local report = LongReport()
+		for _, channel in ipairs({ "PARTY", "GUILD" }) do
+			group, guild = true, true
+			Tick(2)
+			Equal(DM.SendChatReport(report, 40, channel), true)
+			Equal(DM.IsChatReporting(), true)
+			local n, errors = #sent, #messages
+			group, guild = false, false
+			Tick(1)
+			Equal(#sent, n); Equal(DM.IsChatReporting(), false); Equal(#messages, errors + 1)
+		end
+	end)
+	ReportTest("report cancellation, busy checks, and chat API errors never leave a stuck sender", function()
+		local ctl = Throttle()
+		local report = DM.BuildChatReport(Fixture())
+		Equal(DM.SendChatReport(report, 3, "PARTY"), true)
+		Equal(DM.SendChatReport(report, 3, "PARTY"), false)
+		DM.CancelChatReport()
+		ctl:FlushOne(); Equal(#sent, 1); Equal(#ctl.pending, 0)
+		ChatThrottleLib = nil
+		SendChatMessage = function() error("mock chat failure") end
+		local errors = #messages
+		Equal(DM.SendChatReport(report, 1, "PARTY"), false)
+		Equal(DM.IsChatReporting(), false); Equal(#messages, errors + 1)
+		assert(messages[#messages]:find("mock chat failure", 1, true))
+	end)
+	ReportTest("throttle transport failures and lost membership stop without raw-send fallbacks", function()
+		local report = DM.BuildChatReport(Fixture())
+		ChatThrottleLib = { SendChatMessage = function() error("mock throttle failure") end }
+		local errors = #messages
+		Equal(DM.SendChatReport(report, 1, "PARTY"), false)
+		Equal(#sent, 0); Equal(DM.IsChatReporting(), false); Equal(#messages, errors + 1)
+		local ctl = Throttle()
+		Equal(DM.SendChatReport(report, 3, "PARTY"), true)
+		group = false
+		ctl:FlushOne()
+		Equal(#sent, 1); Equal(#ctl.pending, 0); Equal(DM.IsChatReporting(), false)
+	end)
+	local function ValidUTF8(text)
+		local i = 1
+		while i <= #text do
+			local byte, length = text:byte(i), 1
+			if byte >= 240 then length = 4 elseif byte >= 224 then length = 3 elseif byte >= 192 then length = 2
+			elseif byte >= 128 then return false end
+			for j = 1, length - 1 do
+				local nextByte = text:byte(i + j)
+				if not nextByte or nextByte < 128 or nextByte >= 192 then return false end
+			end
+			i = i + length
+		end
+		return true
+	end
+	ReportTest("long UTF-8 names and encounter labels fit chat byte limits without markup or line injection", function()
+		local W, combat = Fixture()
+		local text = string.rep(string.char(208, 144), 150) .. string.rep(string.char(228, 184, 128), 50)
+		combat.name = "|cffff0000" .. text .. "|r\n|Hspell:1|hLink|h"
+		combat.actors.alex.name = text .. "\n|Ticon:16|t|cffff0000Name|r"
+		local report = DM.BuildChatReport(W)
+		for _, line in ipairs({ report.title, report.rows[1] }) do
+			assert(#line <= 255); assert(ValidUTF8(line)); assert(not line:find("|", 1, true))
+			assert(not line:find("[%z\1-\31\127]"))
+		end
+		assert(report.rows[1]:find(": 20K (1K)", 1, true))
+		Equal(DM.SendChatReport(report, 1, "SAY"), true)
+		Tick(0.1); Tick(1)
+		for _, line in ipairs(sent) do assert(#line.text <= 255 and ValidUTF8(line.text)) end
+	end)
+	ReportTest("each meter header places Report between Window and Reset even when Reset is hidden", function()
+		for _, W in ipairs(DM.windows) do
+			Equal(W.hdrBtns[4], W.resetBtn); Equal(W.hdrBtns[5], W.reportBtn); Equal(W.hdrBtns[6], W.winBtn)
+			W.Layout()
+			assert(W.winBtn.point[4] < W.reportBtn.point[4] and W.reportBtn.point[4] < W.resetBtn.point[4])
+		end
+		local hidden = DM.DB().hideResetButton
+		DM.DB().hideResetButton = true; DM.Apply()
+		for _, W in ipairs(DM.windows) do
+			Equal(W.resetBtn:IsShown(), false); Equal(W.reportBtn:IsShown(), true)
+		end
+		DM.DB().hideResetButton = hidden; DM.Apply()
+	end)
+	ReportTest("the report dialog exposes a Whisper name field and sends only after explicit confirmation", function()
+		local W = DM.windows[1]
+		local fixture = Fixture(T.HealingDone)
+		W.curSessionID, W.curSession = fixture.curSessionID, DM.S.Current
+		W.SetDMType(T.HealingDone)
+		DM.DB().reportChannel = nil
+		W.reportBtn.scripts.OnClick(W.reportBtn, "LeftButton")
+		local f = EllesmereUIDMReportFrame
+		Equal(f:IsShown(), true); Equal(#sent, 0)
+		Equal(f.destination, "PARTY"); Equal(f.recipient:IsShown(), false)
+		f.SetChannel("WHISPER")
+		Equal(f.recipient:IsShown(), true); Equal(f.recipientLabel:IsShown(), true)
+		f.rows:SetText("2"); f.recipient:SetText("Friend-Realm")
+		local first = f.report.rows[1]
+		f.send.scripts.OnClick()
+		Equal(f:IsShown(), false); Equal(#sent, 3)
+		Equal(#sent, 3); Equal(sent[2].text, first); Equal(sent[3].target, "Friend-Realm")
+		DM.OpenChatReport(W); Equal(f.recipient:GetText(), "")
+		f.rows:SetText("0"); f.send.scripts.OnClick()
+		Equal(f:IsShown(), true); assert(f.error:GetText():find("whole number", 1, true))
+		f:Hide()
+	end)
+	ReportTest("reopening the report dialog exposes Stop Report during a queued send", function()
+		local ctl = Throttle(1)
+		local W = DM.windows[1]
+		W.curSessionID = select(2, Fixture())
+		W.SetDMType(T.DamageDone)
+		Equal(DM.OpenChatReport(W), true)
+		local f = EllesmereUIDMReportFrame
+		f.SetChannel("PARTY"); f.rows:SetText("3"); f.send.scripts.OnClick()
+		Tick(0.1); Equal(#sent, 1)
+		DM.OpenChatReport(W)
+		Equal(f.cancel.label:GetText(), "Stop Report"); Equal(f.send.enabled, false)
+		f.cancel.scripts.OnClick()
+		ctl:FlushOne()
+		Tick(2); Equal(#sent, 2); Equal(#ctl.pending, 0); Equal(DM.IsChatReporting(), false)
+	end)
+	ReportTest("empty views and unselected meter types do not produce header-only reports", function()
+		local W, combat = Fixture()
+		combat.actors = {}
+		local report, err = DM.BuildChatReport(W)
+		Equal(report, nil); assert(err)
+		Equal(DM.OpenChatReport(W), false)
+		W.curDMType = nil
+		Equal(DM.OpenChatReport(W), false)
+		Equal(#sent, 0)
+	end)
+
+	DM.CancelChatReport()
+	IsInGroup, IsInRaid, IsInGuild = oldGroup, oldRaid, oldGuild
+	LE_PARTY_CATEGORY_HOME, LE_PARTY_CATEGORY_INSTANCE = oldHome, oldInstance
+	ChatThrottleLib = oldThrottle
+	SendChatMessage = nil
+end
 
 print(string.format("%d passed, %d failed", passed, #failures))
 if #failures > 0 then error(table.concat(failures, "\n"), 0) end
