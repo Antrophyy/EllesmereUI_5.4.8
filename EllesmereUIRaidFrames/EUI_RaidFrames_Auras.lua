@@ -41,6 +41,9 @@ local GetTime = GetTime
 -- Temporal Displacement, Insanity.
 RF.AURA_SATED = { [57723] = true, [57724] = true, [80354] = true, [95809] = true }
 
+-- Debuffs never shown on raid frames: Recently Mass Resurrected.
+RF.AURA_HIDDEN = { [95223] = true }
+
 -- Crowd control (ElvUI MoP CCDebuffs list).
 RF.AURA_CC = {}
 for _, id in ipairs({
@@ -1357,7 +1360,7 @@ local function ScanHarmful(btn, d, unit, c)
 			break
 		end
 		local sated = spellId and RF.AURA_SATED[spellId]
-		if not (sated and c.hideLust) then
+		if not (sated and c.hideLust) and not (spellId and RF.AURA_HIDDEN[spellId]) then
 			n = n + 1
 			local a = Rec(d, n)
 			a.index, a.filter, a.harmful = i, "HARMFUL", true
