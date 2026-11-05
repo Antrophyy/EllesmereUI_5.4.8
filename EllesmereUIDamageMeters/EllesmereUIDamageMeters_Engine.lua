@@ -25,7 +25,7 @@ local band = bit.band
 local GetTime, UnitGUID, UnitClass, UnitName = GetTime, UnitGUID, UnitClass, UnitName
 local UnitAffectingCombat, UnitIsFeignDeath = UnitAffectingCombat, UnitIsFeignDeath
 local tinsert, tremove, wipe, pairs, ipairs, type = table.insert, table.remove, wipe, pairs, ipairs, type
-local min, floor = math.min, math.floor
+local min, max, floor = math.min, math.max, math.floor
 
 -- Combat log object flags.
 local AFFIL_GROUP = 0x00000007 -- mine, party, raid
@@ -178,7 +178,9 @@ local function Actor(seg, guid, name, flags)
 	return seg.actors[guid] or NewActor(seg, guid, name, flags)
 end
 
--- Duration in seconds (a fight in progress counts up to now).
+-- Duration in seconds (a fight in progress counts up to now). A finished
+-- fight lasts as long as the longest length the group reported for it
+-- (groupLength, see group sync), so everyone's DPS is the same.
 function E.Duration(seg)
 	if not seg then return 0 end
 	if seg.isOverall then
@@ -186,8 +188,13 @@ function E.Duration(seg)
 		if current then d = d + (GetTime() - current.start) end
 		return d
 	end
-	return (seg.finish or GetTime()) - seg.start
+	if not seg.finish then return GetTime() - seg.start end
+	return max(seg.finish - seg.start, seg.groupLength or 0)
 end
+
+-- The Overall a finished fight's length was added to (a later, longer
+-- length from the group adds the difference there too).
+local countedIn = setmetatable({}, { __mode = "k" })
 
 local function BiggestEnemy(seg)
 	local best, amount = nil, 0
@@ -274,7 +281,8 @@ local function StopFight()
 		end
 		if #list == 0 then shields[guid] = nil end
 	end
-	overall.duration = (overall.duration or 0) + (seg.finish - seg.start)
+	overall.duration = (overall.duration or 0) + E.Duration(seg)
+	countedIn[seg] = overall
 	if not seg.name then seg.name = BiggestEnemy(seg) or "Combat" end
 	if seg.boss and not seg.result then
 		seg.result = (seg.bossHP and seg.bossHP <= 0) and "kill" or "wipe"
@@ -694,12 +702,16 @@ end
 -- started at the same moment and lasted about as long. (Matching by length
 -- alone let a late message of one fight raise another, short one, and the
 -- raised numbers then spread to the whole group.)
+--   length: "L\t<fight seconds>:<since start>\t<fight length in tenths>", sent
+--           when the fight ended: every meter uses the longest length the
+--           group reported, so DPS is the same for everyone (each client
+--           starts and ends a fight at a slightly different moment).
 --   death:  "D\t<guid>\t<spell>\t<amount>\t<overkill>\t<instakill 0/1>\t<source>"
 -- Messages stay under 255 bytes and go out one per half second; only the
 -- 10 enemies that took the most new damage go in a round, and a round waits
 -- while the last one is still being sent.
 ---------------------------------------------------------------------------
-local SYNC_PREFIX = "EUIDM2" -- 2: fights are matched by their start (older installs are ignored)
+local SYNC_PREFIX = "EUIDM3" -- 3: fight lengths are shared (older installs are ignored)
 local SYNC_INTERVAL = 10
 local SYNC_MAX_LEN = 240
 local SYNC_ALIGN = 15 -- fights whose lengths differ more than this are not the same fight
@@ -856,6 +868,8 @@ local function SendTotals(seg, full)
 	end
 	add()
 	SendEnemies(seg, full)
+	-- The fight's own length, once it ended.
+	if seg.finish then Queue(B36((seg.finish - seg.start) * 10), "BULK", "L", seg) end
 end
 
 -- The fight synced numbers belong to: of the one in progress and the last
@@ -926,6 +940,21 @@ local function MergeTotals(seconds, since, body)
 	if changed then
 		if seg == current then ShowFight(seg) end
 		Fire("sync")
+	end
+end
+
+-- Another user's length of a fight: the longest one counts (a fight in
+-- progress here takes it once it ends).
+local function MergeLength(seconds, since, body)
+	local seg = SyncTarget(seconds, since)
+	local len = (tonumber(body, 36) or 0) / 10
+	if not seg or len <= (seg.groupLength or 0) then return end
+	local before = seg.finish and E.Duration(seg)
+	seg.groupLength = len
+	if before then
+		local grown = E.Duration(seg) - before
+		if grown > 0 and countedIn[seg] == overall then overall.duration = overall.duration + grown end
+		if grown > 0 then Fire("sync") end
 	end
 end
 
@@ -1008,11 +1037,17 @@ function E.OnAddonMessage(prefix, text, _, sender)
 	if prefix ~= SYNC_PREFIX or type(text) ~= "string" or not SyncOn() then return end
 	if sender and sender:match("^[^%-]+") == UnitName("player") then return end
 	local kind, a1, rest = text:match("^(%u)\t([^\t]*)\t(.*)$")
-	if kind == "T" or kind == "E" then
+	if kind == "T" or kind == "E" or kind == "L" then
 		local seconds, since = a1:match("^(%w*):(%w*)$")
 		if not seconds then return end
 		seconds, since = tonumber(seconds, 36) or 0, tonumber(since, 36) or 0
-		if kind == "T" then MergeTotals(seconds, since, rest) else MergeEnemies(seconds, since, rest) end
+		if kind == "T" then
+			MergeTotals(seconds, since, rest)
+		elseif kind == "E" then
+			MergeEnemies(seconds, since, rest)
+		else
+			MergeLength(seconds, since, rest)
+		end
 	elseif kind == "D" then
 		local id, amount, overkill, instakill, source = rest:match("^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t(.*)$")
 		if id then MergeDeath(a1, id, amount, overkill, instakill, source) end
