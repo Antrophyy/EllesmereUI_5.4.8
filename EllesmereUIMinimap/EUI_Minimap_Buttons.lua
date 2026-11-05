@@ -1206,7 +1206,8 @@ do
 		local PAD, RH, MW = 4, 18, 96
 		local m = CreateFrame("Frame", nil, UIParent)
 		m:SetFrameStrata("TOOLTIP")
-		m:SetFrameLevel(500)
+		-- 5.4.8 caps frame levels near 128; retail uses 500.
+		m:SetFrameLevel(110)
 		m:SetClampedToScreen(true)
 		m:EnableMouse(true)
 		m:SetSize(MW, PAD * 2 + RH * 2)
@@ -1269,7 +1270,9 @@ do
 		end
 		local f = CreateFrame("Frame", nil, UIParent)
 		f:SetFrameStrata("TOOLTIP")
-		f:SetFrameLevel(200)
+		-- 5.4.8 caps frame levels near 128 (retail 200): at the cap the rows
+		-- would share the panel's level and draw under its background.
+		f:SetFrameLevel(100)
 		f:SetClampedToScreen(true)
 		f:EnableMouse(true)
 		f:SetScript("OnEnter", CancelHide)
@@ -1301,6 +1304,7 @@ do
 		end
 		local tt = GetTT()
 		local btn = CreateFrame("Button", nil, tt)
+		btn:SetFrameLevel(tt:GetFrameLevel() + 2)
 		btn:EnableMouse(true)
 		btn:RegisterForClicks("AnyUp")
 		btn:SetHeight(FTT_ROW_H)
@@ -1541,7 +1545,7 @@ local function GetCalendarTT()
 	end
 	local f = CreateFrame("Frame", nil, UIParent)
 	f:SetFrameStrata("TOOLTIP")
-	f:SetFrameLevel(200)
+	f:SetFrameLevel(100) -- under the 5.4.8 level cap (retail 200)
 	f:SetClampedToScreen(true)
 	f:Hide()
 	P.Panel(f, 0.067, 0.067, 0.067, 0.92, 1, 1, 1, 0.15)

@@ -484,7 +484,7 @@ function P.ShowTip(owner, text, opts)
 	if not tip then
 		tip = CreateFrame("Frame", nil, UIParent)
 		tip:SetFrameStrata("TOOLTIP")
-		tip:SetFrameLevel(250)
+		tip:SetFrameLevel(105) -- under the 5.4.8 level cap (retail 250)
 		tip:SetClampedToScreen(true)
 		P.Panel(tip, 0.067, 0.067, 0.067, 0.94, 1, 1, 1, 0.15)
 		tip.text = P.NewText(tip)
