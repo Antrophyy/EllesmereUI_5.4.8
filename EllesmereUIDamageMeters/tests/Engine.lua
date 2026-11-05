@@ -122,7 +122,10 @@ function GetNumGroupMembers() return 2 end
 function GetSpecialization() return 1 end
 function GetSpecializationInfo() return 253 end
 function GetInspectSpecialization() return 0 end
-function GetPlayerInfoByGUID() return nil, nil end
+function GetPlayerInfoByGUID(guid)
+	assert(type(guid) == "string" and guid ~= "", 'Usage: GetPlayerInfoByGUID("playerGUID")')
+	return nil, nil
+end
 function UnitIsFeignDeath() return false end
 function wipe(t) for k in pairs(t) do t[k] = nil end return t end
 function GetInstanceInfo() return "Dungeon", "party", 1 end
@@ -885,6 +888,19 @@ local function OverallDamage(name)
 	end
 	return 0
 end
+
+Test("events from a group source with no GUID are skipped without an error", function()
+	inCombat = true
+	Log("SPELL_DAMAGE", playerGUID, "Alex", ME, BOSS_GUID, "Boss", BOSS, 100, "Arcane Shot", 64, 1000, -1, 64, 0, 0, 0)
+	local before = E.GetCurrent().actors[""]
+	Log("SPELL_HEAL", "", "", PARTY, playerGUID, "Alex", ME, 2061, "Heal", 2, 2000, 0, 0, nil)
+	Log("SPELL_PERIODIC_HEAL", "", nil, PARTY, playerGUID, "Alex", ME, 2061, "Heal", 2, 2000, 0, 0, nil)
+	Log("SPELL_DAMAGE", "", "", PARTY, BOSS_GUID, "Boss", BOSS, 100, "Shot", 1, 500, -1, 1, 0, 0, 0)
+	Log("SPELL_INTERRUPT", "", "", PARTY, BOSS_GUID, "Boss", BOSS, 2139, "Counterspell", 64, 1, "Bolt", 1)
+	Equal(E.GetCurrent().actors[""], before, "no actor without a GUID")
+	inCombat = false; Tick(0.5)
+	for _ = 1, 6 do Tick(0.5) end
+end)
 
 Test("the group agrees on the longest fight length, so DPS is the same for everyone", function()
 	inCombat = false; Tick(15); E.CheckEnd()

@@ -162,7 +162,7 @@ local function NewActor(seg, guid, name, flags)
 		local _, class
 		if unit then
 			_, class = UnitClass(unit)
-		elseif GetPlayerInfoByGUID then
+		elseif GetPlayerInfoByGUID and type(guid) == "string" and guid ~= "" then
 			_, class = GetPlayerInfoByGUID(guid)
 		end
 		a.class = class
@@ -349,7 +349,8 @@ end
 -- Owner GUID / name of a group-controlled source (player itself, or the
 -- owner of a pet / guardian / totem). nil when not a group member.
 local function OwnerOf(guid, flags)
-	if band(flags, AFFIL_GROUP) == 0 then return nil end
+	-- Some 5.4.8 events have a group source with no GUID (""): nobody to credit.
+	if not guid or guid == "" or band(flags, AFFIL_GROUP) == 0 then return nil end
 	if band(flags, TYPE_PLAYER) ~= 0 then return guid, true end
 	local owner = petOwner[guid]
 	if owner then return owner, false end
