@@ -816,6 +816,8 @@ Test("nameplate rescans discard old icons and keep other casters when showing al
 	np.showAllDebuffs = nil
 end)
 
+assert(loadfile([[EllesmereUIUnitFrames\EUI_UnitFrames_PlayerAuraBars_Presets.lua]]))("EllesmereUIUnitFrames")
+assert(loadfile([[EllesmereUIUnitFrames\EUI_UnitFrames_PlayerAuraBars_Seed.lua]]))("EllesmereUIUnitFrames")
 assert(loadfile([[EllesmereUIUnitFrames\EUI_UnitFrames_PlayerAuraBars.lua]]))("EllesmereUIUnitFrames")
 Test("player aura bars share the same consolidated harmful scan without altering buffs", function()
 	harmful.player, helpful.player = ReportedAuras(), { Aura(55095, "player"), Aura(55095, "player") }
@@ -835,6 +837,269 @@ Test("player aura record recycling does not alias or resurrect hidden copies", f
 		Equal(#UF.PAB.debuffs, 17); Equal(UF.PAB.debuffs[2].index, 4)
 	end
 end)
+
+do
+	local presets = UF.PAB_PRESETS
+	local defensiveSeed = presets.BM2_FILTER_SEED[1]
+	local curated = {}
+	for _, id in ipairs(defensiveSeed.enabled) do curated[id] = true end
+	local expected = {
+		DEATHKNIGHT = { 48707, 48792, 55233, 81256, 42650, 145629 },
+		DRUID = { 22812, 61336, 106922, 102342 },
+		HUNTER = { 19263, 148467, 53480 },
+		MAGE = { 45438, 115760, 110960, 113862 },
+		MONK = { 120954, 115203, 122278, 122783, 115176, 131523, 122470, 125174, 116849, 115213 },
+		PALADIN = { 498, 642, 31850, 86659, 1022, 6940, 31821 },
+		PRIEST = { 47585, 33206, 47788, 114908, 81782 },
+		ROGUE = { 31224, 5277, 74001, 74002, 88611 },
+		SHAMAN = { 108271, 30823, 98007 },
+		WARLOCK = { 104773, 110913, 108416, 132413 },
+		WARRIOR = { 871, 12975, 118038, 114030, 114028, 97463 },
+	}
+	local symbiosis = { 110570, 110575, 113075, 113306, 113072, 110617, 110696,
+		126456, 110700, 110715, 110788, 110791, 122291 }
+	local minor = {
+		49039, 81162, 101568, 77535, 105284,
+		124769, 132402, 122286, 102351, 102352,
+		5384, 110597, 54216, 62305,
+		11426, 1463, 115610, 115611, 110909, 111264,
+		115295, 123402, 118604, 115307, 115308, 126453, 116033, 123232, 116844,
+		132403, 114039, 1044, 65148, 86273,
+		586, 45242, 96267, 114214, 27827, 112833, 17, 47753, 6346, 110717,
+		1966, 122289, 45182, 73651,
+		114893, 118347, 31616, 8178, 114896,
+		6229, 108366, 108359,
+		55694, 23920, 113002, 18499, 132404, 112048, 3411, 122292, 114029, 46947,
+		59542, 28880, 59543, 59544, 59545, 59547, 59548, 121093,
+	}
+	local excluded = {
+		49222, 122285, -- Bone Shield exception, including Symbiosis
+		186265, 212800, 363916, 184364, 192081, 325174, -- later-client replacements/classes
+		114216, 114556, 81164, 128939, -- lockout, passive talents, stored Elusive Brew charges
+		89485, 123231, 30884, -- non-protective Inner Focus, DPS upgrade, Nature's Guardian passive
+		49028, 51052, 62618, 98008, 97462, 76577, 109964, -- cast IDs instead of recipient effects
+		48743, 633, 19236, 109304, -- instant heals, no lasting defensive buff
+		774, 139, 33763, 2825, 32182, 80353, 105697, 146193, -- ordinary HoTs/offense/gear/consumables
+	}
+	for _, id in ipairs(minor) do excluded[#excluded + 1] = id end
+	Test("original-MoP Defensives contains only the agreed major activated cooldowns", function()
+		Equal(defensiveSeed.key, "defensives"); Equal(#defensiveSeed.disabled, 0)
+		local required = { [20594] = true }
+		for class, ids in pairs(expected) do
+			for _, id in ipairs(ids) do
+				assert(curated[id], class .. ": missing defensive aura " .. id)
+				Equal(presets.SPELL_CLASS_HINTS[id], class)
+				required[id] = true
+			end
+		end
+		for _, id in ipairs(symbiosis) do
+			assert(curated[id], "missing Symbiosis defense " .. id)
+			required[id] = true
+		end
+		assert(curated[20594], "missing Stoneform")
+		for id in pairs(curated) do assert(required[id], "unintended defensive aura " .. id) end
+		for _, id in ipairs(excluded) do assert(not curated[id], "not a curated defensive aura: " .. id) end
+	end)
+	Test("every defensive family stays inside original-MoP defensive coverage", function()
+		for id in pairs(curated) do
+			for _, member in ipairs(presets.PAB_SPELL_FAMILY[id] or {}) do
+				assert(curated[member], "family injects an unrelated/retail aura: " .. id .. " -> " .. member)
+			end
+		end
+		Equal(presets.PAB_SPELL_FAMILY[114908][1], 114908)
+		Equal(presets.PAB_SPELL_FAMILY[48792][1], 48792)
+	end)
+	Test("legacy Defensives migrates once without changing its ID or bar layout", function()
+		local original = UF.db.playerAuraBars
+		local filter = { id = 42, name = "Defensives", preset = true, spells = {
+			[48707] = true, [48792] = false, [49039] = false, [11426] = false, [114214] = false, [114216] = true,
+			[186265] = true, [212800] = true, [98765] = true, [98766] = false,
+		} }
+		local store = { nextId = 51, list = { filter } }
+		local bar = { id = 7, filters = { [42] = true }, maxTotal = 4, maxRows = 1, iconsPerRow = 4,
+			iconSize = 40, pos = { x = 20, y = -80 }, showAllBuffs = false }
+		UF.db.playerAuraBars = { enabled = true, pabFilters = store, customBuffBars = { bar } }
+		Equal(ns.PAB_ImportBM2Filters(), 10)
+		Equal(store.list[1], filter); Equal(filter.id, 42); Equal(filter.mopDefensivesRevision, 2)
+		for id in pairs(curated) do Equal(filter.spells[id], id ~= 48792) end
+		Equal(filter.spells[114216], nil); Equal(filter.spells[186265], nil); Equal(filter.spells[212800], nil)
+		Equal(filter.spells[98765], true); Equal(filter.spells[98766], false)
+		Equal(filter.spells[49222], nil); Equal(filter.spells[122285], nil)
+		Equal(bar.filters[42], true); Equal(bar.maxTotal, 4); Equal(bar.maxRows, 1)
+		Equal(bar.iconSize, 40); Equal(bar.pos.x, 20); Equal(bar.pos.y, -80)
+		local nextId = store.nextId
+		ns.PAB_SetSpellState(42, 48707, false)
+		filter.spells[120954], filter.spells[115203] = true, false
+		Equal(ns.PAB_ImportBM2Filters(), 0); Equal(store.nextId, nextId)
+		Equal(filter.spells[48707], false); Equal(filter.spells[110570], false)
+		Equal(filter.spells[120954], true); Equal(filter.spells[115203], false)
+		UF.db.playerAuraBars = original
+	end)
+	Test("revision-1 saved filters lose all retired extras while retained choices and custom additions survive", function()
+		local f = { id = 31, name = "Defensives", preset = true, mopDefensivesRevision = 1,
+			spells = { [98765] = true, [98766] = false } }
+		for id in pairs(curated) do f.spells[id] = true end
+		for _, id in ipairs(minor) do f.spells[id] = true end
+		f.spells[48792], f.spells[110575] = false, false
+		local store = { nextId = 32, list = { f } }
+		presets.ImportPresets(store)
+		Equal(f.id, 31); Equal(f.mopDefensivesRevision, 2)
+		for _, id in ipairs(minor) do Equal(f.spells[id], nil, "retired aura " .. id) end
+		for id in pairs(curated) do Equal(f.spells[id], id ~= 48792 and id ~= 110575) end
+		Equal(f.spells[98765], true); Equal(f.spells[98766], false)
+		f.spells[11426] = true -- explicit re-add after migration
+		presets.ImportPresets(store)
+		Equal(f.spells[11426], true); Equal(f.spells[105284], nil)
+		Equal(f.spells[48792], false); Equal(f.spells[110575], false)
+		f.mopDefensivesRevision = 3
+		presets.ImportPresets(store)
+		Equal(f.mopDefensivesRevision, 3)
+	end)
+	Test("fresh and first-run seeded filters enable all curated defenses without adding Bone Shield", function()
+		local stores = { { nextId = 1, list = {} }, UF.PAB_SeedTable().pabFilters }
+		for _, store in ipairs(stores) do
+			presets.ImportPresets(store)
+			local f
+			for _, filter in ipairs(store.list) do if filter.name == "Defensives" then f = filter end end
+			assert(f)
+			for id in pairs(curated) do Equal(f.spells[id], true) end
+			for _, id in ipairs(excluded) do Equal(f.spells[id], nil) end
+			Equal(presets.ImportPresets(store), 0)
+		end
+	end)
+
+	local original = UF.db.playerAuraBars
+	local store = { nextId = 1, list = {} }
+	presets.ImportPresets(store)
+	UF.db.playerAuraBars = { enabled = true, pabFilters = store }
+	local f = store.list[1]
+	local cfg = { showAllBuffs = false, filters = { [f.id] = true } }
+	local BuffContent = Upvalue(Upvalue(UF.PAB.RefreshAll, "UpdateBar"), "BuffContent")
+	local function CollectBuffs(auras, config, cap)
+		helpful.player = auras
+		UF.PAB.RefreshAll()
+		local out = {}
+		BuffContent(config or cfg, out, cap or 40)
+		return out
+	end
+	Test("a Defensives-only bar resolves the complete catalog without extra Raid CDs or Externals filters", function()
+		local resolved = ns.PAB_ResolveSpells(cfg)
+		Equal(#resolved, #defensiveSeed.enabled)
+		for _, id in ipairs(resolved) do assert(curated[id], "unexpected resolved aura " .. id) end
+	end)
+	Test("every curated aura reaches the real buff collector from self, ally, pet and unknown casters", function()
+		for _, caster in ipairs({ "player", "raid2", "pet", false }) do
+			for first = 1, #defensiveSeed.enabled, 40 do
+				local auras = {}
+				for i = first, math.min(first + 39, #defensiveSeed.enabled) do
+					auras[#auras + 1] = Aura(defensiveSeed.enabled[i], caster or nil, 130)
+				end
+				local out = CollectBuffs(auras)
+				Equal(#out, #auras)
+				for i, aura in ipairs(out) do
+					Equal(aura.spellId, auras[i].spellId); Equal(aura.index, i); Equal(aura.filter, "HELPFUL")
+				end
+			end
+		end
+	end)
+	Test("external and zero-duration area protections display on a DK without caster restrictions", function()
+		local auras = {
+			Aura(33206, "raid2"), Aura(47788, "party1"), Aura(116849, "raid3"),
+			Aura(145629), Aura(81782), Aura(98007), Aura(31821),
+			Aura(114908, "raid2"), Aura(115213, "raid3"), Aura(97463, "raid4"),
+		}
+		for i = 4, 7 do auras[i].duration, auras[i].expires = 0, 0 end
+		local out = CollectBuffs(auras)
+		Equal(#out, 10)
+		Equal(out[6].duration, 0); Equal(out[6].expires, 0)
+	end)
+	Test("Bone Shield, passive procs, rotational mitigation and minor buffs do not leak into Defensives", function()
+		for first = 1, #excluded, 40 do
+			local auras = {}
+			for i = first, math.min(first + 39, #excluded) do auras[#auras + 1] = Aura(excluded[i], "player") end
+			Equal(#CollectBuffs(auras), 0)
+		end
+	end)
+	Test("explicit disabled variants, Hide filters and current icon caps remain effective", function()
+		f.spells[48792], f.spells[115203] = false, false
+		presets.ImportPresets(store)
+		Equal(#CollectBuffs({ Aura(48792, "player"), Aura(115203, "player") }), 0)
+		f.spells[48792], f.spells[115203] = true, true
+		local hidden = { id = store.nextId, name = "Hidden", spells = { [33206] = true } }
+		store.nextId = store.nextId + 1; store.list[#store.list + 1] = hidden
+		local narrow = { showAllBuffs = false, filters = cfg.filters, negFilters = { [hidden.id] = true } }
+		local auras = { Aura(33206, "raid2"), Aura(48707, "player"), Aura(116849, "raid3") }
+		local out = CollectBuffs(auras, narrow)
+		Equal(#out, 2); Equal(out[1].spellId, 48707)
+		narrow.spells = { 33206 }
+		Equal(#CollectBuffs(auras, narrow), 3)
+		Equal(#CollectBuffs(auras, cfg, 1), 1)
+		Equal(#CollectBuffs({}, cfg), 0)
+	end)
+	Test("normal bar reload upgrades a linked legacy filter and renders self and ally defenses", function()
+		local oldBars = UF.PAB.bars
+		UF.PAB.bars = {}
+		local legacy = { nextId = 8, list = { { id = 7, name = "Defensives", preset = true,
+			spells = { [48707] = true, [49039] = false } } } }
+		local barCfg = { id = 9, name = "Defensives", enabled = true, showAllBuffs = false,
+			filters = { [7] = true }, maxTotal = 4, iconsPerRow = 4, maxRows = 1, iconSize = 40 }
+		UF.db.playerAuraBars = {
+			enabled = true, pabFilters = legacy, defaultBuffs = { enabled = false },
+			defaultDebuffs = { enabled = false }, customBuffBars = { barCfg }, customDebuffBars = {},
+		}
+		helpful.player = {
+			Aura(49222, "player"), Aura(48707, "player"), Aura(33206, "raid2"),
+			Aura(116849, "raid3"), Aura(114908, "raid2"), Aura(145629),
+		}
+		UF.PAB.ReloadAll()
+		local bar
+		for _, candidate in pairs(UF.PAB.bars) do if candidate.id == 9 then bar = candidate end end
+		assert(bar and bar.shown)
+		Equal(bar.count, 4); Equal(bar.cfg, barCfg); Equal(barCfg.maxTotal, 4)
+		for i, id in ipairs({ 48707, 33206, 116849, 114908 }) do
+			Equal(bar.icons[i].rec.spellId, id); Equal(bar.icons[i].rec.index, i + 1)
+			Equal(bar.icons[i]:IsShown(), true)
+		end
+		helpful.player = { Aura(145629) }
+		UF.PAB.RefreshAll()
+		Equal(bar.count, 1); Equal(bar.icons[1].rec.spellId, 145629)
+		Equal(bar.icons[2]:IsShown(), false)
+		helpful.player = {}
+		UF.PAB.RefreshAll()
+		Equal(bar.count, 0)
+		UF.PAB.bars = oldBars
+	end)
+	Test("the existing expanded bar stops showing Vigor and routine shields after reload", function()
+		local oldBars = UF.PAB.bars
+		UF.PAB.bars = {}
+		local filter = { id = 5, name = "Defensives", preset = true, mopDefensivesRevision = 1,
+			spells = { [105284] = true, [17] = true, [77535] = true, [48792] = true, [33206] = true } }
+		local position = { x = 10, y = -30 }
+		local barCfg = { id = 12, name = "Defensives", enabled = true, showAllBuffs = false,
+			filters = { [5] = true }, maxTotal = 4, iconsPerRow = 4, maxRows = 1, iconSize = 40, pos = position }
+		UF.db.playerAuraBars = {
+			enabled = true, pabFilters = { nextId = 6, list = { filter } },
+			defaultBuffs = { enabled = false }, defaultDebuffs = { enabled = false },
+			customBuffBars = { barCfg }, customDebuffBars = {},
+		}
+		helpful.player = {
+			Aura(105284, "raid2"), Aura(17, "raid3"), Aura(77535, "player"),
+			Aura(48792, "player"), Aura(33206, "raid2"),
+		}
+		UF.PAB.ReloadAll()
+		local bar
+		for _, candidate in pairs(UF.PAB.bars) do if candidate.id == 12 then bar = candidate end end
+		assert(bar and bar.shown)
+		Equal(bar.count, 2)
+		Equal(bar.icons[1].rec.spellId, 48792); Equal(bar.icons[1].rec.index, 4)
+		Equal(bar.icons[2].rec.spellId, 33206); Equal(bar.icons[2].rec.index, 5)
+		Equal(filter.spells[105284], nil); Equal(filter.mopDefensivesRevision, 2)
+		Equal(barCfg.pos, position); Equal(barCfg.maxTotal, 4); Equal(barCfg.iconSize, 40)
+		UF.PAB.bars = oldBars
+	end)
+	UF.db.playerAuraBars = original
+	helpful.player = {}
+end
 
 local rfSettings = { debuffCap = 20, debuffShowDurText = true, debuffHideTooltips = false }
 local rfProfile = { dmDebuff = { all = true }, hideLustDebuff = false }

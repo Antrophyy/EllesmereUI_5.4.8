@@ -62,6 +62,20 @@ After first installing the disease-copy update (which adds `EllesmereUI_Auras.lu
 
 Aura display regression checks (Lua 5.1, from the repository root): `lua EllesmereUI\tests\AuraDisplay.lua`. The tests replay duplicate disease entries through all five displays and verify Target, Focus, and Boss self-debuff controls, sizing, ordering, and layout with mocked client APIs; no game installation is accessed.
 
+### Player Aura Bars: Defensives (original MoP 5.4.8)
+
+The **Defensives** filter uses an original-5.4.8 list of **major activated defensive cooldowns**: substantial damage reduction, avoidance, damage immunity, large cooldown-based absorbs, and temporary-health cooldowns. It matches buffs **on the player**, regardless of caster, including allies and defensive Symbiosis variants. Selecting separate Externals or Raid CDs filters is not required for major external/raid protection.
+
+- **Bone Shield (49222 / Symbiosis 122285) is deliberately not added.**
+- Personal examples: Icebound Fortitude, Anti-Magic Shell, Vampiric Blood, Dancing Rune Weapon's **81256 parry aura**, Barkskin, Survival Instincts, Deterrence, Ice Block, Fortifying Brew, Dampen Harm, Divine Shield, Dispersion, Cloak of Shadows, Astral Shift, Dark Bargain, Shield Wall and Last Stand. Major on-use health buffs remain; passive Ancestral Vigor does not.
+- External examples: Pain Suppression, Guardian Spirit, Ironbark, Life Cocoon, Hands of Protection/Sacrifice, Vigilance, Roar of Sacrifice and **Spirit Shell's 114908 recipient shield**.
+- Raid protection uses recipient auras: Anti-Magic Zone **145629**, Power Word: Barrier **81782**, Spirit Link **98007**, Devotion Aura, Rallying Cry, Smoke Bomb **88611**, Avert Harm and Mass Spell Reflection. Duration-zero area protection is not filtered out.
+- Passive procs (Ancestral Vigor, Focused Will, Divine Aegis, Soul Leech, cheat-death procs), routine shields/heals, short rotational mitigation (Blood Shield, Shuffle, Guard, Elusive Brew, Shield Block/Barrier, Shield of the Righteous, Feint), and utility/CC-immunity buffs are excluded. Gear procs, consumables and ordinary HoTs are not added. Instant heals with no buff and enemy-side reductions such as Demoralizing Shout cannot be displayed by a player **buff** bar.
+- Revision 2 removes the smaller/passive entries previously added by the broad preset from existing saved Defensives filters. Retained cooldown checkboxes, unrelated custom-added spells, filter IDs, bar assignments, positions, sizes and icon limits are preserved. This is a one-time cleanup; later custom edits are not repeatedly removed or re-enabled.
+- This does not change other preset categories or the independent Raid Frames Buff Manager. A bar's Hide filters and Max Count/row limits still take precedence; capacity is not increased by the update.
+
+Aura IDs and effects were checked against the [original-MoP TwinHead database](https://twinhead.twinstar-wow.com/mop/spell/145629), [TauriShoot spell data](https://mop-shoot.tauri.hu/?spell=114908), and [SkyFire_548's Symbiosis mapping](https://github.com/ProjectSkyfire/SkyFire_548/blob/main/src/server/scripts/Spells/spell_druid.cpp), not MoP Classic. Server-specific/custom spells can still be added through Extra Spells or the Filter Editor.
+
 
 ## Interrupt Tracker
 

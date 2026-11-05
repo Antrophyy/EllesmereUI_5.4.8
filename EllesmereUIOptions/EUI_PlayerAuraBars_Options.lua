@@ -907,6 +907,9 @@ local function BuildFilters(p)
 		return
 	end
 	p:Section(f.name)
+	if f.mopDefensivesRevision then
+		p:Paragraph("Major activated MoP 5.4.8 defensive cooldowns from you or an ally, including external/raid protection and their Symbiosis variants. No passive procs, routine shields/heals, rotational mitigation, or Bone Shield. Unchecked spells stay excluded; the bar's Max Count and row limits still apply.")
+	end
 	p:Dropdown("Search Spells", "Add a preset spell to this filter.",
 		function()
 			local items, names = {}, {}

@@ -1,8 +1,7 @@
 -- EllesmereUI Unit Frames for 5.4.8: Player Aura Bars preset filters.
--- Retail EllesmereUI_BuffPresets.lua RETAIL_PRESETS (kept verbatim) and the
--- Player Aura Bars derivation (seed lists, class hints, spell families).
--- Many ids are retail-only: the filter editor and dropdowns hide ids that
--- GetSpellInfo does not know on this client (they stay in the saved lists).
+-- Retail-shaped filter registry with major original-MoP defensive cooldowns.
+-- Other presets retain their retail lists; unknown ids are hidden in the editor.
+-- The legacy Defensives data below is retained only for its one-time migration.
 
 local addonName = ...
 local ns = EllesmereUI
@@ -372,6 +371,94 @@ spells = {
 
 }
 
+-- Major on-use defenses: reduction, avoidance, immunity, large absorbs or health
+-- cooldowns. No passive procs, routine shields/heals, or rotational mitigation.
+-- Recipient aura IDs from original-MoP TwinHead/TauriShoot and SkyFire_548.
+local MOP_DEFENSIVES = {
+    -- Death Knight
+    [48707] = { class = "DEATHKNIGHT", alts = { 110570 } }, -- Anti-Magic Shell, Symbiosis
+    [48792] = { class = "DEATHKNIGHT", alts = { 110575 } }, -- Icebound Fortitude, Symbiosis
+    [55233] = { class = "DEATHKNIGHT" }, -- Vampiric Blood
+    [81256] = { class = "DEATHKNIGHT" }, -- Dancing Rune Weapon's parry aura
+    [42650] = { class = "DEATHKNIGHT" }, -- Army of the Dead channel reduction
+    [145629] = { class = "DEATHKNIGHT" }, -- Anti-Magic Zone recipient reduction
+    -- Druid
+    [22812] = { class = "DRUID", alts = { 113075 } }, -- Barkskin, Symbiosis
+    [61336] = { class = "DRUID", alts = { 113306 } }, -- Survival Instincts, Symbiosis
+    [106922] = { class = "DRUID", alts = { 113072 } }, -- Might of Ursoc, Symbiosis
+    [102342] = { class = "DRUID" }, -- Ironbark
+    -- Hunter
+    [19263] = { class = "HUNTER", alts = { 148467, 110617 } }, -- Deterrence, charge aura, Symbiosis
+    [53480] = { class = "HUNTER" }, -- Roar of Sacrifice
+    -- Mage
+    [45438] = { class = "MAGE", alts = { 110696 } }, -- Ice Block, Symbiosis
+    [115760] = { class = "MAGE" }, -- immunity after glyphed Ice Block
+    [110960] = { class = "MAGE", alts = { 113862 } }, -- Greater Invisibility and reduction
+    -- Monk
+    [120954] = { class = "MONK", alts = { 115203, 126456 } }, -- Fortifying Brew, Symbiosis
+    [122278] = { class = "MONK" }, -- Dampen Harm
+    [122783] = { class = "MONK" }, -- Diffuse Magic
+    [115176] = { class = "MONK", alts = { 131523 } }, -- Zen Meditation
+    [122470] = { class = "MONK", alts = { 125174 } }, -- Touch of Karma
+    [116849] = { class = "MONK" }, -- Life Cocoon
+    [115213] = { class = "MONK" }, -- Avert Harm recipients
+    -- Paladin
+    [498] = { class = "PALADIN" }, -- Divine Protection
+    [642] = { class = "PALADIN", alts = { 110700 } }, -- Divine Shield, Symbiosis
+    [31850] = { class = "PALADIN" }, -- Ardent Defender
+    [86659] = { class = "PALADIN" }, -- protection Guardian of Ancient Kings
+    [1022] = { class = "PALADIN" }, -- Hand of Protection
+    [6940] = { class = "PALADIN" }, -- Hand of Sacrifice
+    [31821] = { class = "PALADIN" }, -- Devotion Aura recipients
+    -- Priest
+    [47585] = { class = "PRIEST", alts = { 110715 } }, -- Dispersion, Symbiosis
+    [33206] = { class = "PRIEST" }, -- Pain Suppression
+    [47788] = { class = "PRIEST" }, -- Guardian Spirit
+    [114908] = { class = "PRIEST" }, -- Spirit Shell recipient absorb, not the healer's conversion buff
+    [81782] = { class = "PRIEST" }, -- Power Word: Barrier recipient
+    -- Rogue
+    [31224] = { class = "ROGUE", alts = { 110788 } }, -- Cloak of Shadows, Symbiosis
+    [5277] = { class = "ROGUE", alts = { 110791 } }, -- Evasion, Symbiosis
+    [74001] = { class = "ROGUE", alts = { 74002 } }, -- Combat Readiness / Combat Insight
+    [88611] = { class = "ROGUE" }, -- Smoke Bomb recipient
+    -- Shaman
+    [108271] = { class = "SHAMAN" }, -- Astral Shift
+    [30823] = { class = "SHAMAN" }, -- Shamanistic Rage
+    [98007] = { class = "SHAMAN" }, -- Spirit Link recipient
+    -- Warlock
+    [104773] = { class = "WARLOCK", alts = { 122291 } }, -- Unending Resolve, Symbiosis
+    [110913] = { class = "WARLOCK" }, -- Dark Bargain shield, not repayment
+    [108416] = { class = "WARLOCK" }, -- Sacrificial Pact
+    [132413] = { class = "WARLOCK" }, -- Shadow Bulwark (sacrificed Voidwalker)
+    -- Warrior
+    [871] = { class = "WARRIOR" }, -- Shield Wall
+    [12975] = { class = "WARRIOR" }, -- Last Stand
+    [118038] = { class = "WARRIOR" }, -- Die by the Sword
+    [114030] = { class = "WARRIOR" }, -- Vigilance
+    [114028] = { class = "WARRIOR" }, -- Mass Spell Reflection recipients
+    [97463] = { class = "WARRIOR" }, -- Rallying Cry recipients
+    -- Racials
+    [20594] = { class = "ALL" }, -- Stoneform
+}
+-- Revision 1 added these to saved filters. Removing only their seed entries
+-- would leave them enabled forever because preset imports are additive.
+local RETIRED_MOP_DEFENSIVES = {
+    49039, 81162, 101568, 77535,
+    124769, 132402, 122286, 102351, 102352,
+    5384, 110597, 54216, 62305,
+    11426, 1463, 115610, 115611, 110909, 111264,
+    115295, 123402, 118604, 115307, 115308, 126453, 116033, 123232, 116844,
+    132403, 114039, 1044, 65148, 86273,
+    586, 45242, 96267, 114214, 27827, 112833, 17, 47753, 6346, 110717,
+    1966, 122289, 45182, 73651,
+    114893, 118347, 105284, 31616, 8178, 114896,
+    6229, 108366, 108359,
+    55694, 23920, 113002, 18499, 132404, 112048, 3411, 122292, 114029, 46947,
+    59542, 28880, 59543, 59544, 59545, 59547, 59548, 121093,
+}
+local LEGACY_DEFENSIVES = RETAIL_PRESETS.spells.defensives
+RETAIL_PRESETS.spells.defensives = MOP_DEFENSIVES
+
 --------------------------------------------------------------------------------
 -- PAB derivation (from EllesmereUIUnitFrames_PlayerAuraBars.lua)
 --------------------------------------------------------------------------------
@@ -418,6 +505,14 @@ for primary, alts in pairs(PRESET_ALTS) do
     for i = 1, #fam do PAB_SPELL_FAMILY[fam[i]] = fam end
 end
 
+-- Other retail presets can mention the same spell with future-only alternates.
+-- For defensive auras, always use the original-MoP family instead.
+for id, info in pairs(MOP_DEFENSIVES) do
+    local fam = { id }
+    for _, alt in ipairs(info.alts or {}) do fam[#fam + 1] = alt end
+    for _, member in ipairs(fam) do PAB_SPELL_FAMILY[member] = fam end
+end
+
 -- Import (idempotent by NAME). filterStore = s.pabFilters = { nextId, list }.
 local function ImportPresets(filterStore)
     local byName = {}
@@ -435,6 +530,20 @@ local function ImportPresets(filterStore)
             created = created + 1
         end
         f.preset = true   -- not renameable / deletable in the editor
+        if seed.key == "defensives" and (f.mopDefensivesRevision or 0) < 2 then
+            local current = {}
+            for _, id in ipairs(seed.enabled) do current[id] = true end
+            for id, info in pairs(LEGACY_DEFENSIVES) do
+                if not current[id] then f.spells[id] = nil end
+                for _, alt in ipairs(info.alts or {}) do
+                    if not current[alt] then f.spells[alt] = nil end
+                end
+            end
+            for _, id in ipairs(RETIRED_MOP_DEFENSIVES) do f.spells[id] = nil end
+            -- Retained cooldowns keep their checkbox state; unrelated custom
+            -- additions and bar settings are not part of this migration.
+            f.mopDefensivesRevision = 2
+        end
         -- additive curation merge: new curated ids join with seed state,
         -- existing user states are never overwritten
         for j = 1, #seed.enabled do
@@ -444,14 +553,6 @@ local function ImportPresets(filterStore)
         for j = 1, #seed.disabled do
             local id = seed.disabled[j]
             if f.spells[id] == nil then f.spells[id] = false end
-        end
-        -- family heal: checked primary pulls unchecked alts up (enable-only)
-        for primary, alts in pairs(PRESET_ALTS) do
-            if f.spells[primary] == true then
-                for k = 1, #alts do
-                    if f.spells[alts[k]] == false then f.spells[alts[k]] = true end
-                end
-            end
         end
     end
     return created
