@@ -234,9 +234,28 @@ local function Seed(r)
 	r._seeded = 1
 end
 
+-- The Naowh preset put a "Pot" ready sound on the potion icons. On Mists a
+-- potion's cooldown only starts after combat, so it rang at random moments:
+-- strip it from every saved setting.
+local function IsPotSound(v)
+	return type(v) == "string" and v:find("Pot %-Naowh") ~= nil
+end
+local function StripPotSounds(t, seen)
+	if seen[t] then return end
+	seen[t] = true
+	for k, v in pairs(t) do
+		if type(v) == "table" then
+			StripPotSounds(v, seen)
+		elseif type(k) == "string" and k:find("SoundKey$") and IsPotSound(v) then
+			t[k] = nil
+		end
+	end
+end
+
 function CDM.InitDB()
 	local r = CDM.Root()
 	if r._seeded ~= 1 then Seed(r) end
+	StripPotSounds(r, {})
 	FillDefaults(r.profile)
 	root = r
 	return r

@@ -103,6 +103,8 @@ end
 function CDM.PlaySoundKey(key)
 	if type(key) ~= "string" or key == "" or key == "none" then return end
 	local name = key:match("^sm:(.+)$")
+	-- Never the Naowh "Pot" sound (see StripPotSounds).
+	if name and name:find("Pot %-Naowh") then return end
 	local LSM = ns.GetLSM and ns.GetLSM()
 	if name and LSM then
 		local path = LSM:Fetch("sound", name, true)

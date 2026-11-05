@@ -590,8 +590,8 @@ P.SEED_PROFILE = {
 	},
 	customActiveStates = {
 		[-249343] = {},
-		[-241308] = { cdReadySoundKey = "sm:|cff0091edPot -Naowh|r", cdStateEffect = "pixelGlowReady", glowColor = "custom", glowColorB = 1, glowColorG = 1, glowColorR = 1 },
-		[-241288] = { cdReadySoundKey = "sm:|cff0091edPot -Naowh|r", cdStateEffect = "pixelGlowReady", glowColor = "custom", glowColorB = 1, glowColorG = 1, glowColorR = 1 },
+		[-241308] = { cdStateEffect = "pixelGlowReady", glowColor = "custom", glowColorB = 1, glowColorG = 1, glowColorR = 1 },
+		[-241288] = { cdStateEffect = "pixelGlowReady", glowColor = "custom", glowColorB = 1, glowColorG = 1, glowColorR = 1 },
 		[-193701] = {},
 		[-153972] = { activeSwipeClassColor = false, activeSwipeMode = "none", glowColor = "custom", glowColorB = 1, glowColorG = 1, glowColorR = 1 },
 		[-153969] = { activeSwipeClassColor = false, activeSwipeMode = "none", glowColor = "custom", glowColorB = 1, glowColorG = 1, glowColorR = 1 },
