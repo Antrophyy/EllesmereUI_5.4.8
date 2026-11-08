@@ -18,6 +18,24 @@ local GetTime = GetTime
 
 local GCD_SPELL = 61304   -- the global cooldown spell
 
+-- Touch of Death (Monk): the server-driven proc overlay (Death Note) can light
+-- up too early on bosses, so the glow also needs the target to be killable:
+-- bosses and players below 10 %, other targets at or below the monk's max HP.
+local TOUCH_OF_DEATH = 115080
+local function TouchOfDeathKillable()
+	if not UnitExists("target") or UnitIsDead("target") or not UnitCanAttack("player", "target") then return false end
+	local hp, maxHp = UnitHealth("target") or 0, UnitHealthMax("target") or 0
+	if maxHp <= 0 then return false end
+	local boss = UnitIsPlayer("target") or UnitClassification("target") == "worldboss" or UnitLevel("target") == -1
+	if not boss then
+		for i = 1, 5 do
+			if UnitIsUnit("target", "boss" .. i) then boss = true; break end
+		end
+	end
+	if boss then return hp / maxHp < 0.1 end
+	return hp <= (UnitHealthMax("player") or 0)
+end
+
 -------------------------------------------------------------------------------
 --  Glows: EllesmereUI.Glows (retail EllesmereUI_Glows.lua API) when the core
 --  has it, else Blizzard's action button proc glow.
@@ -641,7 +659,8 @@ function CDM.UpdateIcon(f, now, inCombat, glowsAllowed)
 		end
 
 		-- Glows: proc (spell activation overlay), active state, CD ready.
-		if e.kind == "spell" and IsSpellOverlayed(e.spellID) and not (ss and ss.procGlow == 0) then
+		if e.kind == "spell" and IsSpellOverlayed(e.spellID) and not (ss and ss.procGlow == 0)
+			and (e.spellID ~= TOUCH_OF_DEATH or TouchOfDeathKillable()) then
 			glowStyle = (ss and ss.procGlow and ss.procGlow > 0) and ss.procGlow or CDM.PROC_GLOW_DEFAULT
 			gr, gg, gb = SettingColor(ss, "procGlow", 1, 0.788, 0.137)
 		elseif aura and ss and ss.activeGlow and ss.activeGlow > 0 then
