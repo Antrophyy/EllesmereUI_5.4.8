@@ -11,7 +11,8 @@
 --  restarts the aura, so its expiration time jumps forward while it is still
 --  up (or it vanishes and comes straight back). Eating at a feast is skipped:
 --  a banquet cast ("... Banquet", "... Feast") by the same player marks them
---  for a while.
+--  for a while. Buffs are only read out of combat (UNIT_AURA is unregistered
+--  while the player is in combat).
 --
 --  Settings live in the Raid Tools slice (EllesmereUIQoLDB.raidTools):
 --  doubleFood (off by default), doubleFoodChannel (auto | say | self).
@@ -141,6 +142,12 @@ ev:SetScript("OnEvent", function(self, event, unit, spellName)
 			local guid = UnitGUID(unit)
 			if guid then feastAt[guid] = GetTime() end
 		end
+	elseif event == "PLAYER_REGEN_DISABLED" then
+		-- Nobody eats in combat: stop reading buffs until it ends.
+		self:UnregisterEvent("UNIT_AURA")
+		wipe(eating); wipe(stoppedAt)
+	elseif event == "PLAYER_REGEN_ENABLED" then
+		self:RegisterEvent("UNIT_AURA")
 	else
 		-- Zoned: forget who is eating.
 		wipe(eating); wipe(stoppedAt)
@@ -150,9 +157,11 @@ end)
 local function Apply()
 	local c = CDB()
 	if debugOn or (c and c.doubleFood == true) then
-		ev:RegisterEvent("UNIT_AURA")
+		if InCombatLockdown() then ev:UnregisterEvent("UNIT_AURA") else ev:RegisterEvent("UNIT_AURA") end
 		ev:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
 		ev:RegisterEvent("PLAYER_ENTERING_WORLD")
+		ev:RegisterEvent("PLAYER_REGEN_DISABLED")
+		ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 	else
 		ev:UnregisterAllEvents()
 		wipe(eating); wipe(stoppedAt); wipe(feastAt); wipe(lastSaid)
