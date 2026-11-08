@@ -101,6 +101,15 @@ ns.QoLO_BuildRaidToolsPage = function(p)
 	p:Toggle("Open on Ready Check", "Opens the Raid Buff Check window on every ready check while you are the group leader or a raid assistant.",
 		function() return Cfg().buffCheckOnReady ~= false end, function(v) Cfg().buffCheckOnReady = v end, BuffCheckOff)
 
+	p:Section("Double Food Announce")
+	local DF_ITEMS, DF_LABEL = Items({ "auto", "Group (Raid / Party / Instance)", "say", "Say", "self", "Only Me (chat frame)" })
+	local function DoubleFoodOff() return Cfg().doubleFood ~= true end
+	p:Toggle("Announce Double Food", "Announces when a group member (you included) uses a second food item while still eating the first one, usually a double click on the food, which wastes one food. Eating at a feast is not counted. Works without the Raid Tools panels. If several people in the group use EllesmereUI, each of them announces it.",
+		function() return Cfg().doubleFood == true end, function(v) Cfg().doubleFood = v end)
+	p:Dropdown("Announce To", "Where the message goes. Group picks raid, party or instance chat; Only Me prints it in your own chat frame (also when solo, handy for testing).",
+		DF_ITEMS, function() return Cfg().doubleFoodChannel or "auto" end, function() return DF_LABEL(Cfg().doubleFoodChannel or "auto") end,
+		function(v) Cfg().doubleFoodChannel = v end, nil, DoubleFoodOff)
+
 	p:Section("Pull Timer")
 	local PULL_LABELS = { "First Timer", "Second Timer", "Third Timer" }
 	local PULL_TIP = "Countdown length in seconds. Compact Band uses First with Ctrl + Left Click, Second with Shift + Left Click, Third with Left Click, and Right Click stops the timer. Set a timer to 0 to disable that shortcut.\n\nThe timer runs through DBM or BigWigs (Mists has no Blizzard countdown); without either, a DBM pull timer is sent to the group."

@@ -16,6 +16,7 @@ EllesmereUIQoL_Shifter.lua
 EllesmereUIQoL_MovementAlert.lua
 EllesmereUIQoL_RaidTools.lua
 EllesmereUIQoL_RaidBuffCheck.lua
+EllesmereUIQoL_DoubleFood.lua
 EllesmereUIQoL_AutoLogging.lua
 EllesmereUIQoL_BattleRes.lua
 EllesmereUIQoL_Bloodlust.lua

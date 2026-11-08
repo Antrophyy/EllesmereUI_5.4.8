@@ -113,6 +113,9 @@ local function Defaults()
 		buffCheckOnlyMissing = true,
 		-- Opt-in Buff Check group button (needs buffCheck).
 		showBuffCheck = false,
+		-- Double Food Announce (EllesmereUIQoL_DoubleFood.lua). Off by default.
+		doubleFood = false,
+		doubleFoodChannel = "auto",
 		growDir = "downright",
 		pos = {},
 	}
