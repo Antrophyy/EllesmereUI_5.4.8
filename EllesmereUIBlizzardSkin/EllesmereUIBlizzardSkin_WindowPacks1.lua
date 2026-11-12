@@ -461,12 +461,22 @@ local function SkinBossButton(btn)
 	d.bg:SetAlpha(active and 1 or 0.5)
 end
 
+-- 5.4.8 caps new child levels at 128. The journal is toplevel, so a click
+-- raises it above 128 and the scroll child covers its rows (no clicks).
+-- Keep the rows above the scroll child: on level change and after new rows.
+local function LiftRows(scrollChild)
+	if not scrollChild then return end
+	BS.WatchChildFrameLevels(scrollChild)
+	BS.EnsureChildFrameLevels(scrollChild)
+end
+
 local function SkinBossButtons()
 	for i = 1, 30 do
 		local b = _G["EncounterJournalBossButton" .. i]
 		if not b then break end
 		SkinBossButton(b)
 	end
+	LiftRows(_G.EncounterJournalEncounterFrameInfoBossesScrollFrameScrollChild)
 end
 
 -- Instance tile: splash kept, frame art gone, 1px border + white hover.
@@ -500,6 +510,7 @@ local function SkinInstanceButtons()
 		if not b then break end
 		SkinInstanceButton(b)
 	end
+	LiftRows(_G.EncounterJournalInstanceSelectScrollFrameScrollChild)
 end
 
 -- Side tabs (boss / loot / model): dark box + black border, glyph only.
