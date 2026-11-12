@@ -4452,55 +4452,95 @@ local BREADCRUMB = " |T" .. ART_PATH .. "eui-arrow-right:12:12:0:0:32:32:0:30:0:
 local searchIndex = {}
 local searchPopup
 
--- Runs every page builder on a recorder to collect tabs, sections and setting
--- labels. Also fills module.searchText, used by the sidebar filter.
-local function BuildSearchIndex()
+-- Runs one page builder on a recorder to collect its tab, sections and
+-- setting labels into searchIndex and words.
+local function IndexTab(m, t, words)
+	local module = MODULES[m]
+	local tab = module.tabs[t]
+	words[#words + 1] = tab.name:lower()
+	local base = module.name .. " " .. tab.name
+	searchIndex[#searchIndex + 1] = {
+		kind = "page", module = m, tab = t, label = tab.name,
+		lLabel = tab.name:lower(), lDesc = (tab.description or ""):lower(),
+		lAll = base:lower(),
+	}
+	local section
+	local recorder = setmetatable({}, {
+		__index = function(_, method)
+			return function(_, text, description)
+				if type(text) ~= "string" then
+					return
+				end
+				words[#words + 1] = text:lower()
+				if not SEARCH_METHODS[method] or text == "" then
+					return
+				end
+				local entry = {
+					module = m, tab = t, label = text, section = section,
+					lLabel = text:lower(),
+					lDesc = type(description) == "string" and description:lower() or "",
+				}
+				if method == "Section" then
+					section = text
+					entry.kind = "section"
+					entry.section = nil
+					entry.key = "\2" .. text
+				else
+					entry.kind = "setting"
+					entry.key = (section or "") .. "\1" .. text
+				end
+				entry.lAll = (base .. " " .. (entry.section or "") .. " " .. text):lower()
+				searchIndex[#searchIndex + 1] = entry
+			end
+		end,
+	})
+	-- An error in one page builder is reported but does not stop the index.
+	xpcall(function() tab.build(recorder) end, geterrorhandler())
+end
+
+-- Fills searchIndex and module.searchText (used by the sidebar filter).
+-- Running every page builder at once is too slow for the 5.4.8 script time
+-- limit ("script ran too long" on the first open), so the index is built
+-- a few pages per frame after the window opens. Until a module is done, its
+-- searchText is its name and tab names. onDone runs when all is indexed.
+local INDEX_BUDGET_MS = 8
+local indexDriver
+local function BuildSearchIndex(onDone)
 	for m = 1, #MODULES do
 		local module = MODULES[m]
 		local words = { module.name:lower() }
 		for t = 1, #module.tabs do
-			local tab = module.tabs[t]
-			words[#words + 1] = tab.name:lower()
-			local base = module.name .. " " .. tab.name
-			searchIndex[#searchIndex + 1] = {
-				kind = "page", module = m, tab = t, label = tab.name,
-				lLabel = tab.name:lower(), lDesc = (tab.description or ""):lower(),
-				lAll = base:lower(),
-			}
-			local section
-			local recorder = setmetatable({}, {
-				__index = function(_, method)
-					return function(_, text, description)
-						if type(text) ~= "string" then
-							return
-						end
-						words[#words + 1] = text:lower()
-						if not SEARCH_METHODS[method] or text == "" then
-							return
-						end
-						local entry = {
-							module = m, tab = t, label = text, section = section,
-							lLabel = text:lower(),
-							lDesc = type(description) == "string" and description:lower() or "",
-						}
-						if method == "Section" then
-							section = text
-							entry.kind = "section"
-							entry.section = nil
-							entry.key = "\2" .. text
-						else
-							entry.kind = "setting"
-							entry.key = (section or "") .. "\1" .. text
-						end
-						entry.lAll = (base .. " " .. (entry.section or "") .. " " .. text):lower()
-						searchIndex[#searchIndex + 1] = entry
-					end
-				end,
-			})
-			tab.build(recorder)
+			words[#words + 1] = module.tabs[t].name:lower()
 		end
 		module.searchText = table.concat(words, "\n")
 	end
+	local m, t = 1, 1
+	local words
+	indexDriver = indexDriver or CreateFrame("Frame")
+	indexDriver:SetScript("OnUpdate", function(self)
+		local start = debugprofilestop and debugprofilestop()
+		repeat
+			local module = MODULES[m]
+			if not module then
+				self:SetScript("OnUpdate", nil)
+				if onDone then
+					onDone()
+				end
+				return
+			end
+			if t == 1 then
+				words = { module.name:lower() }
+			end
+			if module.tabs[t] then
+				IndexTab(m, t, words)
+				t = t + 1
+			end
+			if not module.tabs[t] then
+				module.searchText = table.concat(words, "\n")
+				m, t = m + 1, 1
+			end
+		until not start or debugprofilestop() - start >= INDEX_BUDGET_MS
+	end)
 end
 
 -- Letters of needle in order inside haystack; tighter runs score higher.
@@ -4743,6 +4783,7 @@ local function BuildSearchPopup(search, searchBox)
 		self.wasDown = down
 	end)
 
+	popup.Run = Run
 	searchBox:HookScript("OnTextChanged", Run)
 	searchBox:HookScript("OnEditFocusGained", function(self)
 		if (self:GetText() or "") ~= "" then
@@ -5042,10 +5083,6 @@ local function BuildWindow()
 		self:ClearFocus()
 	end)
 
-	-- Words a module can be found by (sidebar filter) and the results list:
-	-- its name, its tab names and every label on its pages.
-	BuildSearchIndex()
-
 	-- Grouped module list: green group headers, indented module rows.
 	-- EllesmereUI: the list scrolls (smooth wheel, thin right thumb, click /
 	-- drag on the track) and a down arrow under it jumps to the bottom.
@@ -5271,6 +5308,17 @@ local function BuildWindow()
 	LayoutSidebar()
 	-- After the OnTextChanged above: it hooks into it.
 	BuildSearchPopup(search, searchBox)
+	-- Words a module can be found by (sidebar filter) and the results list:
+	-- its name, its tab names and every label on its pages. Built over the
+	-- next frames; a search typed before it is done runs again at the end.
+	BuildSearchIndex(function()
+		if (searchBox:GetText() or "") ~= "" then
+			LayoutSidebar()
+			if searchBox:HasFocus() and searchPopup.Run then
+				searchPopup.Run()
+			end
+		end
+	end)
 
 	local version = NewText(sidebar, 10, 0.53)
 	version:SetAlpha(0.5)
