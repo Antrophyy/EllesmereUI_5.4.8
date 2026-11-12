@@ -913,9 +913,29 @@ function LP.SpellMenuRows(bd, idx)
 		end
 		return out
 	end
-	rows[#rows + 1] = LP.SubRow(bd, id, "Cooldown State Effect", "cdStateEffect", stateItems,
-		{ read = function(v) if v == false then return nil end return v end, fallback = "None" })
-	local eff = LP.Get(bd, id, "cdStateEffect")
+	-- The effect can come from the bar tier (CDM.SpellSettings): show the value
+	-- in use, and store "None" as false so it overrides a bar default.
+	local function BarTierState()
+		local sd = CDM.SpecProfile().barSpells[bd.key]
+		local bs = sd and sd.barSettings
+		if bs and bs.cdStateEffect ~= nil then return bs.cdStateEffect end
+		return bd.barSpellSettings and bd.barSpellSettings.cdStateEffect
+	end
+	local function EffectiveState()
+		local v = LP.Get(bd, id, "cdStateEffect")
+		if v == nil then v = BarTierState() end
+		if v == false then return nil end
+		return v
+	end
+	local stateRow = LP.SubRow(bd, id, "Cooldown State Effect", "cdStateEffect", stateItems, { fallback = "None",
+		write = function(v)
+			if v == nil and BarTierState() then v = false end
+			LP.SetOwn(bd, id, "cdStateEffect", v)
+		end })
+	stateRow.subnav.get = EffectiveState
+	stateRow.subnav.label = function() return Pick(stateItems(), EffectiveState(), "None") end
+	rows[#rows + 1] = stateRow
+	local eff = EffectiveState()
 	if eff == "pixelGlowReady" or eff == "glowOnCD" or eff == "pixelGlowReadyUsable" or eff == "buttonGlowReady" then
 		rows[#rows + 1] = LP.SubRow(bd, id, "Glow Style", "cdStateGlowStyle", function()
 			local out = {}

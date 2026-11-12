@@ -252,10 +252,24 @@ local function StripPotSounds(t, seen)
 	end
 end
 
+-- The Naowh preset set "Hidden CD Ready" as the Utility bar default in most
+-- specs, so a ready utility spell did not show. Ready spells show on this
+-- port: remove that bar default (a spell's own setting still applies).
+local function ShowReadyUtility(r)
+	for _, sp in pairs(r.specProfiles or {}) do
+		local sd = type(sp) == "table" and type(sp.barSpells) == "table" and sp.barSpells.utility
+		local bs = type(sd) == "table" and sd.barSettings
+		if type(bs) == "table" and (bs.cdStateEffect == "hiddenReady" or bs.cdStateEffect == "hiddenReadyShift") then
+			bs.cdStateEffect = nil
+		end
+	end
+end
+
 function CDM.InitDB()
 	local r = CDM.Root()
 	if r._seeded ~= 1 then Seed(r) end
 	StripPotSounds(r, {})
+	ShowReadyUtility(r)
 	FillDefaults(r.profile)
 	root = r
 	return r
@@ -266,6 +280,7 @@ function CDM.Reset()
 	wipe(r.profile)
 	wipe(r.specProfiles)
 	Seed(r)
+	ShowReadyUtility(r)
 	FillDefaults(r.profile)
 	if CDM.ready and CDM.SeedSpecDefaults then CDM.SeedSpecDefaults() end
 end
