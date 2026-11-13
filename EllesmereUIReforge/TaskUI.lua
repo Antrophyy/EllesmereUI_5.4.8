@@ -26,6 +26,7 @@ local L = EUIReforgeLocale
 local GUI = EUIReforgeGUI
 
 local MOP = (GetNumTalentTabs == nil)
+local NUM_CAPS = 3 -- stat caps the user can set (ReforgeLite had 2)
 
 function EUIReforge:AddCapPoint(i, loading)
   local point = (loading or #self.pdb.caps[i].points + 1)
@@ -75,8 +76,9 @@ function EUIReforge:AddCapPoint(i, loading)
   end
 end
 function EUIReforge:RemoveCapPoint(i, point, loading)
-  local row = #self.pdb.caps[1].points
-  self.task.caps[i]:DeleteRow(row)
+  -- Always drop the last table row; UpdateCapPoints then refills the values.
+  -- (ReforgeLite read cap 1 here for every cap.)
+  self.task.caps[i]:DeleteRow(self.task.caps[i].rows)
   if not loading then
     table.remove(self.pdb.caps[i].points, point)
     self:UpdateCapPoints(i)
@@ -128,10 +130,10 @@ function EUIReforge:UpdateCapPoints(i)
   end
 end
 function EUIReforge:CapUpdater ()
-  self.task.caps[1].stat:SetValue(self.pdb.caps[1].stat)
-  self.task.caps[2].stat:SetValue(self.pdb.caps[2].stat)
-  self:UpdateCapPoints(1)
-  self:UpdateCapPoints(2)
+  for i = 1, NUM_CAPS do
+    self.task.caps[i].stat:SetValue(self.pdb.caps[i].stat)
+    self:UpdateCapPoints(i)
+  end
 end
 function EUIReforge:UpdateStatWeightList()
   local rows = 0
@@ -279,7 +281,7 @@ function EUIReforge:UpdatePriorityItem(row)
   local scaps = {}
   for r = 1, #self.pdb.prio do
     if self.pdb.prio[r].capped and not scaps[self.pdb.prio[r].stat] then
-      if ccount >= 2 then
+      if ccount >= NUM_CAPS then
         self.pdb.prio[r].capped = false
       else
         scaps[self.pdb.prio[r].stat] = true
@@ -306,7 +308,7 @@ function EUIReforge:UpdatePriorityItem(row)
     self:UpdatePriorityPreset(row)
   else
     self.task.prio.cells[row][5]:SetChecked(false)
-    if ccount >= 2 and not scaps[self.pdb.prio[row].stat] then
+    if ccount >= NUM_CAPS and not scaps[self.pdb.prio[row].stat] then
       self.task.prio.cells[row][5]:Hide()
     else
       self.task.prio.cells[row][5]:Show()
@@ -334,19 +336,21 @@ function EUIReforge:UpdateTask()
   self.isWeights:SetChecked(not self.pdb.prio)
   if not self.pdb.prio then
     self.task.weights:Show()
-    self.task.caps[1]:Show()
-    self.task.caps[2]:Show()
+    for i = 1, NUM_CAPS do
+      self.task.caps[i]:Show()
+    end
     self.task.prio:Hide()
 
     self:UpdateStatWeightList()
     self:CapUpdater()
     if self.computeButton then
-      self:SetAnchor(self.computeButton, "TOPLEFT", self.task.caps[2], "BOTTOMLEFT", 0, -10)
+      self:SetAnchor(self.computeButton, "TOPLEFT", self.task.caps[NUM_CAPS], "BOTTOMLEFT", 0, -10)
     end
   else
     self.task.weights:Hide()
-    self.task.caps[1]:Hide()
-    self.task.caps[2]:Hide()
+    for i = 1, NUM_CAPS do
+      self.task.caps[i]:Hide()
+    end
     self.task.prio:Show()
 
     self:UpdatePriorities()
@@ -373,7 +377,7 @@ function EUIReforge:SetStatWeights(weights, caps, prio)
       self.pdb.weights = {0, 0, 0, 0, 0, 0, 0, 0}
     end
     if caps then
-      for i = 1, 2 do
+      for i = 1, NUM_CAPS do
         if caps[i] then
           self.pdb.caps[i] = DeepCopy(caps[i])
           self.pdb.caps[i].stat = self.pdb.caps[i].stat or 0
@@ -527,7 +531,7 @@ function EUIReforge:CreateTaskUI()
   for i, v in ipairs (self.itemStats) do
     table.insert (statList, {value = i, name = v.long})
   end
-  for i = 1, 2 do
+  for i = 1, NUM_CAPS do
     self.task.caps[i] = GUI:CreateTable (0, 4, self.db.itemSize + 2, self.db.itemSize + 2)
     self.statWeightsCategory:AddFrame (self.task.caps[i])
     self.task.caps[i]:SetPoint ("RIGHT", self.content, "RIGHT", -5, 0)
@@ -559,7 +563,9 @@ function EUIReforge:CreateTaskUI()
     end
   end
   self:SetAnchor (self.task.caps[1], "TOPLEFT", self.task.weights, "BOTTOMLEFT", 0, -10)
-  self:SetAnchor (self.task.caps[2], "TOPLEFT", self.task.caps[1], "BOTTOMLEFT", 0, -10)
+  for i = 2, NUM_CAPS do
+    self:SetAnchor (self.task.caps[i], "TOPLEFT", self.task.caps[i - 1], "BOTTOMLEFT", 0, -10)
+  end
 --  for i = 1, 2 do
 --    for point = 1, #self.pdb.caps[i].points do
 --      self:AddCapPoint (i, point)
@@ -601,18 +607,17 @@ end
 
 function EUIReforge:PrioToWeights(pdb)
   pdb.weights = {0, 0, 0, 0, 0, 0, 0, 0}
-  pdb.caps = {
-    {
-      stat = 0,
-      points = {
-      }
-    },
-    {
-      stat = 0,
-      points = {
-      }
-    }
-  }
+  pdb.caps = {}
+  for c = 1, NUM_CAPS do
+    pdb.caps[c] = {stat = 0, points = {}}
+  end
+  local function CapIndex (stat)
+    for c = 1, NUM_CAPS do
+      if pdb.caps[c].stat == stat then
+        return c
+      end
+    end
+  end
   local limits = {0, 0, 0, 0, 0, 0, 0, 0}
   local value = #pdb.prio * 20 + 100
   local defMethod = 1
@@ -628,8 +633,8 @@ function EUIReforge:PrioToWeights(pdb)
         end
       end
       if limit > limits[pdb.prio[i].stat] then
-        if pdb.caps[1].stat == pdb.prio[i].stat or pdb.caps[2].stat == pdb.prio[i].stat then
-          local t = (pdb.caps[1].stat == pdb.prio[i].stat and 1 or 2)
+        if CapIndex (pdb.prio[i].stat) then
+          local t = CapIndex (pdb.prio[i].stat)
           local n = #pdb.caps[t].points
           pdb.caps[t].points[n].after = value
           if pdb.prio[i].capped then
@@ -640,8 +645,8 @@ function EUIReforge:PrioToWeights(pdb)
               after = 0
             }
           end
-        elseif pdb.prio[i].capped and (pdb.caps[1].stat == 0 or pdb.caps[2].stat == 0) then
-          local t = (pdb.caps[1].stat == 0 and 1 or 2)
+        elseif pdb.prio[i].capped and CapIndex (0) then
+          local t = CapIndex (0)
           pdb.weights[pdb.prio[i].stat] = value
           pdb.caps[t].stat = pdb.prio[i].stat
           pdb.caps[t].points = {
@@ -662,7 +667,7 @@ function EUIReforge:PrioToWeights(pdb)
     end
     value = value - 20
   end
-  for i = 1, 2 do
+  for i = 1, NUM_CAPS do
     if #pdb.caps[i].points == 0 then
       pdb.caps[i].points[1] = {method = 1, preset = 1, value = 0, after = 0}
     end
@@ -673,8 +678,14 @@ function EUIReforge:WeightsToPrio(pdb)
   local list = {}
   for s = 1, #self.itemStats do
     local prev = pdb.weights[s]
-    if pdb.caps[1].stat == s or pdb.caps[2].stat == s then
-      local t = (pdb.caps[1].stat == s and 1 or 2)
+    local t
+    for c = 1, NUM_CAPS do
+      if pdb.caps[c] and pdb.caps[c].stat == s then
+        t = c
+        break
+      end
+    end
+    if t then
       for i = 1, #pdb.caps[t].points do
         if prev > 0 then
           list[#list + 1] = {

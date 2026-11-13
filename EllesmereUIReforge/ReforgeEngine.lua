@@ -2,6 +2,7 @@
 -- All rights reserved
 
 local REFORGE_COEFF = 0.4
+local NUM_CAPS = 3 -- stat caps the user can set (ReforgeLite had 2)
 
 local _, playerClass = UnitClass ("player")
 local _, playerRace = UnitRace ("player")
@@ -141,11 +142,11 @@ function EUIReforge:GetMethodPenalty(method)
       end
     end
   end
-  if self.pdb.caps[1] and self.pdb.caps[1].stat ~= 0 and not self:CapAllows(self.pdb.caps[1], method.stats[self.pdb.caps[1].stat]) then
-    return 100000
-  end
-  if self.pdb.caps[2] and self.pdb.caps[2].stat ~= 0 and not self:CapAllows(self.pdb.caps[2], method.stats[self.pdb.caps[2].stat]) then
-    return 100000
+  for c = 1, NUM_CAPS do
+    local cap = self.pdb.caps[c]
+    if cap and cap.stat ~= 0 and not self:CapAllows(cap, method.stats[cap.stat]) then
+      return 100000
+    end
   end
   return 0
 end
@@ -265,52 +266,39 @@ end
 
 ------------------------------------- CLASSIC REFORGE ------------------------------
 
+-- Adds amount to the delta of the cap that uses stat, or to the score.
+local function AddStatDelta(data, d, stat, amount)
+  for c = 1, NUM_CAPS do
+    if data.caps[c].stat == stat then
+      d[c] = d[c] + amount
+      return 0
+    end
+  end
+  return data.weights[stat] * amount
+end
 function EUIReforge:MakeReforgeOption(item, data, src, dst)
-  local delta1, delta2, dscore = 0, 0, 0
+  local d = {0, 0, 0}
+  local dscore = 0
   if src and dst then
     local amountRaw = math.floor(item.stats[src] * REFORGE_COEFF)
     local amount = math.floor(amountRaw * (data.mult[src] or 1) + math.random())
-    if src == data.caps[1].stat then
-      delta1 = delta1 - amount
-    elseif src == data.caps[2].stat then
-      delta2 = delta2 - amount
-    else
-      dscore = dscore - data.weights[src] * amount
-    end
+    dscore = dscore + AddStatDelta(data, d, src, -amount)
     if data.conv[src] then
       for to, factor in pairs(data.conv[src]) do
         local conv = math.floor(amount * factor + math.random())
-        if data.caps[1].stat == to then
-          delta1 = delta1 - conv
-        elseif data.caps[2].stat == to then
-          delta2 = delta2 - conv
-        else
-          dscore = dscore - data.weights[to] * conv
-        end
+        dscore = dscore + AddStatDelta(data, d, to, -conv)
       end
     end
     amount = math.floor(amountRaw * (data.mult[dst] or 1) + math.random())
-    if dst == data.caps[1].stat then
-      delta1 = delta1 + amount
-    elseif dst == data.caps[2].stat then
-      delta2 = delta2 + amount
-    else
-      dscore = dscore + data.weights[dst] * amount
-    end
+    dscore = dscore + AddStatDelta(data, d, dst, amount)
     if data.conv[dst] then
       for to, factor in pairs(data.conv[dst]) do
         local conv = math.floor(amount * factor + math.random())
-        if data.caps[1].stat == to then
-          delta1 = delta1 + conv
-        elseif data.caps[2].stat == to then
-          delta2 = delta2 + conv
-        else
-          dscore = dscore + data.weights[to] * conv
-        end
+        dscore = dscore + AddStatDelta(data, d, to, conv)
       end
     end
   end
-  return {d1 = delta1, d2 = delta2, ["src"] = src, ["dst"] = dst, score = dscore}
+  return {d1 = d[1], d2 = d[2], d3 = d[3], ["src"] = src, ["dst"] = dst, score = dscore}
 end
 function EUIReforge:GetItemReforgeOptions (item, data, slot)
   if self:IsItemLocked (slot) then
@@ -332,7 +320,7 @@ function EUIReforge:GetItemReforgeOptions (item, data, slot)
       for dst = 1, #self.itemStats do
         if item.stats[dst] == 0 then
           local o = self:MakeReforgeOption (item, data, src, dst)
-          local pos = o.d1 + o.d2 * 10000
+          local pos = o.d1 .. ":" .. o.d2 .. ":" .. o.d3
           if not aopt[pos] or aopt[pos].score < o.score then
             aopt[pos] = o
           end
@@ -372,14 +360,16 @@ function EUIReforge:InitReforgeClassic ()
   data.method = method
   data.weights = DeepCopy (self.pdb.weights)
   data.caps = DeepCopy (self.pdb.caps)
-  data.caps[1].init = 0
-  data.caps[2].init = 0
+  for c = 1, NUM_CAPS do
+    data.caps[c] = data.caps[c] or {stat = 0, points = {}}
+    data.caps[c].init = 0
+  end
   data.initial = {}
 
   data.mult = self:GetStatMultipliers()
   data.conv = self:GetConversion()
 
-  for i = 1, 2 do
+  for i = 1, NUM_CAPS do
     for point = 1, #data.caps[i].points do
       local preset = data.caps[i].points[point].preset
       if self.capPresets[preset] == nil then
@@ -423,32 +413,35 @@ function EUIReforge:InitReforgeClassic ()
       data.initial[dst] = data.initial[dst] - math.floor(reforged[src] * (data.mult[src] or 1) * f + 0.5)
     end
   end
-  if data.caps[1].stat > 0 then
-    data.caps[1].init = data.initial[data.caps[1].stat]
-    for i = 1, #data.method.items do
-      data.caps[1].init = data.caps[1].init + data.method.items[i].stats[data.caps[1].stat]
+  -- Keep only the caps that have a stat, without duplicates, in order.
+  local active, used = {}, {}
+  for c = 1, NUM_CAPS do
+    local cap = data.caps[c]
+    if cap.stat > 0 and not used[cap.stat] then
+      used[cap.stat] = true
+      cap.init = data.initial[cap.stat]
+      for i = 1, #data.method.items do
+        cap.init = cap.init + data.method.items[i].stats[cap.stat]
+      end
+      active[#active + 1] = cap
     end
   end
-  if data.caps[2].stat > 0 then
-    data.caps[2].init = data.initial[data.caps[2].stat]
-    for i = 1, #data.method.items do
-      data.caps[2].init = data.caps[2].init + data.method.items[i].stats[data.caps[2].stat]
-    end
+  data.numCaps = #active
+  for c = #active + 1, NUM_CAPS do
+    active[c] = {stat = 0, init = 0, points = {}}
   end
-  if data.caps[1].stat == 0 then
-    data.caps[1], data.caps[2] = data.caps[2], data.caps[1]
-  end
-  if data.caps[2].stat == data.caps[1].stat then
-    data.caps[2].stat = 0
-    data.caps[2].init = 0
-  end
-  if data.caps[2].stat == 0 then
+  data.caps = active
+  if data.numCaps <= 1 then
     data.cheat = 1
+  elseif data.numCaps == 3 then
+    -- Three caps make the search space much larger: use coarser steps
+    -- so that the compute stays near one second.
+    data.cheat = math.max(1, math.ceil(statsSum / 200))
   end
 
   for src, conv in pairs(data.conv) do
     if data.weights[src] == 0 then
-      if (data.caps[1].stat and conv[data.caps[1].stat]) or (data.caps[2].stat and conv[data.caps[2].stat]) then
+      if conv[data.caps[1].stat] or conv[data.caps[2].stat] or conv[data.caps[3].stat] then
         if src == self.STATS.EXP then
           data.weights[src] = -1
         else
@@ -462,33 +455,38 @@ function EUIReforge:InitReforgeClassic ()
 end
 
 function EUIReforge:ChooseReforgeClassic (data, reforgeOptions, scores, codes)
-  local bestCode = {nil, nil, nil, nil}
-  local bestScore = {0, 0, 0, 0}
+  -- Rank: all caps met first; cap 1 is more important than cap 2, and cap 2 than cap 3.
+  local bestCode, bestScore = {}, {}
   for k, score in pairs (scores) do
-    local s1 = data.caps[1].init
-    local s2 = data.caps[2].init
+    local s1, s2, s3 = data.caps[1].init, data.caps[2].init, data.caps[3].init
     local code = codes[k]
     for i = 1, #code do
-      local b = code:byte (i)
-      s1 = s1 + reforgeOptions[i][b].d1
-      s2 = s2 + reforgeOptions[i][b].d2
+      local o = reforgeOptions[i][code:byte (i)]
+      s1 = s1 + o.d1
+      s2 = s2 + o.d2
+      s3 = s3 + o.d3
     end
-    local a1, a2 = true, true
-    if data.caps[1].stat > 0 then
-      a1 = a1 and self:CapAllows (data.caps[1], s1)
-      score = score + self:GetCapScore (data.caps[1], s1)
+    local sums = {s1, s2, s3}
+    local allow = 1
+    for c = 1, NUM_CAPS do
+      local cap = data.caps[c]
+      if cap.stat > 0 then
+        if not self:CapAllows (cap, sums[c]) then
+          allow = allow + 2 ^ (NUM_CAPS - c)
+        end
+        score = score + self:GetCapScore (cap, sums[c])
+      end
     end
-    if data.caps[2].stat > 0 then
-      a2 = a2 and self:CapAllows (data.caps[2], s2)
-      score = score + self:GetCapScore (data.caps[2], s2)
-    end
-    local allow = a1 and (a2 and 1 or 2) or (a2 and 3 or 4)
     if bestCode[allow] == nil or score > bestScore[allow] then
       bestCode[allow] = code
       bestScore[allow] = score
     end
   end
-  return bestCode[1] or bestCode[2] or bestCode[3] or bestCode[4]
+  for allow = 1, 2 ^ NUM_CAPS do
+    if bestCode[allow] then
+      return bestCode[allow]
+    end
+  end
 end
 
 local function FormatValue (value, prefix)
@@ -506,12 +504,16 @@ local function FormatValue (value, prefix)
 end
 
 function EUIReforge:ComputeReforgeCore (data, reforgeOptions)
-  local TABLE_SIZE = 10000
+  local TABLE_SIZE = 100000
+  local TABLE_SIZE2 = TABLE_SIZE * TABLE_SIZE
   local scores, codes = {}, {}
   local mfloor = math.floor
   local mrandom = math.random
   local schar = string.char
-  local linit = mfloor(data.caps[1].init / data.cheat + mrandom()) + mfloor(data.caps[2].init / data.cheat + mrandom()) * TABLE_SIZE
+  local cheat = data.cheat
+  local three = (data.numCaps == 3)
+  local linit = mfloor(data.caps[1].init / cheat + mrandom()) + mfloor(data.caps[2].init / cheat + mrandom()) * TABLE_SIZE
+    + mfloor(data.caps[3].init / cheat + mrandom()) * TABLE_SIZE2
   scores[linit] = 0
   codes[linit] = ""
   for i = 1, #self.itemData do
@@ -520,12 +522,14 @@ function EUIReforge:ComputeReforgeCore (data, reforgeOptions)
     local count = 0
     for k, score in pairs(scores) do
       local code = codes[k]
-      local s1 = k % TABLE_SIZE
-      local s2 = mfloor(k / TABLE_SIZE)
       for j = 1, #opt do
         local o = opt[j]
         local nscore = score + o.score
-        local nk = s1 + mfloor(o.d1 / data.cheat + mrandom()) + (s2 + mfloor(o.d2 / data.cheat + mrandom())) * TABLE_SIZE
+        -- The key is linear in the three sums, so add the deltas to it directly.
+        local nk = k + mfloor(o.d1 / cheat + mrandom()) + mfloor(o.d2 / cheat + mrandom()) * TABLE_SIZE
+        if three then
+          nk = nk + mfloor(o.d3 / cheat + mrandom()) * TABLE_SIZE2
+        end
         if newscores[nk] == nil or nscore > newscores[nk] then
           newscores[nk] = nscore
           newcodes[nk] = code .. schar(j)

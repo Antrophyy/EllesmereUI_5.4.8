@@ -82,6 +82,17 @@ local DefaultDBProfile = {
           preset = 1
         }
       }
+    },
+    {
+      stat = 0,
+      points = {
+        {
+          method = 1,
+          value = 0,
+          after = 0,
+          preset = 1
+        }
+      }
     }
   },
   itemsLocked = {},
@@ -359,13 +370,13 @@ function EUIReforge:GetCapScore (cap, value)
   return score
 end
 function EUIReforge:GetStatScore (stat, value)
-  if stat == self.pdb.caps[1].stat then
-    return self:GetCapScore (self.pdb.caps[1], value)
-  elseif stat == self.pdb.caps[2].stat then
-    return self:GetCapScore (self.pdb.caps[2], value)
-  else
-    return self.pdb.weights[stat] * value
+  for c = 1, 3 do
+    local cap = self.pdb.caps[c]
+    if cap and cap.stat == stat then
+      return self:GetCapScore (cap, value)
+    end
   end
+  return self.pdb.weights[stat] * value
 end
 
 function EUIReforge:ParsePawnString (pawn)
