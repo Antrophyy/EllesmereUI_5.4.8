@@ -1232,6 +1232,106 @@ function ERB.LayoutDruidMana(bar, pp)
 	ERB.UpdateDruidMana()
 end
 
+-- Stagger Bar with Chi (5.4.8 Brewmaster has Chi and Stagger at the same
+-- time; secondary.staggerBar = { enabled, height, position "below" |
+-- "above", gap, showText, textSize }): a thin Stagger bar on the class
+-- resource while Chi shows. "Show Stagger" (monkStagger) still puts Stagger
+-- in place of Chi. Colors and levels follow the Blizzard stagger bar: green,
+-- yellow from 30% and red from 60% of max health.
+local STAGGER_LEVELS = {
+	{ 0.60, 1.0, 0.42, 0.42 },
+	{ 0.30, 1.0, 0.98, 0.72 },
+	{ 0, 0.52, 1.0, 0.52 },
+}
+local function StaggerBarShown(sp)
+	local sb = sp and sp.staggerBar
+	if not (sb and sb.enabled) or sp.monkStagger or not UnitStagger then return false end
+	if select(2, UnitClass("player")) ~= "MONK" or GetSpecialization() ~= 1 then return false end
+	return cachedSecondary ~= nil and cachedSecondary.power == "CHI"
+end
+function ERB.UpdateStaggerBar()
+	local host = secondaryFrame
+	local f = host and host.staggerBar
+	local p = Profile()
+	if not f or not p then return end
+	local sp = p.secondary
+	if not StaggerBarShown(sp) then
+		f:Hide()
+		return
+	end
+	local hpMax = max(1, UnitHealthMax("player") or 1)
+	local mx = max(1, hpMax * max(1, sp.staggerCeilingPercent or 100) / 100)
+	local cur = UnitStagger("player") or 0
+	if ERB.unlockActive and cur <= 0 then cur = hpMax * 0.25 end
+	f.sb:SetMinMaxValues(0, mx)
+	f.sb:SetValue(min(cur, mx))
+	local pct = cur / hpMax
+	for _, lv in ipairs(STAGGER_LEVELS) do
+		if pct >= lv[1] then
+			f.sb:SetStatusBarColor(lv[2], lv[3], lv[4], 1)
+			break
+		end
+	end
+	if sp.staggerBar.showText ~= false and cur > 0 then
+		f.text:SetText(format("%s (%d%%)", P.Abbrev(cur), floor(pct * 100 + 0.5)))
+		f.text:Show()
+	else
+		f.text:Hide()
+	end
+	f:Show()
+end
+function ERB.LayoutStaggerBar()
+	local host = secondaryFrame
+	local p = Profile()
+	if not host or not p then return end
+	local sp = p.secondary
+	ERB.staggerBarOn = StaggerBarShown(sp)
+	if not ERB.staggerBarOn then
+		if host.staggerBar then host.staggerBar:Hide() end
+		return
+	end
+	local sb = sp.staggerBar
+	local f = host.staggerBar
+	if not f then
+		f = CreateFrame("Frame", nil, host)
+		f.bg = f:CreateTexture(nil, "BACKGROUND")
+		f.bg:SetAllPoints()
+		f.bg:SetTexture(0, 0, 0, 0.6)
+		f.sb = CreateFrame("StatusBar", nil, f)
+		f.sb:SetPoint("TOPLEFT", 1, -1)
+		f.sb:SetPoint("BOTTOMRIGHT", -1, 1)
+		f.sb:SetStatusBarTexture(P.WHITE)
+		f.text = P.NewText(f.sb, 9)
+		f.text:SetPoint("CENTER")
+		host.staggerBar = f
+	end
+	f.sb:SetStatusBarTexture(P.TexturePath(p.general.barTexture) or P.WHITE)
+	P.SetFont(f.text, sb.textSize or 9)
+	f:ClearAllPoints()
+	-- The class resource frame holds the bar: Chi part (host.body), then the
+	-- gap, then the bar at the far edge (BuildSecondary sized the frame).
+	local size = (sb.height or 6) + 2
+	local above = sb.position == "above"
+	f:ClearAllPoints()
+	if IsVertical(sp.pipOrientation) then
+		-- Vertical class resource: the bar stands at its side (above = left).
+		f.sb:SetOrientation("VERTICAL")
+		f:SetWidth(size)
+		local side = above and "LEFT" or "RIGHT"
+		f:SetPoint("TOP" .. side, host, "TOP" .. side, 0, 0)
+		f:SetPoint("BOTTOM" .. side, host, "BOTTOM" .. side, 0, 0)
+	else
+		f.sb:SetOrientation("HORIZONTAL")
+		f:SetHeight(size)
+		local edge = above and "TOP" or "BOTTOM"
+		f:SetPoint(edge .. "LEFT", host, edge .. "LEFT", 0, 0)
+		f:SetPoint(edge .. "RIGHT", host, edge .. "RIGHT", 0, 0)
+	end
+	f:SetFrameLevel(host:GetFrameLevel() + 2)
+	f.sb:SetFrameLevel(f:GetFrameLevel() + 1)
+	ERB.UpdateStaggerBar()
+end
+
 local function BuildPower(p, expandDelta, expandSign, shiftY)
 	local pp = p.primary
 	if not primaryBar then
@@ -1291,18 +1391,55 @@ local function BuildSecondary(p, shiftY)
 	f:SetFrameLevel(sp.raiseLevel and 30 or 12)
 	f.textFrame:SetFrameLevel(f:GetFrameLevel() + 12)
 	f.border:SetFrameLevel(f:GetFrameLevel() + 8)
-	if f._tickLayer then
-		f._tickLayer:SetFrameLevel(f:GetFrameLevel() + 9)
+	-- Stagger Bar with Chi: the class resource frame grows by the stagger
+	-- bar, so Unlock Mode anchors (cast bar on it, it on the power bar) keep
+	-- their gap; without the bar (other specs) the frame is the Chi bar only.
+	-- f.body is the Chi part: everything of the class resource sits on it.
+	local fw, fh = OrientedSize(w, h, ori)
+	local vertical = IsVertical(ori)
+	local extra = 0
+	local stAbove = false
+	if StaggerBarShown(sp) then
+		local size = (sp.staggerBar.height or 6) + 2
+		extra = max(0, size + max(-size, sp.staggerBar.gap or 1))
+		stAbove = sp.staggerBar.position == "above"
 	end
-	f:SetSize(OrientedSize(w, h, ori))
+	ERB.staggerExtra = extra
+	ERB.staggerVertical = vertical
+	if vertical then
+		f:SetSize(fw + extra, fh)
+	else
+		f:SetSize(fw, fh + extra)
+	end
+	if not f.body then
+		f.body = CreateFrame("Frame", nil, f)
+	end
+	local body = f.body
+	body:SetFrameLevel(f:GetFrameLevel())
+	body:ClearAllPoints()
+	body:SetSize(fw, fh)
+	if vertical then
+		body:SetPoint(stAbove and "TOPRIGHT" or "TOPLEFT")
+	else
+		body:SetPoint(stAbove and "BOTTOMLEFT" or "TOPLEFT")
+	end
+	f.barBg:ClearAllPoints()
+	f.barBg:SetAllPoints(body)
+	f.border:ClearAllPoints()
+	f.border:SetAllPoints(body)
+	f.textFrame:ClearAllPoints()
+	f.textFrame:SetAllPoints(body)
+	if body._tickLayer then
+		body._tickLayer:SetFrameLevel(f:GetFrameLevel() + 9)
+	end
 	PlaceAt(f, sp, 0, -38, shiftY, "ERB_ClassResource")
 	f.count:ClearAllPoints()
 	local anchor = sp.textAnchor or "CENTER"
-	f.count:SetPoint(anchor, f, anchor, sp.textXOffset or 0, sp.textYOffset or 0)
+	f.count:SetPoint(anchor, body, anchor, sp.textXOffset or 0, sp.textYOffset or 0)
 	P.SetFont(f.count, sp.textSize or 11)
 	for i = 1, #pips do pips[i]:Hide() end
 	for i = 1, #f.gaps do f.gaps[i]:Hide() end
-	LayoutTicks(f, f.ticks, nil)
+	LayoutTicks(body, f.ticks, nil)
 	if secondaryBar then
 		secondaryBar:Hide()
 	end
@@ -1321,8 +1458,9 @@ local function BuildSecondary(p, shiftY)
 		if not secondaryBar then
 			secondaryBar = CreateBar("ERB_ClassResourceBar")
 			secondaryBar:SetParent(f)
-			secondaryBar:SetAllPoints(f)
 		end
+		secondaryBar:ClearAllPoints()
+		secondaryBar:SetAllPoints(body)
 		local bar = secondaryBar
 		bar:SetFrameLevel(f:GetFrameLevel() + 1)
 		bar.border:SetFrameLevel(f:GetFrameLevel() + 5)
@@ -1381,7 +1519,7 @@ local function BuildSecondary(p, shiftY)
 		pip:SetParent(f)
 		pip:SetFrameLevel(f:GetFrameLevel() + 1)
 		pip.border:SetFrameLevel(pip:GetFrameLevel() + 3)
-		PlacePip(pip, slots[i], ori, f)
+		PlacePip(pip, slots[i], ori, body)
 		P.PaintBg(pip.bg, p.general.barTextureBg and (sp.fillOpacity or 100) >= 100, p.general.barTexture, er, eg, eb, ea)
 		pip.fill:SetTexture(tex)
 		pip.recharge:SetStatusBarTexture(tex)
@@ -1414,16 +1552,16 @@ local function BuildSecondary(p, shiftY)
 				t:ClearAllPoints()
 				local s = { x0 = slots[i].x1, x1 = slots[i + 1].x0 }
 				if ori == "VERTICAL_UP" then
-					t:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, s.x0)
-					t:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, s.x0)
+					t:SetPoint("BOTTOMLEFT", body, "BOTTOMLEFT", 0, s.x0)
+					t:SetPoint("BOTTOMRIGHT", body, "BOTTOMRIGHT", 0, s.x0)
 					t:SetHeight(len)
 				elseif IsVertical(ori) then
-					t:SetPoint("TOPLEFT", f, "TOPLEFT", 0, -s.x0)
-					t:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, -s.x0)
+					t:SetPoint("TOPLEFT", body, "TOPLEFT", 0, -s.x0)
+					t:SetPoint("TOPRIGHT", body, "TOPRIGHT", 0, -s.x0)
 					t:SetHeight(len)
 				else
-					t:SetPoint("TOPLEFT", f, "TOPLEFT", s.x0, 0)
-					t:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", s.x0, 0)
+					t:SetPoint("TOPLEFT", body, "TOPLEFT", s.x0, 0)
+					t:SetPoint("BOTTOMLEFT", body, "BOTTOMLEFT", s.x0, 0)
 					t:SetWidth(len)
 				end
 				t:Show()
@@ -1432,7 +1570,7 @@ local function BuildSecondary(p, shiftY)
 	end
 	-- Hash lines on pips: after the given counts.
 	if raw and raw.hashValues and raw.hashValues ~= "" then
-		LayoutTicks(f, f.ticks, ParseValues(raw.hashValues), n, false, raw.hashWidth or 1,
+		LayoutTicks(body, f.ticks, ParseValues(raw.hashValues), n, false, raw.hashWidth or 1,
 			raw.hashColorR, raw.hashColorG, raw.hashColorB, raw.hashColorA, ori, sp.borderSize or 0)
 	end
 end
@@ -1484,6 +1622,7 @@ function ERB.BuildBars()
 	BuildHealth(p)
 	BuildPower(p, expand, sign, 0)
 	BuildSecondary(p, shiftPow)
+	ERB.LayoutStaggerBar()
 	ERB.UpdateVisibility()
 	UpdateHealthBar()
 	UpdatePrimaryBar()
@@ -1593,7 +1732,7 @@ end
 --  Driver: runes, mouseover poll, visibility conditions without events
 -------------------------------------------------------------------------------
 local driver = CreateFrame("Frame")
-local acc, visAcc = 0, 0
+local acc, visAcc, staggerAcc = 0, 0, 0
 driver:SetScript("OnUpdate", function(self, elapsed)
 	acc = acc + elapsed
 	visAcc = visAcc + elapsed
@@ -1601,6 +1740,13 @@ driver:SetScript("OnUpdate", function(self, elapsed)
 		acc = 0
 		if runeBusy and cachedSecondary and cachedSecondary.type == "runes" then
 			UpdateSecondaryResource()
+		end
+		if ERB.staggerBarOn then
+			staggerAcc = staggerAcc + 1
+			if staggerAcc >= 2 then
+				staggerAcc = 0
+				ERB.UpdateStaggerBar()
+			end
 		end
 		local p = Profile()
 		if p then
@@ -1660,6 +1806,7 @@ events:SetScript("OnEvent", function(self, event, unit, arg2)
 		if cachedSecondary and cachedSecondary.power == "STAGGER" then
 			if event == "UNIT_MAXHEALTH" then QueueRebuild() else UpdateSecondaryResource() end
 		end
+		if ERB.staggerBarOn then ERB.UpdateStaggerBar() end
 		if event == "UNIT_MAXHEALTH" then
 			-- Value hash lines follow the max.
 			local p = Profile()
@@ -1685,6 +1832,7 @@ events:SetScript("OnEvent", function(self, event, unit, arg2)
 			if cachedSecondary and (cachedSecondary.aura or cachedSecondary.power == "STAGGER") then
 				UpdateSecondaryResource()
 			end
+			if ERB.staggerBarOn then ERB.UpdateStaggerBar() end
 			ERB.UpdateVisibility()
 		end
 	elseif event == "UNIT_COMBO_POINTS" or event == "PLAYER_TARGET_CHANGED" then
@@ -1745,6 +1893,10 @@ function P.UnlockElement(key, label, order, getFrame, cfgOf, isOn, sizeOf)
 	end
 	local function SetSize(axis, v)
 		local cfg = cfgOf()
+		if key == "ERB_ClassResource" and (ERB.staggerExtra or 0) > 0
+			and ((axis == "h") ~= (ERB.staggerVertical == true)) then
+			v = v - ERB.staggerExtra
+		end
 		cfg[Keys(axis)] = math.max(floor(v + 0.5), 2)
 		ERB:ApplyAll()
 	end

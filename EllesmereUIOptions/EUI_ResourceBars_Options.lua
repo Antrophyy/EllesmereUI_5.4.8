@@ -1058,11 +1058,32 @@ local function BuildBarDisplay(p)
 			p:Blank()
 		elseif class == "MONK" then
 			-- Brewmaster Stagger (retail class resource; Stagger Full %).
-			local function StagOff() return ClassOff() or not S().monkStagger end
+			-- Stagger Bar with Chi (5.4.8): a thin Stagger bar on the Chi pips.
+			local function SB() local t = S().staggerBar; if not t then t = {}; S().staggerBar = t end; return t end
+			local function StagOff() return ClassOff() or not (S().monkStagger or SB().enabled) end
+			local function SBOff() return ClassOff() or S().monkStagger or not SB().enabled end
 			p:Toggle("Show Stagger (Brewmaster)", "Brewmaster shows Stagger as the class resource bar instead of Chi.",
 				Get(S, "monkStagger", false), function(v) S().monkStagger = v; Restructure() end, ClassOff)
 			p:Slider("Stagger Full %", "Stagger equal to this percent of your max health fills the bar.", 10, 500, 5,
 				Get(S, "staggerCeilingPercent", 100), function(v) S().staggerCeilingPercent = v; Restructure() end, StagOff)
+			p:Toggle("Stagger Bar with Chi (Brewmaster)", "Brewmaster shows a thin Stagger bar on the Chi bar, so Energy, Chi and Stagger show together. Off while \"Show Stagger\" is on.",
+				function() return SB().enabled == true end, function(v) SB().enabled = v; Restructure() end,
+				function() return ClassOff() or S().monkStagger end)
+			p:Cog("Stagger Bar", {
+				{ type = "slider", label = "Height", min = 2, max = 30, step = 1,
+				  get = function() return SB().height or 6 end, set = function(v) SB().height = v end },
+				{ type = "dropdown", label = "Position", items = function() return Items({ { "below", "Below" }, { "above", "Above" } }) end,
+				  get = function() return SB().position or "below" end,
+				  labelFn = function() return (SB().position or "below") == "above" and "Above" or "Below" end,
+				  set = function(v) SB().position = v end },
+				{ type = "slider", label = "Gap", min = -10, max = 60, step = 1,
+				  get = function() return SB().gap or 1 end, set = function(v) SB().gap = v end },
+				{ type = "toggle", label = "Show Text", get = function() return SB().showText ~= false end,
+				  set = function(v) SB().showText = v end },
+				{ type = "slider", label = "Text Size", min = 6, max = 20, step = 1,
+				  get = function() return SB().textSize or 9 end, set = function(v) SB().textSize = v end,
+				  disabled = function() return SB().showText == false end },
+			}, { disabled = SBOff })
 		end
 	end
 
@@ -1114,7 +1135,7 @@ local function BuildBarDisplay(p)
 			p:Cog("Mana Bar", {
 				{ type = "slider", label = "Height", min = 2, max = 20, step = 1,
 				  get = function() return DM().height or 4 end, set = function(v) DM().height = v end },
-				{ type = "dropdown", label = "Position", items = Items({ { "below", "Below" }, { "above", "Above" } }),
+				{ type = "dropdown", label = "Position", items = function() return Items({ { "below", "Below" }, { "above", "Above" } }) end,
 				  get = function() return DM().position or "below" end,
 				  labelFn = function() return (DM().position or "below") == "above" and "Above" or "Below" end,
 				  set = function(v) DM().position = v end },
@@ -1375,6 +1396,35 @@ local function BuildPreviewHeader(page, host, width)
 	local pw = BarSection("Power Bar", PW, "primary")
 	local hb = BarSection("Health Bar", H, "health")
 
+	-- Brewmaster Stagger Bar with Chi: a thin bar on the Chi preview, no title.
+	local stg = PreviewSection(container, "")
+	stg.bg = stg.host:CreateTexture(nil, "BACKGROUND")
+	stg.bg:SetAllPoints()
+	stg.bg:SetTexture(0, 0, 0, 0.6)
+	stg.fill = stg.host:CreateTexture(nil, "ARTWORK")
+	local function StaggerPreviewOn(res)
+		local sp = S()
+		local sb = sp.staggerBar
+		return sb and sb.enabled and not sp.monkStagger and res and res.power == "CHI"
+			and select(2, UnitClass("player")) == "MONK" and GetSpecialization() == 1 or false
+	end
+	local function UpdateStagger(w)
+		local sb = S().staggerBar
+		local h = (sb.height or 6) + 2
+		local px = PX()
+		stg.host:SetSize(w, h)
+		stg.fill:SetTexture(ERB.TexturePath(P().general.barTexture))
+		stg.fill:SetVertexColor(0.52, 1.0, 0.52, 1)
+		stg.fill:ClearAllPoints()
+		stg.fill:SetPoint("TOPLEFT", px, -px)
+		stg.fill:SetPoint("BOTTOMLEFT", px, px)
+		stg.fill:SetWidth(max(1, (w - 2 * px) * previewFill / 200))
+		stg.text:SetTextColor(1, 1, 1, 0.9)
+		local cfg = { textSize = sb.textSize or 9 }
+		SectionText(stg, cfg, sb.showText ~= false, format("%dK (%d%%)", floor(previewFill * 3), floor(previewFill / 2)))
+		return w, h
+	end
+
 	local TOP, TITLE_H, GAP, BOTTOM = 10, 14, 10, 12
 	local function Place(sec, show, y, w, h)
 		sec.title:SetShown(show)
@@ -1392,13 +1442,50 @@ local function BuildPreviewHeader(page, host, width)
 		return y + h * scale + GAP
 	end
 
+	-- The stagger strip sits on the Chi preview: no title, the bar's own gap.
+	local function Scale(w)
+		local scale = UIParent:GetEffectiveScale() / max(0.01, host:GetEffectiveScale())
+		local avail = (width - 40) / scale
+		if w > avail then scale = scale * avail / w end
+		return scale
+	end
+	local function PlaceStagger(show, y, w)
+		stg.title:Hide()
+		stg.host:SetShown(show and true or false)
+		if not show then return end
+		local scale = Scale(w)
+		stg.host:SetScale(scale)
+		stg.host:ClearAllPoints()
+		stg.host:SetPoint("TOP", container, "TOP", 0, -y / scale)
+	end
+
 	local function Update()
 		local res = ERB.GetSecondaryResource()
 		local y = TOP
 		local showRes = res and S().enabled and true or false
 		local w, h = 1, 1
 		if showRes then w, h = UpdateResource(res) end
-		y = Place(cr, showRes, y, w, h)
+		local showStg = showRes and StaggerPreviewOn(res)
+		if showStg then
+			local sb = S().staggerBar
+			local _, sh = UpdateStagger(w)
+			local scale = Scale(w)
+			local extra = (sh + (sb.gap or 1)) * scale
+			if sb.position == "above" then
+				-- Title, then the stagger strip, then the Chi pips.
+				PlaceStagger(true, y + TITLE_H, w)
+				y = Place(cr, true, y + extra, w, h)
+				cr.title:ClearAllPoints()
+				cr.title:SetPoint("TOP", container, "TOP", 0, -TOP)
+			else
+				y = Place(cr, true, y, w, h)
+				PlaceStagger(true, y - GAP + (sb.gap or 1) * scale, w)
+				y = y + extra
+			end
+		else
+			PlaceStagger(false)
+			y = Place(cr, showRes, y, w, h)
+		end
 		local showPw = PowerAvail(res)
 		if showPw then w, h = pw.Update() end
 		y = Place(pw, showPw, y, w, h)
