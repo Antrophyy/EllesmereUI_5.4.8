@@ -266,6 +266,15 @@ end
 
 ------------------------------------- CLASSIC REFORGE ------------------------------
 
+-- When the compute runs in a coroutine, give the game a frame now and then.
+-- Outside a coroutine (sync compute) this does nothing.
+local YIELD_STEPS = 4000
+local function MaybeYield (progress)
+  if coroutine.running () then
+    coroutine.yield (progress)
+  end
+end
+
 -- Adds amount to the delta of the cap that uses stat, or to the score.
 local function AddStatDelta(data, d, stat, amount)
   for c = 1, NUM_CAPS do
@@ -457,7 +466,13 @@ end
 function EUIReforge:ChooseReforgeClassic (data, reforgeOptions, scores, codes)
   -- Rank: all caps met first; cap 1 is more important than cap 2, and cap 2 than cap 3.
   local bestCode, bestScore = {}, {}
+  local steps = 0
   for k, score in pairs (scores) do
+    steps = steps + 1
+    if steps >= YIELD_STEPS then
+      steps = 0
+      MaybeYield (1)
+    end
     local s1, s2, s3 = data.caps[1].init, data.caps[2].init, data.caps[3].init
     local code = codes[k]
     for i = 1, #code do
@@ -516,11 +531,18 @@ function EUIReforge:ComputeReforgeCore (data, reforgeOptions)
     + mfloor(data.caps[3].init / cheat + mrandom()) * TABLE_SIZE2
   scores[linit] = 0
   codes[linit] = ""
-  for i = 1, #self.itemData do
+  local steps = 0
+  local nitems = #self.itemData
+  for i = 1, nitems do
     local newscores, newcodes = {}, {}
     local opt = reforgeOptions[i]
     local count = 0
     for k, score in pairs(scores) do
+      steps = steps + #opt
+      if steps >= YIELD_STEPS then
+        steps = 0
+        MaybeYield ((i - 1) / nitems)
+      end
       local code = codes[k]
       for j = 1, #opt do
         local o = opt[j]
@@ -540,51 +562,118 @@ function EUIReforge:ComputeReforgeCore (data, reforgeOptions)
   end
   return scores, codes
 end
-function EUIReforge:ComputeReforge (initFunc, optionFunc, chooseFunc)
+function EUIReforge:ComputePrepare (initFunc, optionFunc)
   local data = self[initFunc] (self)
   local reforgeOptions = {}
   for i = 1, #self.itemData do
     reforgeOptions[i] = self[optionFunc] (self, data.method.items[i], data, i)
   end
-
-  local success, scores, codes = pcall (self.ComputeReforgeCore, self, data, reforgeOptions)
-
-  self.methodDebug = "<no data>" 
-  if success then
-    local code = self[chooseFunc] (self, data, reforgeOptions, scores, codes)
-    scores, codes = nil, nil
-    collectgarbage ("collect")
-    self.methodDebug = "version = 1.38\n\n"
-    self.methodDebug = self.methodDebug .. "data = " .. FormatValue (data) .. "\n\n"
-    for i = 1, #data.method.items do
-      local opt = reforgeOptions[i][code:byte (i)]
-      if data.conv[self.STATS.SPIRIT] and data.conv[self.STATS.SPIRIT][self.STATS.HIT] == 1 then
-        if opt.dst == self.STATS.HIT and data.method.items[i].stats[self.STATS.SPIRIT] == 0 then
-          opt.dst = self.STATS.SPIRIT
-        end
+  return data, reforgeOptions
+end
+function EUIReforge:ComputeSearch (data, reforgeOptions, chooseFunc)
+  local scores, codes = self:ComputeReforgeCore (data, reforgeOptions)
+  return self[chooseFunc] (self, data, reforgeOptions, scores, codes)
+end
+function EUIReforge:ComputeFinish (data, reforgeOptions, code)
+  collectgarbage ("collect")
+  self.methodDebug = "version = 1.38\n\n"
+  self.methodDebug = self.methodDebug .. "data = " .. FormatValue (data) .. "\n\n"
+  for i = 1, #data.method.items do
+    local opt = reforgeOptions[i][code:byte (i)]
+    if data.conv[self.STATS.SPIRIT] and data.conv[self.STATS.SPIRIT][self.STATS.HIT] == 1 then
+      if opt.dst == self.STATS.HIT and data.method.items[i].stats[self.STATS.SPIRIT] == 0 then
+        opt.dst = self.STATS.SPIRIT
       end
-      data.method.items[i].src = opt.src
-      data.method.items[i].dst = opt.dst
     end
-    self:FinalizeReforge (data)
-    self.methodDebug = self.methodDebug .. "method = " .. FormatValue (data.method)
-    return data.method
-  else
-    self.methodDebug = "data = " .. FormatValue (data)
-    EUIReforgeGUI:ShowPopup ({
-      title = "Reforge",
-      message = string.format (L["Reforge failed to compute your optimal reforge. Try increasing the speed by moving the speed slider.\nError message: %s"], tostring (scores)),
-      text = tostring (scores),
-      readOnly = true,
-      acceptText = OKAY,
-      hideCancel = true,
-    })
-    return nil
+    data.method.items[i].src = opt.src
+    data.method.items[i].dst = opt.dst
   end
+  self:FinalizeReforge (data)
+  self.methodDebug = self.methodDebug .. "method = " .. FormatValue (data.method)
+  return data.method
+end
+function EUIReforge:ComputeFailed (data, err)
+  collectgarbage ("collect")
+  self.methodDebug = "data = " .. FormatValue (data)
+  EUIReforgeGUI:ShowPopup ({
+    title = "Reforge",
+    message = string.format (L["Reforge failed to compute your optimal reforge. Try increasing the speed by moving the speed slider.\nError message: %s"], tostring (err)),
+    text = tostring (err),
+    readOnly = true,
+    acceptText = OKAY,
+    hideCancel = true,
+  })
+end
+function EUIReforge:ComputeReforge (initFunc, optionFunc, chooseFunc)
+  local data, reforgeOptions = self:ComputePrepare (initFunc, optionFunc)
+  self.methodDebug = "<no data>"
+  local success, code = pcall (self.ComputeSearch, self, data, reforgeOptions, chooseFunc)
+  if success then
+    return self:ComputeFinish (data, reforgeOptions, code)
+  end
+  self:ComputeFailed (data, code)
+  return nil
 end
 
 function EUIReforge:Compute ()
   return self:ComputeReforge ("InitReforgeClassic", "GetItemReforgeOptions", "ChooseReforgeClassic")
+end
+
+-- Background compute: the search runs in a coroutine for a few ms per frame,
+-- so the game does not freeze. onProgress (0..1) is called each frame;
+-- onDone (method or nil) is called once at the end.
+local FRAME_BUDGET_MS = 12
+function EUIReforge:IsComputing ()
+  return self.computeCo ~= nil
+end
+function EUIReforge:ComputeAsync (onDone, onProgress)
+  if self.computeCo then
+    return
+  end
+  local ok, data, reforgeOptions = pcall (self.ComputePrepare, self, "InitReforgeClassic", "GetItemReforgeOptions")
+  if not ok then
+    self:ComputeFailed ({}, data)
+    onDone (nil)
+    return
+  end
+  self.methodDebug = "<no data>"
+  local co = coroutine.create (function ()
+    return self:ComputeSearch (data, reforgeOptions, "ChooseReforgeClassic")
+  end)
+  self.computeCo = co
+  self.computeDriver = self.computeDriver or CreateFrame ("Frame")
+  local driver = self.computeDriver
+  local function Stop ()
+    driver:SetScript ("OnUpdate", nil)
+    self.computeCo = nil
+  end
+  driver:SetScript ("OnUpdate", function ()
+    local start = debugprofilestop ()
+    local progress = 0
+    repeat
+      local success, result = coroutine.resume (co)
+      if not success then
+        Stop ()
+        self:ComputeFailed (data, result)
+        onDone (nil)
+        return
+      end
+      if coroutine.status (co) == "dead" then
+        Stop ()
+        local fin, method = pcall (self.ComputeFinish, self, data, reforgeOptions, result)
+        if not fin then
+          self:ComputeFailed (data, method)
+          method = nil
+        end
+        onDone (method)
+        return
+      end
+      progress = result or progress
+    until debugprofilestop () - start > FRAME_BUDGET_MS
+    if onProgress then
+      onProgress (progress)
+    end
+  end)
 end
 
 -- Debug data (EllesmereUI popup, read only, selected for Ctrl+C).

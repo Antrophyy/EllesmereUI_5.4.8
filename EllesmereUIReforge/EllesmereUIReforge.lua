@@ -851,8 +851,7 @@ function EUIReforge:CreateOptionList ()
   self:CreateTaskUI()
 
   self.computeButton = GUI:CreateButton (self.content, 140, 28, L["Compute"], true)
-  self.computeButton:SetScript ("OnClick", function ()
-    local method = self:Compute ()
+  local function ApplyComputed (method)
     local curScore = (method and (self:GetMethodScore(method) - self:GetMethodPenalty(method)) or -500000)
     local oldScore = (self.pdb.method and (self:GetMethodScore(self.pdb.method) - self:GetMethodPenalty(self.pdb.method)) or -500000)
     if self.pdb.method and not self:IsMethodValid(self.pdb.method) then
@@ -867,6 +866,22 @@ function EUIReforge:CreateOptionList ()
       end
       self:UpdateMethodChecks()
     end
+  end
+  self.computeButton:SetScript ("OnClick", function (btn)
+    if self:IsComputing () then
+      return
+    end
+    btn:Disable ()
+    btn:SetText (L["Compute"] .. " 0%")
+    self:ComputeAsync (function (method)
+      btn:SetText (L["Compute"])
+      btn:Enable ()
+      if method then
+        ApplyComputed (method)
+      end
+    end, function (progress)
+      btn:SetText (string.format ("%s %d%%", L["Compute"], math.floor (progress * 100)))
+    end)
   end)
 
   self:UpdateTask ()
