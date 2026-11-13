@@ -3,6 +3,8 @@
 
 local REFORGE_COEFF = 0.4
 local NUM_CAPS = 3 -- stat caps the user can set (ReforgeLite had 2)
+-- Step size with 3+ caps: statsSum / STEP_DIV rating.
+local STEP_DIV = {[3] = 200}
 
 local _, playerClass = UnitClass ("player")
 local _, playerRace = UnitRace ("player")
@@ -286,7 +288,10 @@ local function AddStatDelta(data, d, stat, amount)
   return data.weights[stat] * amount
 end
 function EUIReforge:MakeReforgeOption(item, data, src, dst)
-  local d = {0, 0, 0}
+  local d = {}
+  for c = 1, NUM_CAPS do
+    d[c] = 0
+  end
   local dscore = 0
   if src and dst then
     local amountRaw = math.floor(item.stats[src] * REFORGE_COEFF)
@@ -307,7 +312,7 @@ function EUIReforge:MakeReforgeOption(item, data, src, dst)
       end
     end
   end
-  return {d1 = d[1], d2 = d[2], d3 = d[3], ["src"] = src, ["dst"] = dst, score = dscore}
+  return {d = d, ["src"] = src, ["dst"] = dst, score = dscore}
 end
 function EUIReforge:GetItemReforgeOptions (item, data, slot)
   if self:IsItemLocked (slot) then
@@ -329,7 +334,7 @@ function EUIReforge:GetItemReforgeOptions (item, data, slot)
       for dst = 1, #self.itemStats do
         if item.stats[dst] == 0 then
           local o = self:MakeReforgeOption (item, data, src, dst)
-          local pos = o.d1 .. ":" .. o.d2 .. ":" .. o.d3
+          local pos = table.concat (o.d, ":")
           if not aopt[pos] or aopt[pos].score < o.score then
             aopt[pos] = o
           end
@@ -442,15 +447,21 @@ function EUIReforge:InitReforgeClassic ()
   data.caps = active
   if data.numCaps <= 1 then
     data.cheat = 1
-  elseif data.numCaps == 3 then
-    -- Three caps make the search space much larger: use coarser steps
+  elseif data.numCaps >= 3 then
+    -- More caps make the search space much larger: use coarser steps
     -- so that the compute stays near one second.
-    data.cheat = math.max(1, math.ceil(statsSum / 200))
+    data.cheat = math.max(1, math.ceil(statsSum / (STEP_DIV[data.numCaps] or 200)))
   end
 
   for src, conv in pairs(data.conv) do
     if data.weights[src] == 0 then
-      if conv[data.caps[1].stat] or conv[data.caps[2].stat] or conv[data.caps[3].stat] then
+      local capped = false
+      for c = 1, NUM_CAPS do
+        if conv[data.caps[c].stat] then
+          capped = true
+        end
+      end
+      if capped then
         if src == self.STATS.EXP then
           data.weights[src] = -1
         else
@@ -464,33 +475,36 @@ function EUIReforge:InitReforgeClassic ()
 end
 
 function EUIReforge:ChooseReforgeClassic (data, reforgeOptions, scores, codes)
-  -- Rank: all caps met first; cap 1 is more important than cap 2, and cap 2 than cap 3.
+  -- Rank: all caps met first; cap 1 is more important than cap 2, and so on.
+  -- Sums and scores are computed again from the codes, so they are exact.
   local bestCode, bestScore = {}, {}
   local steps = 0
-  for k, score in pairs (scores) do
+  local sums = {}
+  for k in pairs (scores) do
     steps = steps + 1
     if steps >= YIELD_STEPS then
       steps = 0
       MaybeYield (1)
     end
-    local s1, s2, s3 = data.caps[1].init, data.caps[2].init, data.caps[3].init
+    for c = 1, data.numCaps do
+      sums[c] = data.caps[c].init
+    end
+    local score = 0
     local code = codes[k]
     for i = 1, #code do
       local o = reforgeOptions[i][code:byte (i)]
-      s1 = s1 + o.d1
-      s2 = s2 + o.d2
-      s3 = s3 + o.d3
-    end
-    local sums = {s1, s2, s3}
-    local allow = 1
-    for c = 1, NUM_CAPS do
-      local cap = data.caps[c]
-      if cap.stat > 0 then
-        if not self:CapAllows (cap, sums[c]) then
-          allow = allow + 2 ^ (NUM_CAPS - c)
-        end
-        score = score + self:GetCapScore (cap, sums[c])
+      score = score + o.score
+      for c = 1, data.numCaps do
+        sums[c] = sums[c] + o.d[c]
       end
+    end
+    local allow = 1
+    for c = 1, data.numCaps do
+      local cap = data.caps[c]
+      if not self:CapAllows (cap, sums[c]) then
+        allow = allow + 2 ^ (NUM_CAPS - c)
+      end
+      score = score + self:GetCapScore (cap, sums[c])
     end
     if bestCode[allow] == nil or score > bestScore[allow] then
       bestCode[allow] = code
@@ -518,43 +532,114 @@ local function FormatValue (value, prefix)
   end
 end
 
+-- Dynamic programming over the items. A state is the sum of each capped stat,
+-- in steps of data.cheat rating, packed into one number key. For each state
+-- we keep the best score of the uncapped stats and the reforge code.
+--
+-- Merge above the cap: when a capped stat is so high that it stays above its
+-- highest cap point even if all later items reforge it away, more of it only
+-- adds "weight after cap" per point. Then we cut the sum at that limit and
+-- add the rest to the score, so these states merge. ChooseReforgeClassic
+-- computes the exact sums and scores again from the codes.
 function EUIReforge:ComputeReforgeCore (data, reforgeOptions)
-  local TABLE_SIZE = 100000
-  local TABLE_SIZE2 = TABLE_SIZE * TABLE_SIZE
-  local scores, codes = {}, {}
+  local n = data.numCaps
+  local T = (n >= 4) and 8192 or 100000
+  local T2, T3 = T * T, T * T * T
   local mfloor = math.floor
   local mrandom = math.random
   local schar = string.char
   local cheat = data.cheat
-  local three = (data.numCaps == 3)
-  local linit = mfloor(data.caps[1].init / cheat + mrandom()) + mfloor(data.caps[2].init / cheat + mrandom()) * TABLE_SIZE
-    + mfloor(data.caps[3].init / cheat + mrandom()) * TABLE_SIZE2
-  scores[linit] = 0
-  codes[linit] = ""
-  local steps = 0
   local nitems = #self.itemData
+
+  local limit = {{}, {}, {}, {}}
+  local afterW = {0, 0, 0, 0}
+  for c = 1, n do
+    local top, after
+    for _, p in ipairs (data.caps[c].points) do
+      if top == nil or p.value >= top then
+        top, after = p.value, p.after
+      end
+    end
+    if top then
+      afterW[c] = (after or 0) * cheat
+      local rem = 0
+      for i = nitems, 1, -1 do
+        -- Margin: the random rounding moves the sum by up to one step per
+        -- item (earlier and later items), so add one step per item.
+        limit[c][i] = mfloor ((top + rem) / cheat) + nitems + 2
+        local maxdec = 0
+        for _, o in ipairs (reforgeOptions[i]) do
+          if -o.d[c] > maxdec then
+            maxdec = -o.d[c]
+          end
+        end
+        rem = rem + maxdec
+      end
+    end
+  end
+
+  local function Init (c)
+    return (c <= n) and mfloor (data.caps[c].init / cheat + mrandom ()) or 0
+  end
+  local linit = Init (1) + Init (2) * T + Init (3) * T2 + Init (4) * T3
+  local scores, codes = {[linit] = 0}, {[linit] = ""}
+  local steps = 0
   for i = 1, nitems do
     local newscores, newcodes = {}, {}
     local opt = reforgeOptions[i]
-    local count = 0
-    for k, score in pairs(scores) do
+    local l1, l2, l3, l4 = limit[1][i], limit[2][i], limit[3][i], limit[4][i]
+    local a1, a2, a3, a4 = afterW[1], afterW[2], afterW[3], afterW[4]
+    for k, score in pairs (scores) do
       steps = steps + #opt
       if steps >= YIELD_STEPS then
         steps = 0
         MaybeYield ((i - 1) / nitems)
       end
       local code = codes[k]
+      local c1 = k % T
+      local r = (k - c1) / T
+      local c2 = r % T
+      r = (r - c2) / T
+      local c3 = r % T
+      local c4 = (r - c3) / T
       for j = 1, #opt do
         local o = opt[j]
+        local od = o.d
         local nscore = score + o.score
-        -- The key is linear in the three sums, so add the deltas to it directly.
-        local nk = k + mfloor(o.d1 / cheat + mrandom()) + mfloor(o.d2 / cheat + mrandom()) * TABLE_SIZE
-        if three then
-          nk = nk + mfloor(o.d3 / cheat + mrandom()) * TABLE_SIZE2
+        local x1 = c1 + mfloor (od[1] / cheat + mrandom ())
+        if l1 and x1 > l1 then
+          nscore = nscore + a1 * (x1 - l1)
+          x1 = l1
         end
-        if newscores[nk] == nil or nscore > newscores[nk] then
+        local nk = x1
+        if n >= 2 then
+          local x2 = c2 + mfloor (od[2] / cheat + mrandom ())
+          if l2 and x2 > l2 then
+            nscore = nscore + a2 * (x2 - l2)
+            x2 = l2
+          end
+          nk = nk + x2 * T
+          if n >= 3 then
+            local x3 = c3 + mfloor (od[3] / cheat + mrandom ())
+            if l3 and x3 > l3 then
+              nscore = nscore + a3 * (x3 - l3)
+              x3 = l3
+            end
+            nk = nk + x3 * T2
+            if n >= 4 then
+              local x4 = c4 + mfloor (od[4] / cheat + mrandom ())
+              if l4 and x4 > l4 then
+                nscore = nscore + a4 * (x4 - l4)
+                x4 = l4
+              end
+              nk = nk + x4 * T3
+            end
+          end
+        end
+        local old = newscores[nk]
+        if old == nil or nscore > old then
           newscores[nk] = nscore
-          newcodes[nk] = code .. schar(j)
+          newcodes[nk] = code .. schar (j)
         end
       end
     end
