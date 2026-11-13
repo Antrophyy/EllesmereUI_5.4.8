@@ -5,9 +5,10 @@
 ## Version: 3.19.0
 ## Dependencies: EllesmereUI
 ## OptionalDeps: LibSharedMedia-3.0, SharedMedia, SharedMedia_MyMedia, ExRT, ElvUI, DBM-Core, WeakAuras, VuhDo
-## SavedVariables: EllesmereUIDamageMetersDB
+## SavedVariables: EllesmereUIDamageMetersDB, EllesmereUIDamageMetersSpellLog
 ## SavedVariablesPerCharacter: EllesmereUIDamageMetersFights
 
+EllesmereUIDamageMeters_Avoidable.lua
 EllesmereUIDamageMeters_Engine.lua
 EllesmereUIDamageMeters_SpellHistory.lua
 EllesmereUIDamageMeters_Meter.lua

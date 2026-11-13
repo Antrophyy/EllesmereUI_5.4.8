@@ -40,13 +40,13 @@ local T = {
 local S = { Overall = 0, Current = 1 }
 DM.T, DM.S = T, S
 
--- Types the 5.4.8 engine records. Avoidable Damage Taken has no counterpart:
--- not offered (a saved bookmark of it stays saved, like retail does for types
--- a client does not offer).
+-- Types the 5.4.8 engine records. Avoidable Damage Taken counts the spells of
+-- EllesmereUIDamageMeters_Avoidable.lua (retail reads Blizzard's own list).
 local TYPE_NAMES = {
 	[T.DamageDone] = "Damage Done",
 	[T.HealingDone] = "Healing Done",
 	[T.DamageTaken] = "Damage Taken",
+	[T.AvoidableDamageTaken] = "Avoidable Damage Taken",
 	[T.EnemyDamageTaken] = "Enemy Damage Taken",
 	[T.Interrupts] = "Interrupts",
 	[T.Dispels] = "Dispels",
@@ -514,6 +514,7 @@ end
 --   Damage Done        -> group actors, actor.damage  (breakdown: dmgSpells)
 --   Healing Done       -> group actors, actor.healing (breakdown: healSpells)
 --   Damage Taken       -> group actors, actor.taken   (breakdown: takenFrom)
+--   Avoidable Damage   -> group actors, actor.avoid   (breakdown: avoidSpells)
 --   Enemy Damage Taken -> enemy actors, actor.taken   (breakdown: takenFrom)
 --   Interrupts         -> group actors, actor.interrupts (intSpells)
 --   Dispels            -> group actors, actor.dispels (dispSpells)
@@ -541,7 +542,7 @@ DM.CombatTime = CombatTime
 local ACTIVE_FIELD = { [T.DamageDone] = "dmgActive", [T.HealingDone] = "healActive" }
 local AMOUNT_FIELD = {
 	[T.DamageDone] = "damage", [T.HealingDone] = "healing", [T.DamageTaken] = "taken",
-	[T.EnemyDamageTaken] = "taken", [T.Interrupts] = "interrupts", [T.Dispels] = "dispels",
+	[T.AvoidableDamageTaken] = "avoid", [T.EnemyDamageTaken] = "taken", [T.Interrupts] = "interrupts", [T.Dispels] = "dispels",
 }
 
 -- Returns a sorted list of rows: { name, class, spec, total, perSec, isLocalPlayer, actor, death }.
@@ -597,6 +598,7 @@ DM.SpellName = SpellName
 local SPELL_LIST = {
 	[T.DamageDone] = "dmgSpells", [T.HealingDone] = "healSpells",
 	[T.Interrupts] = "intSpells", [T.Dispels] = "dispSpells",
+	[T.AvoidableDamageTaken] = "avoidSpells",
 }
 
 -- Breakdown of one row: { label, icon, amount, spellID, class }, sorted.
@@ -2071,9 +2073,10 @@ CreateDMWindow = function(idx)
 		end
 		local cur = W.curDMType
 		local items = {
-			{ text = "Damage", isActive = cur == T.DamageDone or cur == T.DamageTaken or cur == T.EnemyDamageTaken, children = {
+			{ text = "Damage", isActive = cur == T.DamageDone or cur == T.DamageTaken or cur == T.AvoidableDamageTaken
+				or cur == T.EnemyDamageTaken, children = {
 				entry("Damage Done", T.DamageDone), entry("Damage Taken", T.DamageTaken),
-				entry("Enemy Damage Taken", T.EnemyDamageTaken),
+				entry("Avoidable Damage Taken", T.AvoidableDamageTaken), entry("Enemy Damage Taken", T.EnemyDamageTaken),
 			} },
 			entry("Healing", T.HealingDone),
 			{ text = "Actions", isActive = cur == T.Interrupts or cur == T.Dispels or cur == T.Deaths, children = {
@@ -2131,6 +2134,7 @@ CreateDMWindow = function(idx)
 				{ text = "Off", isActive = not w2.mythicStartDMType, onClick = function() w2.mythicStartDMType = false end },
 				"---",
 				mStart("Damage Done", T.DamageDone), mStart("Healing", T.HealingDone), mStart("Damage Taken", T.DamageTaken),
+				mStart("Avoidable Damage Taken", T.AvoidableDamageTaken),
 				mStart("Enemy Damage Taken", T.EnemyDamageTaken), mStart("Interrupts", T.Interrupts),
 				mStart("Dispels", T.Dispels), mStart("Deaths", T.Deaths),
 			} },

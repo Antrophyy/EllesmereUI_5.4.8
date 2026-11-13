@@ -7,12 +7,15 @@
 --   segment = { name, start, finish, boss, try, result ("kill" | "wipe"), bossHP (lowest %),
 --               actors = { [guid] = actor }, deaths = { death } }
 --   actor   = { guid, name, class, spec, group, enemy,
---               damage, healing, taken, interrupts, dispels,
+--               damage, healing, taken, avoid, interrupts, dispels,
 --               dmgActive, healActive (activity seconds),
---               dmgSpells, healSpells, intSpells, dispSpells = { [key] = { id, pet, amount } },
+--               dmgSpells, healSpells, intSpells, dispSpells, avoidSpells = { [key] = { id, pet, amount } },
 --               takenFrom = { [key] = { name, class, amount } } }
 --   death   = { name, class, at, time, events = { { heal, id, amount, at, source, hp, overkill, absorbed, shield },
 --               ... oldest first } } (hp = health % after the event, as Details records it)
+--   avoid = damage taken from the avoidable spells of EllesmereUIDamageMeters_Avoidable.lua.
+-- Boss fights also log every spell that hit the group (EllesmereUIDamageMetersSpellLog),
+-- so the avoidable spell IDs can be checked against real fights.
 -- Fights are saved per character at logout / reload (EllesmereUIDamageMetersFights)
 -- and restored when the addon loads.
 
@@ -152,9 +155,9 @@ ResetOverall()
 local function NewActor(seg, guid, name, flags)
 	local a = {
 		guid = guid, name = name or "Unknown",
-		damage = 0, healing = 0, taken = 0, interrupts = 0, dispels = 0,
+		damage = 0, healing = 0, taken = 0, avoid = 0, interrupts = 0, dispels = 0,
 		dmgActive = 0, healActive = 0,
-		dmgSpells = {}, healSpells = {}, intSpells = {}, dispSpells = {}, takenFrom = {},
+		dmgSpells = {}, healSpells = {}, intSpells = {}, dispSpells = {}, avoidSpells = {}, takenFrom = {},
 	}
 	if band(flags or 0, AFFIL_GROUP) ~= 0 and band(flags or 0, TYPE_PLAYER) ~= 0 then
 		a.group = true
@@ -418,9 +421,81 @@ local function LogEvent(guid, heal, id, amount, source, overkill, absorbed, shie
 end
 
 ---------------------------------------------------------------------------
+-- Avoidable damage (EllesmereUIDamageMeters_Avoidable.lua)
+---------------------------------------------------------------------------
+local TANK_SPECS = { [66] = true, [73] = true, [104] = true, [250] = true, [268] = true }
+local function IsTank(guid)
+	if TANK_SPECS[specOf[guid] or 0] then return true end
+	local unit = unitOf[guid]
+	return unit and UnitGroupRolesAssigned and UnitGroupRolesAssigned(unit) == "TANK" or false
+end
+
+-- The player a boss is targeting (its cast target), or nil.
+local function BossTarget(bossGUID)
+	if not bossGUID or not UnitGUID then return nil end
+	for i = 1, 5 do
+		local unit = "boss" .. i
+		if UnitGUID(unit) == bossGUID then return UnitGUID(unit .. "target") end
+	end
+	return nil
+end
+
+-- "nontarget" spells: the cast target, scanned when the cast starts
+-- (bosses turn to the target a moment after the cast starts, so the
+-- damage itself checks again). The target never counts as avoidable.
+local CAST_TARGET_TIME = 10
+local castTarget = {}
+local function NoteCastTarget(srcGUID, id)
+	local guid = BossTarget(srcGUID)
+	if guid and not IsTank(guid) then castTarget[id] = { guid = guid, at = GetTime() } end
+end
+
+local function IsAvoidable(srcGUID, dstGUID, id)
+	local list = ns.EDMAvoidable
+	local rule = list and list[id]
+	if not rule then return false end
+	if rule == "nontank" then return not IsTank(dstGUID) end
+	if rule == "nontarget" then
+		local live = BossTarget(srcGUID)
+		if live and not IsTank(live) then castTarget[id] = { guid = live, at = GetTime() } end
+		local t = castTarget[id]
+		if not t or GetTime() - t.at > CAST_TARGET_TIME then return false end -- target unknown: not counted
+		return t.guid ~= dstGUID
+	end
+	return true
+end
+
+-- Spell log: every spell that hit a group player in a boss fight, per boss,
+-- account-wide: { [boss] = { [spellID] = { name, hits, amount, avoid } } }.
+local SPELL_LOG_MAX = 400 -- spells per boss
+local function LogSpell(boss, id, amount, avoid)
+	if Cfg("spellLog", true) == false or type(id) ~= "number" or id <= 1 then return end
+	local log = _G.EllesmereUIDamageMetersSpellLog
+	if type(log) ~= "table" then
+		log = {}
+		_G.EllesmereUIDamageMetersSpellLog = log
+	end
+	local list = log[boss]
+	if not list then
+		list = { count = 0 }
+		log[boss] = list
+	end
+	local s = list[id]
+	if not s then
+		if list.count >= SPELL_LOG_MAX then return end
+		list.count = list.count + 1
+		s = { name = GetSpellInfo and GetSpellInfo(id) or nil, hits = 0, amount = 0 }
+		list[id] = s
+	end
+	s.hits = s.hits + 1
+	s.amount = s.amount + amount
+	if avoid then s.avoid = true end
+end
+
+---------------------------------------------------------------------------
 -- Damage / healing
 ---------------------------------------------------------------------------
-local function RecordDamageToSeg(seg, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, id, amount, now)
+local function RecordDamageToSeg(seg, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, id, amount, now, avoid)
 	local owner, isPlayer = OwnerOf(srcGUID, srcFlags)
 	-- Damage done by the group (not to friendly units).
 	if owner and band(dstFlags, REACT_FRIENDLY) == 0 then
@@ -446,6 +521,11 @@ local function RecordDamageToSeg(seg, srcGUID, srcName, srcFlags, dstGUID, dstNa
 			key, name, class = owner, oa and oa.name or OwnerName(owner) or srcName, oa and oa.class
 		end
 		AddTaken(a, key, name, class, amount)
+		if avoid then
+			a.avoid = (a.avoid or 0) + amount
+			a.avoidSpells = a.avoidSpells or {}
+			AddSpell(a.avoidSpells, id, nil, amount)
+		end
 	end
 end
 
@@ -464,8 +544,13 @@ local function Damage(srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, id
 		StartFight()
 	end
 	local now = GetTime()
-	RecordDamageToSeg(current, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, id, amount, now)
-	RecordDamageToSeg(overall, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, id, amount, now)
+	local avoid = false
+	if band(dstFlags, AFFIL_GROUP) ~= 0 and band(dstFlags, TYPE_PLAYER) ~= 0 and band(srcFlags, AFFIL_GROUP) == 0 then
+		avoid = IsAvoidable(srcGUID, dstGUID, id)
+		if current.boss and current.name then LogSpell(current.name, id, amount, avoid) end
+	end
+	RecordDamageToSeg(current, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, id, amount, now, avoid)
+	RecordDamageToSeg(overall, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, id, amount, now, avoid)
 end
 
 local function RecordHealToSeg(seg, owner, ownerName, isPlayer, srcName, srcFlags, id, amount, now)
@@ -657,6 +742,9 @@ H.SPELL_INSTAKILL = function(sG, sN, sF, dG, dN, dF, id)
 	if dG and band(dF, AFFIL_GROUP) ~= 0 and band(dF, TYPE_PLAYER) ~= 0 then
 		LogEvent(dG, false, id, 0, sN, nil, nil, nil, true)
 	end
+end
+H.SPELL_CAST_START = function(sG, sN, sF, dG, dN, dF, id)
+	if ns.EDMAvoidable and ns.EDMAvoidable[id] == "nontarget" then NoteCastTarget(sG, id) end
 end
 H.SPELL_INTERRUPT = function(sG, sN, sF, dG, dN, dF, id)
 	Count(sG, sN, sF, id, "interrupts", "intSpells")

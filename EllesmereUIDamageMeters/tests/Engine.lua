@@ -167,6 +167,7 @@ end
 local ME, PARTY, PET, BOSS, ADD, NPC = 0x511, 0x512, 0x1111, 0xa48, 0xa48, 0xa18
 local BOSS_GUID, ADD_GUID = "0xF130000000000010", "0xF130000000000011"
 
+assert(loadfile("EllesmereUIDamageMeters/EllesmereUIDamageMeters_Avoidable.lua"))("EllesmereUIDamageMeters")
 assert(loadfile("EllesmereUIDamageMeters/EllesmereUIDamageMeters_Engine.lua"))("EllesmereUIDamageMeters")
 assert(loadfile("EllesmereUIDamageMeters/EllesmereUIDamageMeters_Meter.lua"))("EllesmereUIDamageMeters")
 local E, DM = EllesmereUI.EDMEngine, EllesmereUI.EDM
@@ -311,6 +312,44 @@ Test("encounters name the fight and the overall resets for a new boss", function
 	Fire("ENCOUNTER_END", 2, "Fallen Protectors", 3, 10, 0)
 	Tick(1)
 	Equal(#DM.GetSegments(), 2) -- the empty pull is dropped
+end)
+
+Test("avoidable damage taken follows the spell rules and boss fights log spells", function()
+	UNITS.boss1 = { BOSS_GUID, "Thok" }
+	UnitGroupRolesAssigned = function(unit) return unit == "party1" and "TANK" or "DAMAGER" end
+	EllesmereUIDamageMetersSpellLog = nil
+	Fire("ENCOUNTER_START", 3, "Thok", 3, 10)
+	inCombat = true
+	local function Hit(dG, dN, dF, id, amount)
+		Log("SPELL_DAMAGE", BOSS_GUID, "Thok", BOSS, dG, dN, dF, id, "Spell", 1, amount, -1, 1, 0, 0, 0)
+	end
+	Log("SPELL_DAMAGE", playerGUID, "Alex", ME, BOSS_GUID, "Thok", BOSS, 100, "Shot", 1, 500, -1, 1, 0, 0, 0)
+	Hit(playerGUID, "Alex", ME, 143784, 1000) -- Burning Blood: everyone
+	Hit(playerGUID, "Alex", ME, 143780, 300) -- Acid Breath: non-tanks
+	Hit(partyGUID, "Casey", PARTY, 143780, 500) -- the tank takes it: not avoidable
+	-- Foul Stream: the cast target takes it, the others should not.
+	UNITS.boss1target = { playerGUID, "Alex", "HUNTER" }
+	Log("SPELL_CAST_START", BOSS_GUID, "Thok", BOSS, nil, nil, 0, 144090, "Foul Stream", 8)
+	UNITS.boss1target = nil
+	Hit(playerGUID, "Alex", ME, 144090, 600)
+	Hit(partyGUID, "Casey", PARTY, 144090, 400)
+	Hit(playerGUID, "Alex", ME, 999, 50) -- not in the list
+	local rows = DM.GetSources(E.GetCurrent(), T.AvoidableDamageTaken)
+	Equal(#rows, 2)
+	Equal(rows[1].name, "Alex"); Equal(rows[1].total, 1300)
+	Equal(rows[2].name, "Casey"); Equal(rows[2].total, 400)
+	local spells = DM.GetBreakdown(E.GetCurrent(), T.AvoidableDamageTaken, rows[1])
+	Equal(#spells, 2); Equal(spells[1].spellID, 143784); Equal(Sum(spells), 1300)
+	Equal(DM.TYPE_NAMES[T.AvoidableDamageTaken], "Avoidable Damage Taken")
+	local log = EllesmereUIDamageMetersSpellLog and EllesmereUIDamageMetersSpellLog.Thok
+	assert(log, "spell log for the boss")
+	Equal(log[999].hits, 1); Equal(log[999].amount, 50); Equal(log[999].avoid, nil)
+	Equal(log[143780].hits, 2); Equal(log[143780].avoid, true)
+	Equal(log[144090].amount, 1000); Equal(log[100], nil) -- damage done by the group is not logged
+	Fire("ENCOUNTER_END", 3, "Thok", 3, 10, 1)
+	inCombat = false
+	Tick(1)
+	UNITS.boss1, UNITS.boss1target, UnitGroupRolesAssigned = nil, nil, nil
 end)
 
 Test("stored fights are capped and reset clears everything", function()
