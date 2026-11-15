@@ -154,10 +154,18 @@ function CDM.BuildAll()
 	local live = {}
 	-- Pass 1: each bar's entries (with their settings from the bar they belong to).
 	local lists = {}
+	-- Spell IDs on any bar: an aura with one of these IDs belongs to its own
+	-- icon, so another icon does not take it by name (FindAura).
+	local tracked = {}
+	CDM.trackedSpellIDs = tracked
+	CDM.auraDirty = true
 	for _, bd in ipairs(CDM.Bars()) do
 		if CDM.IsPortedBar(bd) and bd.key then
 			local list = (enabled and bd.enabled ~= false) and BarEntries(bd) or {}
-			for _, e in ipairs(list) do e._ss = CDM.SpellSettings(bd, e.id) end
+			for _, e in ipairs(list) do
+				e._ss = CDM.SpellSettings(bd, e.id)
+				if e.spellID then tracked[e.spellID] = true end
+			end
 			lists[bd.key] = list
 		end
 	end

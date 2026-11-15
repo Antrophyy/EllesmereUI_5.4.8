@@ -339,7 +339,12 @@ CDM.auraDirty = true
 -- same name (Tigereye Brew 125195 stacks / 116740 active, Elusive Brew
 -- 128939 / 115308): every aura takes the highest stack count of its name, so
 -- a tracked ID shows (and glows at) the stacks whichever of the two is up.
+-- When both IDs are on a bar, each icon keeps its own aura and stacks.
 local topStacks = {}
+local trackedOfName = {}   -- [name] = number of tracked spell IDs up with that name
+local EMPTY = {}
+
+local function Tracked() return CDM.trackedSpellIDs or EMPTY end
 
 local function ScanUnit(unit, filter, byID, byName, mineByName)
 	wipe(byID)
@@ -347,18 +352,25 @@ local function ScanUnit(unit, filter, byID, byName, mineByName)
 	if mineByName then wipe(mineByName) end
 	if not UnitExists(unit) then return end
 	wipe(topStacks)
+	wipe(trackedOfName)
+	local tracked = Tracked()
 	for i = 1, 40 do
 		local name, _, _, count, _, dur, exp, caster, _, _, sid = UnitAura(unit, i, filter)
 		if not name then break end
-		local a = { dur = dur or 0, exp = exp or 0, count = count or 0, caster = caster, name = name }
+		local a = { dur = dur or 0, exp = exp or 0, count = count or 0, caster = caster, name = name, sid = sid }
 		if a.count > (topStacks[name] or 0) then topStacks[name] = a.count end
-		if sid and not byID[sid] then byID[sid] = a end
+		if sid and not byID[sid] then
+			byID[sid] = a
+			if tracked[sid] then trackedOfName[name] = (trackedOfName[name] or 0) + 1 end
+		end
 		if not byName[name] then byName[name] = a end
 		if mineByName and (caster == "player" or caster == "pet" or caster == "vehicle") and not mineByName[name] then
 			mineByName[name] = a
 		end
 	end
-	for _, a in pairs(byID) do a.count = topStacks[a.name] or a.count end
+	for _, a in pairs(byID) do
+		if (trackedOfName[a.name] or 0) < 2 then a.count = topStacks[a.name] or a.count end
+	end
 	for _, a in pairs(byName) do a.count = topStacks[a.name] or a.count end
 	if mineByName then
 		for _, a in pairs(mineByName) do a.count = topStacks[a.name] or a.count end
@@ -369,6 +381,14 @@ function CDM.RefreshAuras()
 	ScanUnit("player", "HELPFUL", auraPlayer, auraPlayerName, auraPlayerMine)
 	ScanUnit("target", "HARMFUL|PLAYER", auraTarget, auraTargetName)
 	CDM.auraDirty = false
+end
+
+-- Name match, unless that aura has another spell ID that is on a bar itself
+-- (Elusive Brew 128939 stacks / 115308 active: each icon shows only its own).
+local function ByName(map, name, sid)
+	local a = map[name]
+	if a and sid and sid > 0 and a.sid and a.sid ~= sid and Tracked()[a.sid] then return nil end
+	return a
 end
 
 -- Aura of an entry (buff on the player, else the player's debuff on the target).
@@ -383,7 +403,7 @@ local function FindAura(e)
 	end
 	local a = auraPlayer[sid] or auraTarget[sid]
 	if a then return a end
-	if e.name then return auraPlayerName[e.name] or auraTargetName[e.name] end
+	if e.name then return ByName(auraPlayerName, e.name, sid) or ByName(auraTargetName, e.name, sid) end
 end
 CDM.FindAura = FindAura
 
@@ -393,7 +413,7 @@ local function FindOwnAura(e)
 	if a and (a.caster == "player" or a.caster == "pet" or a.caster == "vehicle") then return a end
 	a = auraTarget[e.spellID]
 	if a then return a end
-	if e.name then return auraPlayerMine[e.name] or auraTargetName[e.name] end
+	if e.name then return ByName(auraPlayerMine, e.name, e.spellID) or ByName(auraTargetName, e.name, e.spellID) end
 end
 
 -- Cast-timed entries (spellDurations): start time per spellID.
