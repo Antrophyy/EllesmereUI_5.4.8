@@ -13,7 +13,8 @@
 --  a banquet cast ("... Banquet", "... Feast") by the same player marks them
 --  for a while. A fast double click can put both items in the same server
 --  tick, so the buff does not move; two food casts ("Food") by the same player
---  within 10 seconds count as well. Buffs are only read out of combat (UNIT_AURA is unregistered
+--  within 10 seconds count as well. Eating while Well Fed still has more than
+--  10 minutes left is announced too (that food is wasted). Buffs are only read out of combat (UNIT_AURA is unregistered
 --  while the player is in combat).
 --
 --  Settings live in the Raid Tools slice (EllesmereUIQoLDB.raidTools):
@@ -29,6 +30,8 @@ local FEAST_MARK = 60     -- seconds a banquet cast keeps its caster out of the 
 local THROTTLE = 10       -- one announcement per player per this many seconds
 local RESTART = 1         -- gone and back within this = a second item used
 local WELL_FED_AFTER = 10 -- seconds of eating before Well Fed; a restart before that wastes food
+local FED_LEFT = 600      -- eating while Well Fed has more than this many seconds left wastes the food
+local WELL_FED = GetSpellInfo(19705) or "Well Fed"
 
 -- Eating aura names (localized where a spell gives the name).
 local FOOD_NAMES = {}
@@ -70,13 +73,14 @@ local function Channel()
 	return nil
 end
 
-local function Announce(guid, name)
+local function Announce(guid, name, wellFed)
 	local now = GetTime()
 	if lastSaid[guid] and now - lastSaid[guid] < THROTTLE then return end
 	if feastAt[guid] and now - feastAt[guid] < FEAST_MARK then return end
 	lastSaid[guid] = now
 	name = name and (Ambiguate and Ambiguate(name, "none") or name:match("^[^-]+")) or "?"
-	local text = name .. " ate two foods at once - the first one was wasted."
+	local text = wellFed and (name .. " ate food while already Well Fed - the food was wasted.")
+		or (name .. " ate two foods at once - the first one was wasted.")
 	local ch = Channel()
 	if ch then
 		SendChatMessage(text, ch)
@@ -166,6 +170,12 @@ ev:SetScript("OnEvent", function(self, event, unit, spellName, _, lineID)
 			foodCastAt[guid] = now
 			if last and now - last < WELL_FED_AFTER then
 				Announce(guid, UnitName(unit))
+				return
+			end
+			-- Eating although Well Fed is still up (with real time left).
+			local _, _, _, _, _, _, expires = UnitBuff(unit, WELL_FED)
+			if expires and (expires == 0 or expires - now > FED_LEFT) then
+				Announce(guid, UnitName(unit), true)
 			end
 		end
 	elseif event == "PLAYER_REGEN_DISABLED" then
