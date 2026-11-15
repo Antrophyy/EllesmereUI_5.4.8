@@ -11,7 +11,9 @@
 --  restarts the aura, so its expiration time jumps forward while it is still
 --  up (or it vanishes and comes straight back). Eating at a feast is skipped:
 --  a banquet cast ("... Banquet", "... Feast") by the same player marks them
---  for a while. Buffs are only read out of combat (UNIT_AURA is unregistered
+--  for a while. A fast double click can put both items in the same server
+--  tick, so the buff does not move; two food casts ("Food") by the same player
+--  within 10 seconds count as well. Buffs are only read out of combat (UNIT_AURA is unregistered
 --  while the player is in combat).
 --
 --  Settings live in the Raid Tools slice (EllesmereUIQoLDB.raidTools):
@@ -22,7 +24,7 @@ if not ns then return end
 
 local GetTime, UnitBuff, UnitGUID = GetTime, UnitBuff, UnitGUID
 
-local JUMP = 0.1          -- seconds the food aura's expiration must move forward to count as a new item
+local JUMP = 0.05         -- seconds the food aura's expiration must move forward to count as a new item
 local FEAST_MARK = 60     -- seconds a banquet cast keeps its caster out of the check
 local THROTTLE = 10       -- one announcement per player per this many seconds
 local RESTART = 1         -- gone and back within this = a second item used
@@ -43,6 +45,8 @@ local eating = {}         -- [guid] = { exp = aura expiration, start = GetTime()
 local stoppedAt = {}      -- [guid] = { removed time, eating start }
 local feastAt = {}        -- [guid] = GetTime() of their last banquet cast
 local lastSaid = {}       -- [guid] = GetTime() of the last announcement
+local foodCastAt = {}     -- [guid] = GetTime() of their last food item cast
+local seenLine = {}       -- [guid .. lineID] = true, one cast seen through several unit tokens
 local debugOn = false
 
 local function Debug(...)
@@ -80,6 +84,13 @@ local function Announce(guid, name)
 		local say = ns.Print or print
 		say("|cff0cd29dEllesmereUI:|r " .. text)
 	end
+end
+
+-- One token per player for casts: raidN in a raid, else player / partyN.
+local function IsCastUnit(unit)
+	if not unit then return false end
+	if IsInRaid() then return unit:find("^raid%d") and true or false end
+	return unit == "player" or unit:find("^party%d") and true or false
 end
 
 local function IsGroupUnit(unit)
@@ -132,15 +143,30 @@ local function CheckUnit(unit)
 end
 
 local ev = CreateFrame("Frame")
-ev:SetScript("OnEvent", function(self, event, unit, spellName)
+ev:SetScript("OnEvent", function(self, event, unit, spellName, _, lineID)
 	if event == "UNIT_AURA" then
 		if IsGroupUnit(unit) then CheckUnit(unit) end
 	elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
-		if not IsGroupUnit(unit) then return end
-		if unit == "player" then Debug(("%.2f cast %s"):format(GetTime(), tostring(spellName))) end
+		if not IsCastUnit(unit) then return end
+		local guid = UnitGUID(unit)
+		if not guid then return end
+		local now = GetTime()
+		if UnitIsUnit(unit, "player") then Debug(("%.2f cast %s (%s)"):format(now, tostring(spellName), tostring(lineID))) end
 		if IsFeast(spellName) then
-			local guid = UnitGUID(unit)
-			if guid then feastAt[guid] = GetTime() end
+			feastAt[guid] = now
+		elseif FOOD_NAMES[spellName or ""] then
+			-- A double click can land both items in the same server tick, so
+			-- the food buff shows no change; the two casts still arrive.
+			if lineID and lineID ~= 0 then
+				local key = guid .. ":" .. lineID
+				if seenLine[key] then return end
+				seenLine[key] = true
+			end
+			local last = foodCastAt[guid]
+			foodCastAt[guid] = now
+			if last and now - last < WELL_FED_AFTER then
+				Announce(guid, UnitName(unit))
+			end
 		end
 	elseif event == "PLAYER_REGEN_DISABLED" then
 		-- Nobody eats in combat: stop reading buffs until it ends.
@@ -150,7 +176,7 @@ ev:SetScript("OnEvent", function(self, event, unit, spellName)
 		self:RegisterEvent("UNIT_AURA")
 	else
 		-- Zoned: forget who is eating.
-		wipe(eating); wipe(stoppedAt)
+		wipe(eating); wipe(stoppedAt); wipe(foodCastAt); wipe(seenLine)
 	end
 end)
 
@@ -164,7 +190,7 @@ local function Apply()
 		ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 	else
 		ev:UnregisterAllEvents()
-		wipe(eating); wipe(stoppedAt); wipe(feastAt); wipe(lastSaid)
+		wipe(eating); wipe(stoppedAt); wipe(feastAt); wipe(lastSaid); wipe(foodCastAt); wipe(seenLine)
 	end
 end
 ns.DoubleFoodApply = Apply
