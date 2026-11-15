@@ -342,7 +342,9 @@ local function EntryLabel(bd, id, sd)
 	else
 		tip = "Spell ID " .. tostring(id)
 	end
-	if not e then
+	if not e and type(id) == "number" and CDM.SYMBIOSIS_SPELLS and CDM.SYMBIOSIS_SPELLS[id] then
+		tip = tip .. "\n\nSymbiosis spell: shown only while a druid's Symbiosis gives it to you."
+	elseif not e then
 		tip = tip .. "\n\nHidden: this spell / item does not exist on this client or this character does not know it."
 	elseif kind == "timed" then
 		tip = tip .. "\n\nShown for " .. tostring(e.duration) .. " s after you cast it."

@@ -666,6 +666,14 @@ ev:SetScript("OnEvent", function(self, event, arg1, _, _, _, arg5)
 	if not CDM.ready then return end
 	if event == "UNIT_AURA" then
 		if arg1 == "player" or arg1 == "target" then CDM.auraDirty = true end
+		-- Symbiosis gives or takes a spell: show or hide its entry.
+		if arg1 == "player" then
+			local sym = CDM.HasSymbiosis()
+			if sym ~= CDM._hasSymbiosis then
+				CDM._hasSymbiosis = sym
+				QueueBuild()
+			end
+		end
 	elseif event == "PLAYER_TARGET_CHANGED" then
 		CDM.auraDirty = true
 	elseif event == "PLAYER_REGEN_DISABLED" then

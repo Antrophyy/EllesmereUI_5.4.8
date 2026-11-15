@@ -496,8 +496,43 @@ CDM.SATED_IDS = { 57724, 57723, 80354, 95809 }
 -------------------------------------------------------------------------------
 --  Spell knowledge
 -------------------------------------------------------------------------------
+-- Druid spells that Symbiosis gives to other classes (the spell depends on
+-- your class and spec). You have one only while the Symbiosis buff is on you.
+CDM.SYMBIOSIS_BUFF = 110483
+CDM.SYMBIOSIS_SPELLS = {
+	[113072] = true,   -- Might of Ursoc (Blood death knight)
+	[113516] = true,   -- Wild Mushroom: Plague (Frost / Unholy death knight)
+	[113073] = true,   -- Dash (hunter)
+	[113074] = true,   -- Healing Touch (mage)
+	[113306] = true,   -- Survival Instincts (Brewmaster monk)
+	[127361] = true,   -- Bear Hug (Windwalker monk)
+	[113269] = true,   -- Rebirth (Holy paladin)
+	[113075] = true,   -- Barkskin (Protection paladin)
+	[122287] = true,   -- Wrath (Retribution paladin)
+	[113506] = true,   -- Cyclone (Discipline / Holy priest)
+	[113277] = true,   -- Tranquility (Shadow priest)
+	[113292] = true,   -- Growl (rogue)
+	[113286] = true,   -- Solar Beam (Elemental shaman)
+	[113289] = true,   -- Prowl (Restoration shaman)
+	[122282] = true,   -- Rejuvenation (warlock)
+	[113004] = true,   -- Intimidating Roar (Arms / Fury warrior)
+	[122286] = true,   -- Savage Defense (Protection warrior)
+}
+
+function CDM.HasSymbiosis()
+	for i = 1, 40 do
+		local name, _, _, _, _, _, _, _, _, _, sid = UnitBuff("player", i)
+		if not name then return false end
+		if sid == CDM.SYMBIOSIS_BUFF then return true end
+	end
+	return false
+end
+
 function CDM.IsKnownSpell(id)
 	if not id or id <= 0 then return false end
+	-- Symbiosis spell: known only while the buff is on you (the spellbook
+	-- checks below can keep reporting the spell after the buff is gone).
+	if CDM.SYMBIOSIS_SPELLS[id] then return CDM.HasSymbiosis() end
 	if IsPlayerSpell and IsPlayerSpell(id) then return true end
 	if IsSpellKnown(id) or IsSpellKnown(id, true) then return true end
 	-- Override / rank variants: the spellbook knows the spell by name.
