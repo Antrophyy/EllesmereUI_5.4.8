@@ -604,28 +604,42 @@ end)
 Test("death recaps keep 32 events with health, overkill and absorbs, like Details", function()
 	Fire("GROUP_ROSTER_UPDATE") -- the engine reloaded above; learn the group again
 	local hp = 1000
+	local absorbs = 0
 	UnitHealth, UnitHealthMax = function() return hp end, function() return 1000 end
+	UnitGetTotalAbsorbs = function() return absorbs end
 	Log("SPELL_AURA_APPLIED", partyGUID, "Casey", PARTY, partyGUID, "Casey", PARTY, 17, "Power Word: Shield", 2, "BUFF", 5000)
 	for i = 1, 40 do
 		hp = hp - 20
 		Log("SPELL_DAMAGE", BOSS_GUID, "Boss", BOSS, partyGUID, "Casey", PARTY, 901, "Tick", 1, 20, -1, 1, 0, 0, 0)
 	end
 	Log("SPELL_MISSED", BOSS_GUID, "Boss", BOSS, partyGUID, "Casey", PARTY, 901, "Tick", 1, "ABSORB", false, 50)
+	absorbs = 300 -- a big shield on low health (Malkorok)
+	Log("SPELL_DAMAGE", BOSS_GUID, "Boss", BOSS, partyGUID, "Casey", PARTY, 901, "Tick", 1, 1, -1, 1, 0, 0, 0)
+	absorbs = 0
 	hp = 0
 	Log("SPELL_DAMAGE", BOSS_GUID, "Boss", BOSS, partyGUID, "Casey", PARTY, 902, "Smash", 1, 900, 700, 1, 0, 0, 0)
 	Log("UNIT_DIED", nil, nil, 0, partyGUID, "Casey", PARTY)
-	UnitHealth, UnitHealthMax = nil, nil
+	UnitHealth, UnitHealthMax, UnitGetTotalAbsorbs = nil, nil, nil
 	local deaths = DM.GetSources(E.GetCurrent(), T.Deaths)
 	local recap = DM.GetBreakdown(E.GetCurrent(), T.Deaths, deaths[#deaths])
 	Equal(deaths[#deaths].name, "Casey")
 	Equal(#recap, 32); Equal(recap.hasHP, true, "hasHP")
 	Equal(recap[1].label, "Spell 902"); Equal(recap[1].hp, 0); Equal(recap[1].overkill, 700)
-	Equal(recap[2].shield, true, "shield"); Equal(recap[2].heal, true); Equal(recap[2].amount, 50)
-	Equal(recap[3].hp, 20); Equal(recap[32].hp, 78) -- the 30 newest of 40 ticks
+	Equal(recap[3].shield, true, "shield"); Equal(recap[3].heal, true); Equal(recap[3].amount, 50)
+	Equal(recap[1].shieldLeft, nil, "no shield left")
+	Equal(recap[2].hp, 20); Equal(recap[2].shieldLeft, 300); Equal(recap[2].shieldPct, 30)
+	Equal(recap[4].hp, 20); Equal(recap[32].hp, 76) -- the 29 newest of 40 ticks
+	assert(select(2, DM.DeathLine(recap[2])):find("+300", 1, true), select(2, DM.DeathLine(recap[2])))
+	-- Bars: green health, then the shield as a strip right after it.
+	local bar = CreateFrame("StatusBar")
+	DM.PaintDeathBar(bar, recap, recap[2], 200)
+	Equal(bar.absorb:IsShown(), true, "shield strip"); Equal(bar.absorb.width, 60); Equal(bar.absorb.point[4], 40)
+	DM.PaintDeathBar(bar, recap, recap[4], 200)
+	Equal(bar.absorb:IsShown(), false, "no shield")
 	local label, amount = DM.DeathLine(recap[1])
 	assert(label:find("Spell 902", 1, true) and label:find("Boss", 1, true) and label:find("700 overkill", 1, true), label)
 	assert(amount:find("900", 1, true) and amount:find(" 0%", 1, true), amount)
-	label = DM.DeathLine(recap[2])
+	label = DM.DeathLine(recap[3])
 	assert(label:find("(absorb)", 1, true), label)
 end)
 
