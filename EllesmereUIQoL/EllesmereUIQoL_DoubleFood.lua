@@ -101,25 +101,37 @@ local function IsGroupUnit(unit)
 	return unit == "player" or (unit and (unit:find("^party%d") or unit:find("^raid%d"))) and true or false
 end
 
--- Latest expiration of any eating aura on the unit (0 = no end time), or nil.
+-- Latest expiration of any eating aura on the unit (0 = no end time), or nil;
+-- second and third results: Well Fed's expiration and duration, if up.
 local function FoodExpires(unit)
-	local best
+	local best, fedExp, fedDur
 	for i = 1, 40 do
-		local name, _, _, _, _, _, expires = UnitBuff(unit, i)
+		local name, _, _, _, _, duration, expires = UnitBuff(unit, i)
 		if not name then break end
 		if FOOD_NAMES[name] then
 			expires = expires or 0
 			if not best or expires > best then best = expires end
+		elseif name == WELL_FED then
+			fedExp, fedDur = expires or 0, duration or 0
 		end
 	end
-	return best
+	return best, fedExp, fedDur
+end
+
+-- Well Fed from an earlier meal with more than FED_LEFT left (a Well Fed
+-- gained in the last 20 seconds is this meal's own and does not count).
+local function FedBefore(fedExp, fedDur, now)
+	if not fedExp then return false end
+	if fedExp == 0 then return true end
+	local left = fedExp - now
+	return left > FED_LEFT and not (fedDur and fedDur > 0 and left > fedDur - 20)
 end
 
 local function CheckUnit(unit)
 	local guid = UnitGUID(unit)
 	if not guid then return end
 	local now = GetTime()
-	local exp = FoodExpires(unit)
+	local exp, fedExp, fedDur = FoodExpires(unit)
 	local st = eating[guid]
 	if not exp then
 		if st then
@@ -136,6 +148,9 @@ local function CheckUnit(unit)
 		eating[guid] = { exp = exp, start = now }
 		if old and now - old[1] <= RESTART and now - old[2] < WELL_FED_AFTER then
 			Announce(guid, UnitName(unit))
+		elseif FedBefore(fedExp, fedDur, now) then
+			Debug(("%.2f %s already Well Fed (%.0fs left)"):format(now, unit, fedExp > 0 and fedExp - now or -1))
+			Announce(guid, UnitName(unit), true)
 		end
 		return
 	end
@@ -173,8 +188,8 @@ ev:SetScript("OnEvent", function(self, event, unit, spellName, _, lineID)
 				return
 			end
 			-- Eating although Well Fed is still up (with real time left).
-			local _, _, _, _, _, _, expires = UnitBuff(unit, WELL_FED)
-			if expires and (expires == 0 or expires - now > FED_LEFT) then
+			local _, fedExp, fedDur = FoodExpires(unit)
+			if FedBefore(fedExp, fedDur, now) then
 				Announce(guid, UnitName(unit), true)
 			end
 		end
