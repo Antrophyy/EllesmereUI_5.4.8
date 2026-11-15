@@ -636,7 +636,8 @@ local function GetBreakdown(combat, dmType, src)
 				out[#out + 1] = {
 					label = name, icon = icon, amount = floor(ev.amount), spellID = ev.id,
 					heal = ev.heal, source = ev.source, ago = ev.at - t.at,
-					hp = ev.hp, overkill = ev.overkill, shield = ev.shield, instakill = ev.instakill,
+					hp = ev.hp, shieldLeft = ev.shieldLeft, shieldPct = ev.shieldPct,
+					overkill = ev.overkill, shield = ev.shield, instakill = ev.instakill,
 				}
 				if ev.hp then out.hasHP = true end
 			end
@@ -648,7 +649,8 @@ local function GetBreakdown(combat, dmType, src)
 end
 DM.GetBreakdown = GetBreakdown
 
--- Death recap line, Details style: "-1.2s Spell (Source)" and "-68.7K 12%".
+-- Death recap line, Details style: "-1.2s Spell (Source)" and "-68.7K 12% +350K"
+-- (health, then the absorb shields left, in blue).
 -- The bar shows the player's health after the event when it was recorded.
 local function DeathLine(e)
 	local label = e.label
@@ -659,6 +661,7 @@ local function DeathLine(e)
 	local amount = (e.heal and "|cff5fd35f+" or "|cffff5f5f-") .. Abbrev(e.amount) .. "|r"
 	if e.instakill then amount = "|cffff5f5fInstant kill|r" end
 	if e.hp then amount = amount .. format(" %d%%", e.hp) end
+	if e.shieldLeft then amount = amount .. " |cff9fd8ff+" .. Abbrev(e.shieldLeft) .. "|r" end
 	return label, amount
 end
 DM.DeathLine = DeathLine
@@ -668,6 +671,46 @@ local function DeathBar(list, e, top)
 	if list.hasHP then return e.hp or 0, 100 end
 	return e.amount, top > 0 and top or 1
 end
+
+-- Absorb shields in the player unit frame's shield color (white by default,
+-- like the unit frame).
+local function ShieldColor()
+	local UF = ns.UF
+	local s = UF and UF.Settings and UF.Settings("player")
+	local c = s and s.absorbColor or { r = 1, g = 1, b = 1 }
+	local a = (s and s.absorbOpacity or 80) / 100
+	return c.r or 1, c.g or 1, c.b or 1, math.max(a, 0.5)
+end
+DM.ShieldColor = ShieldColor
+
+-- Paints a death recap bar: health in green when the recap has it, then the
+-- absorb shields left as a strip right after the health (in the shield color);
+-- without health, damage red and heals green. width is the fill's width.
+local function PaintDeathBar(bar, list, e, width, tex)
+	local ab = bar.absorb
+	if not ab then
+		ab = bar:CreateTexture(nil, "ARTWORK", nil, 2)
+		bar.absorb = ab
+	end
+	ab:Hide()
+	if not list.hasHP then
+		if e.heal then bar:SetStatusBarColor(0.3, 0.75, 0.3, 0.8) else bar:SetStatusBarColor(0.75, 0.25, 0.25, 0.8) end
+		return
+	end
+	bar:SetStatusBarColor(0.3, 0.75, 0.3, 0.8)
+	local hp = e.hp or 0
+	local sp = math.min(e.shieldPct or 0, 100 - hp)
+	width = width or 0
+	if sp <= 0 or width <= 0 then return end
+	ab:SetTexture(tex or "Interface\\Buttons\\WHITE8X8")
+	ab:SetVertexColor(ShieldColor())
+	ab:ClearAllPoints()
+	ab:SetPoint("TOPLEFT", bar, "TOPLEFT", width * hp / 100, 0)
+	ab:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", width * hp / 100, 0)
+	ab:SetWidth(math.max(1, width * sp / 100))
+	ab:Show()
+end
+DM.PaintDeathBar = PaintDeathBar
 
 -- Stored segments for the segment menu, newest first:
 -- { combat, name, time, boss, try, result, bossHP }.
@@ -1078,7 +1121,10 @@ local function ShowBreakdownTip(W, bar)
 			bb:SetValue(e.amount)
 		end
 		local cr, cg, cb = ClassColor(e.class)
-		if e.heal then
+		if bb.absorb then bb.absorb:Hide() end
+		if W.curDMType == T.Deaths then
+			PaintDeathBar(bb, list, e, bb:GetWidth(), tex)
+		elseif e.heal then
 			bb:SetStatusBarColor(0.3, 0.8, 0.3, 0.8)
 		elseif cr then
 			bb:SetStatusBarColor(cr, cg, cb, 0.8)
@@ -1683,7 +1729,10 @@ CreateDMWindow = function(idx)
 						r.fill:SetValue(e.amount)
 					end
 					local cr, cg, cb = ClassColor(e.class or W.source.class)
-					if e.heal then
+					if r.fill.absorb then r.fill.absorb:Hide() end
+					if W.curDMType == T.Deaths then
+						PaintDeathBar(r.fill, list, e, r.fill:GetWidth(), DM.TexturePath(c.barTexture))
+					elseif e.heal then
 						r.fill:SetStatusBarColor(0.3, 0.75, 0.3)
 					elseif cr then
 						r.fill:SetStatusBarColor(cr, cg, cb)

@@ -58,7 +58,7 @@ local function Line(i)
 	l.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 	l.name = l:CreateFontString(nil, "OVERLAY")
 	l.name:SetPoint("LEFT", l, "LEFT", 4, 0)
-	l.name:SetPoint("RIGHT", l, "RIGHT", -72, 0)
+	l.name:SetPoint("RIGHT", l, "RIGHT", -110, 0)
 	l.name:SetJustifyH("LEFT")
 	l.name:SetWordWrap(false)
 	l.amount = l:CreateFontString(nil, "OVERLAY")
@@ -197,6 +197,8 @@ function Show()
 	local top = 1
 	for i = 1, #list do if list[i].amount > top then top = list[i].amount end end
 	local n = expanded and math.min(#list, MAX_LINES) or 0
+	Place(AnchorPopup())
+	local barW = panel:GetWidth() - (6 + LINE_H + 2) - 6
 	for i = 1, n do
 		local e, l = list[i], Line(i)
 		DM.SetFont(l.name, 11)
@@ -209,11 +211,8 @@ function Show()
 			l:SetMinMaxValues(0, top)
 			l:SetValue(e.amount)
 		end
-		if e.heal then
-			l:SetStatusBarColor(0.3, 0.75, 0.3, 0.7)
-		else
-			l:SetStatusBarColor(0.75, 0.25, 0.25, 0.7)
-		end
+		-- Green health, then the absorb shields left in the unit frame's shield color.
+		DM.PaintDeathBar(l, list, e, barW, tex)
 		l.icon:SetTexture(e.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
 		local name, amount = DM.DeathLine(e)
 		l.name:SetText(name)
@@ -221,7 +220,6 @@ function Show()
 		l:Show()
 	end
 	for i = n + 1, #panel.lines do panel.lines[i]:Hide() end
-	Place(AnchorPopup())
 	panel:SetHeight(n > 0 and (HDR_H + n * (LINE_H + 1) + 4) or (HDR_H - 2))
 	panel.elapsed = 0
 	panel:Show()

@@ -11,7 +11,8 @@
 --               dmgActive, healActive (activity seconds),
 --               dmgSpells, healSpells, intSpells, dispSpells, avoidSpells = { [key] = { id, pet, amount } },
 --               takenFrom = { [key] = { name, class, amount } } }
---   death   = { name, class, at, time, events = { { heal, id, amount, at, source, hp, overkill, absorbed, shield },
+--   death   = { name, class, at, time, events = { { heal, id, amount, at, source, hp, shieldLeft, shieldPct,
+--               overkill, absorbed, shield },
 --               ... oldest first } } (hp = health % after the event, as Details records it)
 --   avoid = damage taken from the avoidable spells of EllesmereUIDamageMeters_Avoidable.lua.
 -- Boss fights also log every spell that hit the group (EllesmereUIDamageMetersSpellLog),
@@ -395,14 +396,18 @@ local function AddTaken(a, key, name, class, amount)
 end
 
 -- Death logs: the last events taken by each group player, with the
--- player's health right after each one (Details' death log).
+-- player's health right after each one (Details' death log) and the absorb
+-- shields left on them (a 10% player can still be sitting on a big shield).
 local deathLog = {}
-local function HealthPct(guid)
+local function Vitals(guid)
 	local unit = unitOf[guid]
 	if not unit or not UnitHealth or not UnitHealthMax then return nil end
 	local max = UnitHealthMax(unit)
 	if not max or max <= 0 then return nil end
-	return min(100, floor(100 * (UnitHealth(unit) or 0) / max + 0.5))
+	local hp = min(100, floor(100 * (UnitHealth(unit) or 0) / max + 0.5))
+	local absorbs = UnitGetTotalAbsorbs and UnitGetTotalAbsorbs(unit) or 0
+	if absorbs <= 0 then return hp end
+	return hp, absorbs, min(100, floor(100 * absorbs / max + 0.5))
 end
 local function LogEvent(guid, heal, id, amount, source, overkill, absorbed, shield, instakill)
 	local log = deathLog[guid]
@@ -410,8 +415,10 @@ local function LogEvent(guid, heal, id, amount, source, overkill, absorbed, shie
 		log = {}
 		deathLog[guid] = log
 	end
+	local hp, shieldLeft, shieldPct = Vitals(guid)
 	log[#log + 1] = {
-		heal = heal, id = id, amount = amount, at = GetTime(), source = source, hp = HealthPct(guid),
+		heal = heal, id = id, amount = amount, at = GetTime(), source = source,
+		hp = hp, shieldLeft = shieldLeft, shieldPct = shieldPct,
 		overkill = overkill and overkill > 0 and overkill or nil,
 		absorbed = absorbed and absorbed > 0 and absorbed or nil,
 		shield = shield or nil,
