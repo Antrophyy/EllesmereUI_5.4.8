@@ -192,4 +192,89 @@ ns.QoLO_BuildRaidToolsPage = function(p)
 		p:Toggle("Show \"Break is over\"", "Shows \"Break is over\" for a few seconds when the break runs out.",
 			function() return BGet("showOver") and true or false end, BSet("showOver"), BreakOff)
 	end
+
+	-- Pull Timer text (EllesmereUIQoL_PullTimer.lua): movable countdown shown
+	-- when a leader or assistant starts a pull timer. Setters store and show
+	-- a short sample.
+	if ns.GetPullTimerDB then
+		local Q = ns.QoL
+		local D = ns.PullTimerDefaults
+		local function PT() return ns.GetPullTimerDB() end
+		local function PGet(k) return ns.PullTimerGet(k) end
+		local function PSet(k) return function(v) PT()[k] = v; ns.PullTimerPreview() end end
+		local function PullOff() return not PGet("enabled") end
+		local function DecOff() return PullOff() or (PGet("decimals") or 0) == 0 end
+		local function WarnOff() return PullOff() or (PGet("warnBelow") or 0) == 0 end
+		local OUTLINES, OUTLINE_LABEL = Items({
+			"__global", "EUI Global Default",
+			"none", "Drop Shadow",
+			"outline", "Outline",
+			"thick", "Thick Outline",
+		})
+		local DEC_ITEMS, DEC_LABEL = Items({ 0, "None (7)", 1, "One (2.4)", 2, "Two (2.45)" })
+		local U = ns.OptionsUtil
+		local function FontItems()
+			local lead = { { name = "EUI Global Default", value = "__global" } }
+			return U and U.FontItems and U.FontItems(lead) or lead
+		end
+		local function TextSetter(key)
+			return function(v)
+				v = tostring(v or ""):gsub("|", "")
+				-- Empty is a real choice (no label), so store it as "".
+				PT()[key] = (v ~= D[key]) and v or nil
+				ns.PullTimerPreview()
+			end
+		end
+
+		p:Section("Pull Timer Text", { unlockKey = "EUI_PullTimer" })
+		p:Toggle("Show Pull Timer Text", "Shows a countdown text (e.g. \"Pull in 7\") when a group leader or assistant starts a pull timer (/pull, DBM, BigWigs or the Raid Tools pull button). It also works with the DBM pull bar turned off, and stops when you enter combat. Move it in Unlock Mode (Pull Timer).",
+			function() return PGet("enabled") and true or false end, PSet("enabled"))
+		p:Swatch("Text Color",
+			function() local c = PGet("color"); return c.r, c.g, c.b end,
+			function(r, g, b) PT().color = { r = r, g = g, b = b }; PT().useClassColor = false; ns.PullTimerPreview() end,
+			{ disabled = PullOff, active = function() return not PGet("useClassColor") end,
+			  onClick = function()
+				  if PGet("useClassColor") then PT().useClassColor = false; ns.PullTimerPreview(); return true end
+			  end })
+		p:Swatch("Class Color", function() if Q and Q.ClassColor then return Q.ClassColor() end return 1, 1, 1 end, function() end,
+			{ readonly = true, disabled = PullOff, active = function() return PGet("useClassColor") and true or false end,
+			  onClick = function() PT().useClassColor = true; ns.PullTimerPreview(); return true end })
+		p:TextInput("Label", "Text in front of the time. Leave it empty to show only the number.",
+			function() return PGet("text") end, TextSetter("text"), D.text)
+		p:TextInput("Text at Zero", "Text shown for 2 seconds when the timer reaches 0.",
+			function() return PGet("goText") end, TextSetter("goText"), D.goText)
+		p:Toggle("Show Text at Zero", "Shows the Text at Zero for 2 seconds when the timer runs out.",
+			function() return PGet("showGo") and true or false end, PSet("showGo"), PullOff)
+		p:Slider("Text Size", "Size of the pull timer text.", 10, 96, 1,
+			function() return PGet("textSize") end, PSet("textSize"), PullOff)
+		p:Dropdown("Font", "Font of the pull timer text. EUI Global Default follows the Quality of Life module font.",
+			FontItems,
+			function() return PGet("font") end,
+			function()
+				local v = PGet("font")
+				for _, item in ipairs(FontItems()) do
+					if item.value == v then return item.name end
+				end
+				return tostring(v)
+			end,
+			PSet("font"),
+			{ fontPreview = true, fontPath = function(v)
+				if v == "__global" then return ns.GetFontPath("qol") end
+				return ns.ResolveFontName(v)
+			end }, PullOff)
+		p:Dropdown("Font Outline", "Outline of the pull timer text.",
+			OUTLINES, function() return PGet("outlineMode") end, function() return OUTLINE_LABEL(PGet("outlineMode")) end,
+			PSet("outlineMode"), nil, PullOff)
+		p:Dropdown("Decimals", "Number of decimals in the time.",
+			DEC_ITEMS, function() return PGet("decimals") end, function() return DEC_LABEL(PGet("decimals")) end,
+			PSet("decimals"), nil, PullOff)
+		p:Slider("Decimals Below (sec)", "Decimals show only when less than this many seconds are left. Set it to 60 to show them all the time.", 1, 60, 1,
+			function() return PGet("decimalsBelow") end, PSet("decimalsBelow"), DecOff)
+		p:Slider("Warning Below (sec)", "Uses the Warning Color when less than this many seconds are left. Set it to 0 to turn it off.", 0, 60, 1,
+			function() return PGet("warnBelow") end, PSet("warnBelow"), PullOff)
+		p:Swatch("Warning Color",
+			function() local c = PGet("warnColor"); return c.r, c.g, c.b end,
+			function(r, g, b) PT().warnColor = { r = r, g = g, b = b }; ns.PullTimerPreview() end,
+			{ disabled = WarnOff })
+	end
 end
