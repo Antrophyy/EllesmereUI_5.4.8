@@ -655,9 +655,140 @@ function EUIReforge:ComputePrepare (initFunc, optionFunc)
   end
   return data, reforgeOptions
 end
+-- Exact local search after the DP. The DP keeps one state per step of
+-- data.cheat rating (up to a few hundred rating with 3 caps) and rounds at
+-- random, so its result can sit far above a cap. Here we use the exact sums:
+-- change the reforge of one item, or of two items together, while the
+-- result gets better (fewer missed caps first, then a higher score). With
+-- "weight after cap" lower than the other stats, this removes overcap that
+-- a different reforge can remove, for all caps (presets or manual values).
+local REFINE_ROUNDS = 25
+function EUIReforge:RefineReforgeClassic (data, reforgeOptions, code)
+  local n = data.numCaps
+  local nitems = #code
+  if n == 0 or nitems == 0 then
+    return code
+  end
+  local caps = data.caps
+  local pick, sums = {}, {}
+  for c = 1, n do
+    sums[c] = caps[c].init
+  end
+  local base = 0
+  for i = 1, nitems do
+    local j = code:byte (i)
+    pick[i] = j
+    local o = reforgeOptions[i][j]
+    base = base + o.score
+    for c = 1, n do
+      sums[c] = sums[c] + o.d[c]
+    end
+  end
+  local function Eval (s, b)
+    local allow, score = 1, b
+    for c = 1, n do
+      local cap = caps[c]
+      if not self:CapAllows (cap, s[c]) then
+        allow = allow + 2 ^ (NUM_CAPS - c)
+      end
+      score = score + self:GetCapScore (cap, s[c])
+    end
+    return allow, score
+  end
+  local bestAllow, bestScore = Eval (sums, base)
+  local function Better (a, s)
+    return a < bestAllow or (a == bestAllow and s > bestScore + 1e-6)
+  end
+  local trial = {}
+  local steps = 0
+  local function Tick ()
+    steps = steps + 1
+    if steps >= YIELD_STEPS then
+      steps = 0
+      MaybeYield (1)
+    end
+  end
+
+  for _ = 1, REFINE_ROUNDS do
+    local improved = false
+    -- One item.
+    for i = 1, nitems do
+      local opts = reforgeOptions[i]
+      for j = 1, #opts do
+        if j ~= pick[i] then
+          Tick ()
+          local cur, o = opts[pick[i]], opts[j]
+          for c = 1, n do
+            trial[c] = sums[c] - cur.d[c] + o.d[c]
+          end
+          local b = base - cur.score + o.score
+          local a, s = Eval (trial, b)
+          if Better (a, s) then
+            bestAllow, bestScore, base = a, s, b
+            for c = 1, n do
+              sums[c] = trial[c]
+            end
+            pick[i] = j
+            improved = true
+          end
+        end
+      end
+    end
+    -- Two items together (only when one item alone cannot do better).
+    if not improved then
+      for i = 1, nitems - 1 do
+        local optsI = reforgeOptions[i]
+        if #optsI > 1 then
+          for k = i + 1, nitems do
+            local optsK = reforgeOptions[k]
+            if #optsK > 1 then
+              for j = 1, #optsI do
+                if j ~= pick[i] then
+                  for l = 1, #optsK do
+                    if l ~= pick[k] then
+                      Tick ()
+                      local ci, oi = optsI[pick[i]], optsI[j]
+                      local ck, ok = optsK[pick[k]], optsK[l]
+                      for c = 1, n do
+                        trial[c] = sums[c] - ci.d[c] + oi.d[c] - ck.d[c] + ok.d[c]
+                      end
+                      local b = base - ci.score + oi.score - ck.score + ok.score
+                      local a, s = Eval (trial, b)
+                      if Better (a, s) then
+                        bestAllow, bestScore, base = a, s, b
+                        for c = 1, n do
+                          sums[c] = trial[c]
+                        end
+                        pick[i], pick[k] = j, l
+                        improved = true
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+    if not improved then
+      break
+    end
+  end
+
+  local out = {}
+  for i = 1, nitems do
+    out[i] = string.char (pick[i])
+  end
+  return table.concat (out)
+end
 function EUIReforge:ComputeSearch (data, reforgeOptions, chooseFunc)
   local scores, codes = self:ComputeReforgeCore (data, reforgeOptions)
-  return self[chooseFunc] (self, data, reforgeOptions, scores, codes)
+  local code = self[chooseFunc] (self, data, reforgeOptions, scores, codes)
+  if code and self.RefineReforgeClassic then
+    code = self:RefineReforgeClassic (data, reforgeOptions, code)
+  end
+  return code
 end
 function EUIReforge:ComputeFinish (data, reforgeOptions, code)
   collectgarbage ("collect")
