@@ -23,9 +23,16 @@ function EUIReforge:GetExpertiseBonus ()
   local _, class = UnitClass ("player")
   if class == "HUNTER" then
     return select(3, GetExpertise()) - GetCombatRatingBonus(CR_EXPERTISE)
-  else
-    return GetExpertise() - GetCombatRatingBonus(CR_EXPERTISE)
   end
+  -- Dual wield: racial expertise can differ per hand (for example Human
+  -- with a sword and a dagger). Use the lower hand, so both hands reach
+  -- the cap.
+  local mh, oh = GetExpertise()
+  local bonus = mh
+  if oh and OffhandHasWeapon and OffhandHasWeapon() and oh < mh then
+    bonus = oh
+  end
+  return bonus - GetCombatRatingBonus(CR_EXPERTISE)
 end
 function EUIReforge:GetNeededMeleeHit ()
   local diff = self.pdb.targetLevel

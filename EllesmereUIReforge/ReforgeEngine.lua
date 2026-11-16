@@ -813,7 +813,7 @@ function EUIReforge:ComputeFailed (data, err)
   self.methodDebug = "data = " .. FormatValue (data)
   EUIReforgeGUI:ShowPopup ({
     title = "Reforge",
-    message = string.format (L["Reforge failed to compute your optimal reforge. Try increasing the speed by moving the speed slider.\nError message: %s"], tostring (err)),
+    message = string.format (L["Reforge failed to compute your optimal reforge.\nError message: %s"], tostring (err)),
     text = tostring (err),
     readOnly = true,
     acceptText = OKAY,

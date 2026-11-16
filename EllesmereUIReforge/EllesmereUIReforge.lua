@@ -305,7 +305,7 @@ EUIReforge.itemStats = {
     tip = L["Hit"],
     long = L["HitLong"],
     getter = function()
-      local result = GetCombatRating(class == "HUNTER" and CR_HIT_RANGED or CR_HIT_SPELL)
+      local result = GetCombatRating(playerClass == "HUNTER" and CR_HIT_RANGED or CR_HIT_SPELL)
       local conv = EUIReforge:GetConversion()
       if conv[EUIReforge.STATS.EXP] and conv[EUIReforge.STATS.EXP][EUIReforge.STATS.HIT] then
         result = result + math.floor(GetCombatRating(CR_EXPERTISE) * conv[EUIReforge.STATS.EXP][EUIReforge.STATS.HIT])
@@ -322,8 +322,8 @@ EUIReforge.itemStats = {
     tip = L["Haste"],
     long = L["HasteLong"],
     getter = function()
-      local result = GetCombatRating(class == "HUNTER" and CR_HASTE_RANGED or CR_HASTE_SPELL)
-      if class == "MONK" and GetShapeshiftFormID() == 20 then
+      local result = GetCombatRating(playerClass == "HUNTER" and CR_HASTE_RANGED or CR_HASTE_SPELL)
+      if playerClass == "MONK" and GetShapeshiftFormID() == 20 then
         result = math.floor(result / 1.5 + 0.5)
       end
       return result
