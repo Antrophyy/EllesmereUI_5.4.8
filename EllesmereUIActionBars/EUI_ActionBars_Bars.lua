@@ -93,11 +93,6 @@ end
 --  5.4.8 pages: 7-10 stance and form bars, 11 possess, 12 vehicle,
 --  13 temporary shapeshift, 14 override)
 -------------------------------------------------------------------------------
-local function MainBarAuto(bs)
-	local parts = { "[overridebar] 14", "[vehicleui] 12", "[shapeshift] 13" }
-	return parts
-end
-
 function EAB.HasCustomPaging(bs)
 	local p = bs and bs.paging
 	if not p or next(p) == nil then
@@ -124,12 +119,9 @@ function EAB.BuildPagingConditions(barKey)
 	if not isMain and not custom then
 		return nil
 	end
-	local parts = {}
-	if isMain then
-		for _, c in ipairs(MainBarAuto(bs)) do
-			parts[#parts + 1] = c
-		end
-	end
+	local parts = isMain and {
+		"[vehicleui] vehicle", "[overridebar] override", "[shapeshift] temp", "[possessbar][bonusbar:5] possess",
+	} or {}
 	local noModTarget = bs and bs.modTargetPaging == false
 	if not noModTarget then
 		for _, st in ipairs(EAB.PAGING_STATES.modifier) do
@@ -151,12 +143,10 @@ function EAB.BuildPagingConditions(barKey)
 		for i = 2, EAB.NUM_PAGES do
 			parts[#parts + 1] = "[bar:" .. i .. "] " .. i
 		end
-		-- 5.4.8 pages bar 1 by the stance / form offset for every class
-		-- (6 + offset); the possess bar is bonus bar 5.
+		-- 5.4.8 pages bar 1 by the stance / form offset for every class.
 		if not (bs and bs.disableFormPaging) then
 			parts[#parts + 1] = "[bonusbar:1] 7; [bonusbar:2] 8; [bonusbar:3] 9; [bonusbar:4] 10"
 		end
-		parts[#parts + 1] = "[bonusbar:5] 11"
 	end
 	if not noModTarget then
 		for _, st in ipairs(EAB.PAGING_STATES.target) do
@@ -171,6 +161,18 @@ end
 
 local PAGE_SNIPPET = [[
 	local page = tonumber(newstate) or 1
+	if newstate == "vehicle" or newstate == "override" or newstate == "temp" or newstate == "possess" then
+		if HasVehicleActionBar() then
+			page = GetVehicleBarIndex()
+		elseif HasOverrideActionBar() then
+			page = GetOverrideBarIndex()
+		elseif HasTempShapeshiftActionBar() then
+			page = GetTempShapeshiftBarIndex()
+		else
+			local offset = GetBonusBarOffset()
+			page = offset and offset > 0 and (6 + offset) or GetActionBarPage()
+		end
+	end
 	self:SetAttribute("actionpage", page)
 	control:ChildUpdate("eab-page", page)
 ]]
@@ -1286,6 +1288,7 @@ function P.HideBlizzardBars()
 	ActionBarController:UnregisterAllEvents()
 	ActionBarController:RegisterEvent("UPDATE_EXTRA_ACTIONBAR")
 	if not p.hideBlizzardVehicleBar then
+		if OverrideActionBar then P.WatchVehicleBarBindings(OverrideActionBar) end
 		ActionBarController:RegisterEvent("UPDATE_VEHICLE_ACTIONBAR")
 		ActionBarController:RegisterEvent("UPDATE_OVERRIDE_ACTIONBAR")
 		ActionBarController:RegisterEvent("UNIT_DISPLAYPOWER")

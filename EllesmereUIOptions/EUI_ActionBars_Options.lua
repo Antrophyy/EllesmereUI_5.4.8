@@ -1470,7 +1470,7 @@ local function BuildMenuBagsRep(p)
 	DataBarRows(p, "RepBar")
 
 	p:Section("Vehicle Bar")
-	p:Toggle("Hide Blizzard's Vehicle Bar", "Hide Blizzard's vehicle and override bar; Action Bar 1 shows the vehicle abilities either way. Requires a UI reload.",
+	p:Toggle("Hide Blizzard's Vehicle Bar", "Main-bar keys use Blizzard's vehicle bar while it is visible. Hide it to use the vehicle abilities on EllesmereUI Action Bar 1 instead. Requires a UI reload.",
 		function() return DB().hideBlizzardVehicleBar or false end,
 		function(v)
 			DB().hideBlizzardVehicleBar = v and true or false

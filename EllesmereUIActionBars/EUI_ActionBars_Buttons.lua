@@ -840,15 +840,28 @@ end
 local bindOwner = CreateFrame("Frame", "EABBindingOwner", UIParent)
 P.bindOwner = bindOwner
 
+-- ActionButtonDown/Up already target Blizzard's vehicle buttons while its
+-- skinned bar is shown. Release just our main-bar overrides for that interval.
+local vehicleBindOwner
+function P.WatchVehicleBarBindings(bar)
+	vehicleBindOwner = CreateFrame("Frame", nil, bar, "SecureHandlerShowHideTemplate")
+	vehicleBindOwner:SetAttribute("_onshow", [[ self:ClearBindings() ]])
+end
+
 function P.UpdateKeybinds()
 	if InCombatLockdown() then
 		P.AfterCombat("keybinds", P.UpdateKeybinds)
 		return
 	end
 	ClearOverrideBindings(bindOwner)
+	if vehicleBindOwner then
+		ClearOverrideBindings(vehicleBindOwner)
+		vehicleBindOwner:SetAttribute("_onhide", nil)
+	end
 	if C_PetBattles and C_PetBattles.IsInBattle and C_PetBattles.IsInBattle() then
 		return
 	end
+	local mainKeys = vehicleBindOwner and {}
 	for _, info in ipairs(P.BAR_CONFIG) do
 		local list = P.barButtons[info.key]
 		local s = P.BarSettings(info.key)
@@ -859,7 +872,9 @@ function P.UpdateKeybinds()
 					local keys = { GetBindingKey(cmd) }
 					for _, key in ipairs(keys) do
 						if key and key ~= "" then
-							if btn.kind == "action" then
+							if info.isMain and mainKeys then
+								mainKeys[#mainKeys + 1] = string.format([[self:SetBindingClick(false, %q, %q, "Keybind")]], key, btn:GetName())
+							elseif btn.kind == "action" then
 								SetOverrideBindingClick(bindOwner, false, key, btn:GetName(), "Keybind")
 							else
 								SetOverrideBindingClick(bindOwner, false, key, btn:GetName())
@@ -869,6 +884,13 @@ function P.UpdateKeybinds()
 				end
 			end
 		end
+	end
+	if mainKeys and #mainKeys > 0 then
+		-- Prepared out of combat; the secure OnHide restores the same keys
+		-- even when the vehicle despawns during the encounter.
+		local restore = table.concat(mainKeys, "\n")
+		vehicleBindOwner:SetAttribute("_onhide", restore)
+		if not vehicleBindOwner:IsVisible() then vehicleBindOwner:Execute(restore) end
 	end
 	if P.UpdateToggleBindings then
 		P.UpdateToggleBindings()
